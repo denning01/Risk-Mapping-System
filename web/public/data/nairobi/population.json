@@ -1,0 +1,31 @@
+{
+  "area": "nairobi",
+  "base_year": 2019,
+  "assumptions": {
+    "low": 0.7,
+    "medium": 1,
+    "high": 1.2
+  },
+  "placeholder": true,
+  "units": [
+    {
+      "unit": "Nairobi County (VERIFY)",
+      "level": "county",
+      "p2009": 3138369,
+      "p2019": 4397073,
+      "r": 0.034299,
+      "projections": {
+        "2026": {
+          "low": 5191469,
+          "medium": 5567823,
+          "high": 5831514
+        },
+        "2036": {
+          "low": 6581552,
+          "medium": 7800907,
+          "high": 8728698
+        }
+      }
+    }
+  ]
+}

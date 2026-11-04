@@ -1,0 +1,7 @@
+# PLACEHOLDER: replace with verified KNBS 2009 and 2019 census figures before the pitch.
+# Use county or sub-county level (ward boundaries changed between censuses). Record the source URL below.
+# Source: (add KNBS link here)
+# Delete the PLACEHOLDER line once the numbers are verified.
+area,unit,level,p2009,p2019
+nairobi,Nairobi County (VERIFY),county,3138369,4397073
+nyando,Kisumu County (VERIFY),county,968909,1155574
