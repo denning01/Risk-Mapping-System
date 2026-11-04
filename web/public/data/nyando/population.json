@@ -1,0 +1,31 @@
+{
+  "area": "nyando",
+  "base_year": 2019,
+  "assumptions": {
+    "low": 0.7,
+    "medium": 1,
+    "high": 1.2
+  },
+  "placeholder": true,
+  "units": [
+    {
+      "unit": "Kisumu County (VERIFY)",
+      "level": "county",
+      "p2009": 968909,
+      "p2019": 1155574,
+      "r": 0.017774,
+      "projections": {
+        "2026": {
+          "low": 1260053,
+          "medium": 1307248,
+          "high": 1339547
+        },
+        "2036": {
+          "low": 1425904,
+          "medium": 1559096,
+          "high": 1654303
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# secrets
+.env
+.env.*
+!.env.example
+# python (Person A)
+.venv/
+__pycache__/
+*.pyc
+# large rasters / raw data (share via Drive)
+data/raw/
+*.tif
+*.tiff
+# node
+node_modules/

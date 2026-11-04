@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4f4f5;
+  --foreground: #18181b;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+/* Origin markers on the map (DOM markers, so labels need no font glyphs) */
+.origin-marker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.origin-marker .dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #1e293b;
+  border: 3px solid #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+}
+.origin-marker .label {
+  font: 600 11px/1.2 ui-sans-serif, system-ui, sans-serif;
+  background: rgb(255 255 255 / 0.92);
+  color: #1e293b;
+  padding: 2px 6px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  white-space: nowrap;
+}
+.origin-marker.active .dot {
+  background: #2563eb;
+  width: 18px;
+  height: 18px;
+}
+.origin-marker.active .label {
+  background: #2563eb;
+  color: #fff;
+}
+.report-mode .maplibregl-canvas {
+  cursor: crosshair !important;
+}
