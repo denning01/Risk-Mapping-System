@@ -1,0 +1,16 @@
+# Nairobi (urban pilot), Nairobi River corridor. Plan §3. Read by pipeline/lib/config.py.
+# utm_epsg is NOT typed here: config.load() derives it from the bbox centre (charter M-01).
+id: nairobi
+name: Nairobi (urban)
+type: urban
+bbox: [36.78, -1.33, 36.92, -1.22]      # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+dem: projects/sat-io/open-datasets/FABDEM   # community catalog (verify in M-07); fallback below
+dem_fallback: COPERNICUS/DEM/GLO30
+backtest_event:                         # Apr-May 2024 long-rains floods
+  start: "2024-04-20"
+  end: "2024-05-10"
+  verified: false                       # dates from the plan, NOT yet checked against a primary source (M-07)
+before_period:
+  start: "2024-03-01"
+  end: "2024-04-10"
+user_types: [commuter, informal_settlement_resident, trader]

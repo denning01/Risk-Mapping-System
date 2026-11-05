@@ -52,3 +52,11 @@ how good it is against a real observed flood. Plan sections 3, 4.1–4.6.
 Append in the same commit as the change that taught it. Newest at the bottom.
 
 - 2026-11-05 Grid created. Nothing learned yet.
+- 2026-11-05 (M-01) After a same-second `sed` revert of a fault injection, pytest kept running the
+  faulted code: the stale `.pyc` has the same mtime second and size. `find pipeline -name __pycache__
+  -exec rm -rf {} +` after any inject/revert before trusting the re-run.
+- 2026-11-05 (M-01) Public Overpass was at capacity (502) and the kumi mirror returned empty; Nominatim
+  (`polygon_geojson=1`, `limit=10`) works for river geometry but rate-limits fast (429) — cache every
+  response and back off. A river is many OSM ways: take them all, not the first hit (the first Nyando
+  hit was only the upper reach). Nominatim's "Muhoroni" landed ~13 km from the town the OSM tiles
+  label: geocodes are pins to eyeball, never assertions.

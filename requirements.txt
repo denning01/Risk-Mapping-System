@@ -16,3 +16,5 @@ uvicorn
 pyyaml
 matplotlib
 pytest
+pyproj
+requests

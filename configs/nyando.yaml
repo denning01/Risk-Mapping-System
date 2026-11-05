@@ -1,0 +1,16 @@
+# Nyando, Kisumu (rural pilot). Plan §3. Read by pipeline/lib/config.py.
+# utm_epsg is NOT typed here: config.load() derives it from the bbox centre (charter M-01).
+id: nyando
+name: Nyando, Kisumu (rural)
+type: rural
+bbox: [34.85, -0.45, 35.30, 0.00]       # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+dem: COPERNICUS/DEM/GLO30               # EE id (verify in M-02 with ee.data.getAsset)
+dem_fallback: USGS/SRTMGL1_003
+backtest_event:                         # Nov 2023 short-rains / El Nino floods
+  start: "2023-11-01"
+  end: "2023-11-30"
+  verified: false                       # dates from the plan, NOT yet checked against ICPAC/OCHA/EMS (M-05)
+before_period:
+  start: "2023-09-01"
+  end: "2023-10-10"
+user_types: [settler, farmer, trader]
