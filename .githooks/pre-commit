@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Enforcement, not convention. Shared by every worktree via core.hooksPath (set by
+# npm run agents:bootstrap). Ported from the markets grid; the refusals are the ones that matter here.
+#
+#   1. An audit worktree must not commit.        (auditors are read-mostly, structurally)
+#   2. Nothing over 20 MB is committed.           (rasters go to data/raw or Drive; GitHub refuses >100 MB
+#                                                  and a 60 MB GeoJSON would make the demo page unusable)
+#   3. No credential files.                       (.env, Earth Engine / GCP service-account keys)
+set -uo pipefail
+
+toplevel="$(git rev-parse --show-toplevel 2>/dev/null)"
+
+# --- 1. audit worktrees are read-mostly --------------------------------------
+case "$toplevel" in
+  *-audit)
+    echo "REFUSED: $toplevel is an audit worktree and must not commit." >&2
+    echo "  Auditors append to /Users/mac/IGAD/rms-audit/<role>.md, which is outside git" >&2
+    echo "  precisely so no commit is needed. Injecting a test bypass is fine — revert it." >&2
+    exit 1 ;;
+esac
+
+# --- 2. size guard ----------------------------------------------------------------
+LIMIT=$((20 * 1024 * 1024))
+big=""
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  sz="$(git cat-file -s ":$f" 2>/dev/null || echo 0)"
+  [ "$sz" -gt "$LIMIT" ] && big="$big    $f  ($((sz / 1024 / 1024)) MB)
+"
+done <<EOF_FILES
+$(git diff --cached --name-only --diff-filter=ACMR)
+EOF_FILES
+if [ -n "$big" ]; then
+  echo "REFUSED: staged file(s) over 20 MB:" >&2; printf '%s' "$big" >&2
+  echo "  Rasters belong in data/raw/ or data/processed/ (gitignored) or the shared Drive." >&2
+  echo "  A scenario GeoJSON this big must be dissolved and simplified (docs/DATA_CONTRACT.md)." >&2
+  exit 1
+fi
+
+# --- 3. credentials -------------------------------------------------------------
+creds="$(git diff --cached --name-only --diff-filter=ACMR | grep -E '(^|/)\.env($|\.)|credentials\.json$|service[-_]?account.*\.json$|(^|/)\.config/earthengine/' | grep -v '\.env\.example$' || true)"
+if [ -n "$creds" ]; then
+  echo "REFUSED: credential-shaped file(s) staged:" >&2; echo "$creds" | sed 's/^/    /' >&2
+  exit 1
+fi
+exit 0

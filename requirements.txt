@@ -1,0 +1,18 @@
+# Person A pipeline. Installed once into /Users/mac/IGAD/.venv (shared by every worktree).
+earthengine-api
+rasterio
+geopandas
+shapely
+pysheds
+numpy
+pandas
+scipy
+osmnx
+networkx
+xgboost
+scikit-learn
+fastapi
+uvicorn
+pyyaml
+matplotlib
+pytest

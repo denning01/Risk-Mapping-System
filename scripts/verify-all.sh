@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# The merge gate for Person A's grid. Nothing lands on `data` (npm run merge:accepted) unless this
+# exits 0. Each check prints its own real output; the summary at the end is derived from exit codes,
+# never from a printf that assumes success.
+#
+#   1. pipeline unit tests       .venv/bin/python -m pytest -q   (skipped, LOUDLY, only if no tests exist yet)
+#   2. data contract             web: npm run validate:data      (the shapes Person B's app reads)
+#   3. web unit tests            web: npm test
+#   4. web typecheck             web: npx tsc --noEmit
+#   5. web lint                  web: npm run lint
+#   6. production build          web: npm run build              (skip with VERIFY_FAST=1 — never for a land)
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PY="$ROOT/.venv/bin/python"
+[ -x "$PY" ] || PY="$(cd "$ROOT/.." && pwd)/.venv/bin/python"
+results=(); fail=0
+run() {  # $1=name, rest=command (run from ROOT)
+  local name="$1"; shift
+  printf '\n\033[1m== %s\033[0m  (%s)\n' "$name" "$*"
+  local t0=$(date +%s)
+  if (cd "$ROOT" && eval "$@"); then results+=("PASS  $name  ($(( $(date +%s) - t0 ))s)")
+  else results+=("FAIL  $name  ($(( $(date +%s) - t0 ))s)"); fail=1; fi
+}
+[ -d "$ROOT/web/node_modules" ] || { echo "web/node_modules missing — run: (cd web && npm ci)"; exit 1; }
+
+if ls "$ROOT"/pipeline/tests/test_*.py "$ROOT"/tests/test_*.py >/dev/null 2>&1; then
+  run "pipeline unit tests" "'$PY' -m pytest -q"
+else
+  results+=("SKIP  pipeline unit tests — NO TESTS EXIST YET (this is not a pass)")
+fi
+run "data contract"  "cd web && npm run -s validate:data"
+run "web unit tests" "cd web && npm test --silent"
+run "web typecheck"  "cd web && npx tsc --noEmit"
+run "web lint"       "cd web && npm run -s lint"
+if [ "${VERIFY_FAST:-0}" = 1 ]; then results+=("SKIP  production build (VERIFY_FAST=1 — not valid for a land)")
+else run "production build" "cd web && npm run -s build"; fi
+
+printf '\n\033[1m== verify:all summary\033[0m\n'; printf '  %s\n' "${results[@]}"
+[ "$fail" = 0 ] && echo "verify:all: OK" || echo "verify:all: FAILED"
+exit "$fail"

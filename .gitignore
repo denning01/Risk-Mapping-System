@@ -12,3 +12,9 @@ data/raw/
 *.tiff
 # node
 node_modules/
+# grid: shared venv is symlinked into each worktree
+.venv
+# pipeline outputs that are large (scenario GeoJSON for the app IS committed, under web/public/data)
+data/processed/
+data/interim/
+*.vrt
