@@ -3,6 +3,7 @@ earthengine-api
 rasterio
 geopandas
 shapely
+pyproj
 pysheds
 numpy
 pandas

@@ -52,3 +52,11 @@ Person B. The app must keep working with **zero code changes**.
 Append in the same commit as the change that taught it. Newest at the bottom.
 
 - 2026-11-05 Grid created. Nothing learned yet.
+- 2026-11-05 (E-01) Never pipe a long-running writer into `| head`: SIGPIPE can kill it mid-loop and
+  leave a partial output set. Send the full log to a file, then read it.
+- 2026-11-05 (E-01) Person B's hand-made mock is not self-consistent: a feature labelled `low` has
+  `depth_m: 0.3` (contract: 0.3 m = medium), and `nbi-s4` lies inside a flood polygon yet is `safe:true`
+  in 3 Nairobi scenarios. Re-deriving from a raster fixes both; don't "match the mock" blindly.
+- 2026-11-05 (E-01) `verify:all` on a clean checkout: tsc fails on `LayoutProps` until `next build` has
+  generated `.next/types` (it runs tsc first), and pytest is SKIPPED because `ls` of the missing
+  `tests/` glob exits 1. Both reported to the operator; run `.venv/bin/python -m pytest -q` yourself.
