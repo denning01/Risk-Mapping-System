@@ -162,6 +162,8 @@ def contract_type(props: dict, schema_next: bool | None = None) -> str | None:
     nxt = SCHEMA_HAS_WORSHIP_POLICE if schema_next is None else schema_next
     tag = props.get("osm_tag")
     if tag == "amenity=place_of_worship":
+        if not (props.get("name") or "").strip():
+            return None          # operator ruling 2026-11-06: unnamed worship places are held back (no real name to keep)
         if nxt:
             return "place_of_worship"
         return "church" if is_christian(props) else None

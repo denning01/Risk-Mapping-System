@@ -322,6 +322,8 @@ def test_osm_points_fixture_equals_the_places_cache_when_present():
     ({"osm_tag": "amenity=place_of_worship", "religion": "hindu", "name": "Shree Temple"}, None, "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Masjid Noor"}, None, "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": None}, None, None),   # unnamed: held back
+    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "  "}, None, None),
     ({"osm_tag": "amenity=police", "name": "Ahero Police Station"}, None, "police"),
     ({"osm_tag": "amenity=school", "name": "X"}, "school", "school"),
     ({"osm_tag": "amenity=clinic", "name": "X"}, "hospital", "hospital"),
