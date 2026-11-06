@@ -284,7 +284,7 @@ validate_role() {
       echo "AUDIT WORKTREE NOT DETACHED: $audit is on '$(git -C "$ap" branch --show-current)'." >&2
       echo "  fix: git -C $ap checkout --detach $branch" >&2; problems=1
     fi
-    [ -d "$ap/node_modules" ] || { echo "AUDITOR CANNOT VERIFY: $audit has no node_modules (cd $ap && npm install)" >&2; problems=1; }
+    [ -d "$ap/web/node_modules" ] || { echo "AUDITOR CANNOT VERIFY: $audit has no web/node_modules (cd $ap/web && npm ci)" >&2; problems=1; }
   fi
   return $problems
 }
