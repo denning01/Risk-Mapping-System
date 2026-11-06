@@ -69,3 +69,11 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   read fine by window over /vsicurl/.
 - 2026-11-06 (M-02/M-03) pysheds 0.5 calls np.in1d, removed in numpy 2.4; this venv has numpy 2.5.
   Shimmed in pipeline/lib/terrain.py (lands with M-03), not by downgrading the shared venv.
+- 2026-11-06 (M-03) HAND came out NaN on ~8,600 AOI cells of the Kano plains (the floodplain that matters):
+  their D8 paths end in interior cells pysheds cannot route (flowdir -2 unresolved flat / -1 / 0) near
+  the lake shore, and never reach a channel cell. Treating those cells as drainage terminals ("sinks")
+  and permanent water (JRC >= 80 %) as drainage gives AOI NaN share 0.0. Look at the HAND PNG for holes
+  every run; the percentile summary hides them.
+- 2026-11-06 (M-03) GLO-30 is a DSM: forest canopy dams valleys, so depression filling reaches 75.8 m in
+  0.01-0.2 km2 pits in the Nandi/Mau forests (outside the AOI; inside it, max 20.9 m, 6.98 km2 > 1 m).
+  JRC water overlap cannot choose a channel threshold (3-6 % at every threshold); OSM river|stream can.

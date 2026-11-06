@@ -100,7 +100,7 @@ def run(area: str, use_ee: bool, only: set[str] | None):
         ("worldcover", "worldcover_2021.tif", worldcover_urls(box), "ESA WorldCover 10 m 2021 v200", "10 m",
          "(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021); CC BY 4.0",
          ["2021-01-01", "2021-12-31"]),
-        ("jrc", "jrc_occurrence.tif", jrc_urls(box), "JRC Global Surface Water v1.4 occurrence", "1 arcsec (~30 m)",
+        ("jrc", "jrc_occurrence.tif", jrc_urls(box), "JRC Global Surface Water v1.4 occurrence", "0.00025 deg (~28 m)",
          "Pekel et al. 2016, Nature 540:418-422; EC JRC/Google; CC BY 4.0", ["1984-03-16", "2021-12-31"]),
         ("worldpop", "worldpop_2020.tif",
          ["https://data.worldpop.org/GIS/Population/Global_2000_2020/2020/KEN/ken_ppp_2020.tif"],
