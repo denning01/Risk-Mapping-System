@@ -223,5 +223,52 @@ def figure(path, obs, mod, dom, aoi, best, label):
     fig.savefig(path, dpi=110)
 
 
+HAND_ONLY_M = (0.25, 0.5, 0.75, 1.0, 2.0, 5.0)
+
+
+def baseline(area: str):
+    """F6.2: a rainfall-free baseline. Flood = HAND < t (connected to channel|water, slope < 15 deg, water excluded),
+    scored against the SAME observed mask (backtest/observed.tif) over the SAME domain. Writes backtest/baseline.json
+    and leaves backtest.json (which the posted hand-off cites) untouched."""
+    prov = provenance()
+    cfg = config.load(area)
+    m, raw = model_dir(area), raw_dir(area)
+    out = m / "backtest"
+    grid = grid_of(m / "hand.tif")
+    hand, slope = read(m / "hand.tif"), read(m / "slope.tif")
+    channels = read(m / "channels.tif") == 1
+    perm = read(m / "perm_water.tif") == 1
+    lc, _ = to_utm(raw / "worldcover_2021.tif", cfg["utm_epsg"], Resampling.mode, like=grid)
+    water = runoff.water_mask(perm, lc)
+    aoi = _rf().aoi_mask(cfg, grid)
+    obs = read(out / "observed.tif") == 1
+    with rasterio.open(raw / "s1" / "s1_before.tif") as b, rasterio.open(raw / "s1" / "s1_event.tif") as e:
+        w = from_bounds(*e.bounds, transform=grid["transform"]).round_offsets().round_lengths()
+        foot = np.zeros(hand.shape, bool)
+        ok = np.isfinite(b.read(2).astype(float)) & np.isfinite(e.read(2).astype(float))
+        foot[w.row_off:w.row_off + w.height, w.col_off:w.col_off + w.width] = ok
+    dom = aoi & foot & ~water
+    bt = json.loads((out / "backtest.json").read_text())
+    rows = []
+    for t in HAND_ONLY_M:
+        mk = np.isfinite(runoff.flood_depth(hand, np.full(hand.shape, t), slope, channels | water, water))
+        rows.append({"hand_lt_m": t, **scores(mk, obs, dom)})
+        print(json.dumps({"hand_lt_m": t, "f1": rows[-1]["f1"], "iou": rows[-1]["iou"], "model_km2": rows[-1]["model_km2"]}),
+              flush=True)
+    best = max(rows, key=lambda r: r["f1"])
+    rep = {"provenance": prov, "area": area, "what": "HAND-only baseline, no rainfall (auditor F6.2)",
+           "domain_km2": round(float(dom.sum()) * 900 / 1e6, 2), "observed_km2": round(float((obs & dom).sum()) * 900 / 1e6, 2),
+           "rows": rows, "best": best,
+           "model_best": {"k": bt["best"]["k"], "f1": bt["best"]["all"]["f1"], "iou": bt["best"]["all"]["iou"]},
+           "model_provisional": {"k": bt["provisional"]["k"], "f1": bt["provisional"]["all"]["f1"]},
+           "skill_over_baseline_f1": round(bt["best"]["all"]["f1"] - best["f1"], 4)}
+    (out / "baseline.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps({k: rep[k] for k in ("domain_km2", "observed_km2", "best", "model_best", "skill_over_baseline_f1")},
+                     indent=1))
+
+
 if __name__ == "__main__":
-    main(sys.argv[1])
+    if "--baseline-only" in sys.argv:
+        baseline(sys.argv[1])
+    else:
+        main(sys.argv[1])

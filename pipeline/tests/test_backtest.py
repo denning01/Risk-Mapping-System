@@ -134,3 +134,15 @@ def test_choose_k_order_explicit_then_own_then_transfer_then_provisional(tmp_pat
     k, cal, tr = rf.choose_k("nairobi", cfg, None)
     assert k == 0.02 and cal["k"] == 0.02 and tr is None
     assert rf.choose_k("nairobi", cfg, 0.03) == (0.03, None, None)
+
+
+BASE = REAL.parent / "baseline.json"
+
+
+@pytest.mark.skipif(not BASE.exists(), reason="no local baseline")
+def test_real_baseline_is_scored_on_the_backtest_domain_and_reports_the_margin():
+    """F6.2: the HAND-only (no rainfall) baseline sits beside the headline, on the same domain and observed mask."""
+    b, bl = json.loads(REAL.read_text()), json.loads(BASE.read_text())
+    assert bl["domain_km2"] == b["domain_km2"] and bl["observed_km2"] == b["observed_km2_in_domain"]["VH"]
+    assert bl["best"]["f1"] == max(r["f1"] for r in bl["rows"])
+    assert bl["skill_over_baseline_f1"] == pytest.approx(b["best"]["all"]["f1"] - bl["best"]["f1"], abs=1e-4)
