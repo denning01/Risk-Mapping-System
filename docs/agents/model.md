@@ -102,3 +102,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   script claims rasters it never made, and a run from a dirty tree matches no commit. Outputs now carry
   provenance {git_commit, dirty} stamped by the producing run; 06_handoff.py refuses a missing or dirty stamp.
   Commit FIRST, then run, and do not edit pipeline/ while a stamped run is going.
+- 2026-11-06 (F4.2) h = k·Q^α with Q a mean runoff DEPTH gives every channel the same stage (uniform CN → uniform
+  Q): a 10 km² stream flooded like the 3,422 km² main stem. Stage must scale with a discharge proxy (upstream
+  runoff VOLUME), α 0.4 (Leopold & Maddock 1953). Check a stage model by tabulating stage vs upstream area.
+  Also: stamp provenance at the START of a run — a stamp taken after 13 min of compute saw my later edits.

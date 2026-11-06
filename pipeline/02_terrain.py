@@ -85,6 +85,7 @@ def channel_vs_osm(acc_km2, thresholds, osm, aoi, fdir, tol_cells=2):
 
 
 def main(area: str, channel_km2: float, sweep: bool):
+    prov = provenance()   # at START: a stamp taken after minutes of compute sees later edits, not the code that ran
     cfg = config.load(area)
     out = model_dir(area)
     out.mkdir(parents=True, exist_ok=True)
@@ -94,7 +95,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     perm = jrc >= PERM_WATER_PCT
     h = terrain.hydro(dem, grid["transform"], grid["crs"], channel_km2, extra_drainage=perm)
     slope = terrain.slope_deg(dem, RES, RES)
-    report = {"provenance": provenance(), "flats_routed": h["flats_routed"], "sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
+    report = {"provenance": prov, "flats_routed": h["flats_routed"], "sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
               "channel_km2": channel_km2, "channel_cells": int(h["channels"].sum()),
               "hand_m": {q: float(np.nanpercentile(h["hand"], p)) for q, p in
                          (("p01", 1), ("p50", 50), ("p99", 99))},

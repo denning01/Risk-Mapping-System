@@ -200,6 +200,15 @@ def fdir_for_disk(fdir: np.ndarray, dem: np.ndarray) -> np.ndarray:
     return out
 
 
+def upstream_sum(fdir: np.ndarray, transform: Affine, crs: str, values: np.ndarray) -> np.ndarray:
+    """Sum of `values` over each cell's upstream area (itself included), D8; NaN counts as 0."""
+    vf = ViewFinder(affine=transform, shape=fdir.shape, crs=crs, nodata=0)
+    fd = Raster(fdir.astype("int64"), viewfinder=vf)
+    g = Grid.from_raster(fd)
+    w = Raster(np.where(np.isfinite(values), values, 0.0).astype("float64"), viewfinder=vf)
+    return np.asarray(g.accumulation(fd, weights=w), dtype="float64")
+
+
 def upstream_mean(fdir: np.ndarray, transform: Affine, crs: str, values: np.ndarray) -> np.ndarray:
     """Mean of `values` over each cell's upstream area (itself included), via D8 accumulation:
     accumulation(weights=values) / accumulation(). NaN values count as 0 and are excluded from the count."""

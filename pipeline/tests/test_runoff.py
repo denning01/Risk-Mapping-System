@@ -40,9 +40,32 @@ def test_curve_number_lookup_from_tr55_rows():
     assert np.isnan(runoff.curve_number(np.array([40]), np.array([-1]))[0])
 
 
-def test_stage_is_k_times_q_to_alpha():
-    assert runoff.stage(64.0, 0.25, 0.5) == pytest.approx(2.0)
-    assert runoff.stage(0.0, 0.25, 0.5) == 0.0
+def test_stage_is_k_times_volume_to_alpha():
+    assert runoff.stage(1e4, 0.02, 0.4) == pytest.approx(0.02 * 10 ** 1.6)
+    assert runoff.stage(0.0, 0.02, 0.4) == 0.0
+    # same runoff depth, 100x the area -> 100^0.4 = 6.31x the stage (F4.2: depth grows downstream with discharge)
+    assert runoff.stage(50.0 * 1000, 0.02) / runoff.stage(50.0 * 10, 0.02) == pytest.approx(100 ** 0.4)
+
+
+def test_stage_grows_downstream_along_a_channel_with_uniform_runoff():
+    """F4.2: on a valley with uniform CN, the drainage-cell stage must rise monotonically downstream; with a mean
+    runoff DEPTH (the plan's form) it is constant along the whole channel."""
+    from affine import Affine
+    from pipeline.lib import terrain
+    from pipeline.tests.test_terrain import DX, valley
+    dem = valley()
+    t = Affine(DX, 0, 0, 0, -DX, 0)
+    out = terrain.hydro(dem, t, "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    cn = np.full(dem.shape, 80.0)
+    _, h, q = runoff.scenario_depth(100.0, cn, out["fdir"], t, "EPSG:32736", out["hand"], out["hand_index"],
+                                    np.zeros(dem.shape), out["channels"], np.zeros(dem.shape, bool), 0.05, 0.4,
+                                    DX * DX / 1e6)
+    rows = [r for r in range(1, dem.shape[0] - 1) if out["channels"][r, 10]]
+    hc = h[rows, 10]                                   # row index grows downstream (dem falls with y)
+    assert len(rows) > 10 and (np.diff(hc) > 0).all()
+    assert hc[-1] / hc[0] > 2.0
+    q_mean = terrain.upstream_mean(out["fdir"], t, "EPSG:32736", q)
+    assert np.ptp(q_mean[rows, 10]) < 1e-9              # the old form: no downstream growth at all
 
 
 def test_flood_depth_keeps_low_flat_cells_connected_to_a_channel():
@@ -78,3 +101,30 @@ def test_season_ratio_is_ratio_of_area_means():
     ev = np.array([200.0, 400.0, np.nan])
     cl = np.array([100.0, 200.0, 150.0])
     assert runoff.season_ratio(ev, cl) == pytest.approx(2.0)
+
+
+TR55_ROWS = {   # TR-55 (1986) Table 2-2a/b/c, typed from the PDF (pages 2-5..2-7); auditor re-read them in R4
+    10: (36, 60, 73, 79), 20: (35, 56, 70, 77), 30: (49, 69, 79, 84), 40: (72, 81, 88, 91),
+    50: (89, 92, 94, 95), 60: (77, 86, 91, 94), 80: (98, 98, 98, 98), 90: (98, 98, 98, 98), 95: (36, 60, 73, 79)}
+
+
+def test_cn_table_pins_every_value():
+    assert {c: v for c, (_, v) in runoff.CN_TABLE.items()} == TR55_ROWS
+    for cls, row in TR55_ROWS.items():
+        np.testing.assert_array_equal(runoff.curve_number(np.full(4, cls), np.arange(4)), row)
+
+
+def test_hsg_band_edges_follow_neh630():
+    # A <10 % clay AND >90 % sand; B 10-20 % clay; C 20-40 %; D >40 % (edges belong to the lower-numbered band's
+    # text: "20-40 %" includes 40 -> C; "10-20 %" includes 20 -> B; "<10 %" excludes 10)
+    clay = np.array([9.99, 9.99, 10.0, 20.0, 20.01, 40.0, 40.01])
+    sand = np.array([90.01, 90.0, 95.0, 30.0, 30.0, 10.0, 10.0])
+    np.testing.assert_array_equal(runoff.hsg_from_texture(clay, sand), [0, 1, 1, 1, 2, 2, 3])
+
+
+def test_flood_mask_is_strict_at_the_stage_and_at_15_degrees():
+    hand = np.array([[0.0, 1.0, 0.5]])
+    slope = np.array([[0.0, 0.0, 15.0]])
+    ch = np.array([[True, False, False]])
+    d = runoff.flood_depth(hand, np.full(hand.shape, 1.0), slope, ch, np.zeros(hand.shape, bool))
+    assert d[0, 0] == 1.0 and np.isnan(d[0, 1]) and np.isnan(d[0, 2])     # HAND == h dry; slope == 15 dry

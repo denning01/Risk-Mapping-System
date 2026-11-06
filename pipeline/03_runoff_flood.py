@@ -1,6 +1,6 @@
 """M-04 runoff and flood layers for one area, on the M-03 UTM 30 m grid.
 
-    .venv/bin/python pipeline/03_runoff_flood.py nyando [--k 0.25] [--alpha 0.5]
+    .venv/bin/python pipeline/03_runoff_flood.py nyando [--k K] [--alpha 0.4]
 
 Reads  $RMS_DATA/processed/<area>/model/{hand,hand_index,slope,flowdir,channels,perm_water}.tif (M-03),
        $RMS_DATA/raw/<area>/{worldcover_2021,soilgrids_clay_0-30cm,soilgrids_sand_0-30cm}.tif,
@@ -11,8 +11,10 @@ Writes $RMS_DATA/processed/<area>/model/{cn,hsg}.tif, scenarios/<rain>_<enso>_de
 Method (plan §4.2-4.5):
   CN      = TR-55 row for the WorldCover class x NEH 630 hydrologic soil group from SoilGrids topsoil texture.
   P       = scenario rain (mm in 24 h, uniform over the catchment); El Nino: P x CHIRPS OND ratio over the AOI.
-  Q       = SCS-CN runoff per cell; Q_up = mean Q over each cell's upstream area (D8).
-  h       = k * Q_up^alpha at the drainage cell each cell drains to (hand_index), so every reach floods to its own stage.
+  Q       = SCS-CN runoff per cell; V_up = runoff VOLUME over each cell's upstream area (sum Q x cell km2, 1000 m3, D8).
+  h       = k * V_up^alpha at the drainage cell each cell drains to (hand_index); alpha 0.4 = downstream depth-
+            discharge exponent (Leopold & Maddock 1953), so stage grows with catchment size (F4.2; the plan's mean-
+            depth form gave every channel the same stage).
   flooded = HAND < h, slope < 15 deg, 8-connected to a channel or permanent water, permanent water itself excluded.
   depth   = h - HAND; risk per docs/DATA_CONTRACT.md (< 0.3 low, 0.3-1 medium, > 1 high).
 HAND is raw-DEM height above the FILLED level of the drainage cell (F2.10/F2.13); closed depressions have HAND 0
@@ -42,6 +44,10 @@ ENSO = ("normal", "elnino")
 CLIM = (1991, 2020)                     # WMO standard normal period
 EVENT_YEAR = 2023
 SEASON = (10, 11, 12)                   # OND short rains
+ALPHA = 0.4                             # Leopold & Maddock 1953 (USGS PP 252 p.16), downstream f
+# UNCALIBRATED until M-05. Arbitrary anchor, not an observation: the Nyando outlet (3,422 km2) stage at 150 mm/24 h
+# normal = 3.05 m, the stage the R4 mean-depth form gave every channel (auditor F4.2). 3.05 / 321,970^0.4 = 0.0191.
+K_PROVISIONAL = 0.0191
 
 
 def aoi_mask(cfg, grid) -> np.ndarray:
@@ -108,6 +114,7 @@ def png(path, depth, aoi, title):
 
 
 def main(area: str, k: float, alpha: float):
+    prov = provenance()   # at START (see 02_terrain.py)
     cfg = config.load(area)
     m, raw = model_dir(area), raw_dir(area)
     grid = grid_of(m / "hand.tif")
@@ -130,8 +137,9 @@ def main(area: str, k: float, alpha: float):
     write(m / "cn.tif", cn, grid)
     write(m / "hsg.tif", np.where(hsg < 0, 255, hsg.astype("int16")), grid, "uint8", 255)
 
-    report = {"provenance": provenance(), "area": area, "k": k, "alpha": alpha, "k_calibrated": False,
-              "k_note": "provisional, NOT calibrated: M-05 calibrates k on the Sentinel-1 2023 mask (blocked on EE)",
+    report = {"provenance": prov, "area": area, "k": k, "alpha": alpha, "k_calibrated": False,
+              "k_note": "provisional, NOT calibrated (anchor: outlet stage 3.05 m at 150 mm normal); M-05 calibrates k on the Sentinel-1 2023 mask (blocked on EE)",
+              "stage_form": "h = k * V_up^alpha, V_up = upstream runoff volume (1000 m3); alpha 0.4 Leopold & Maddock 1953 USGS PP 252 p.16",
               "aoi_cells": int(aoi.sum()), "cell_km2": cell_km2, "max_slope_deg": 15.0,
               "cn_table": {str(c): {"tr55": t, "A_B_C_D": list(v)} for c, (t, v) in runoff.CN_TABLE.items()}}
     lcv = lc[aoi]
@@ -142,17 +150,12 @@ def main(area: str, k: float, alpha: float):
     report["elnino"] = chirps_ratio(area, cfg["bbox"])
     ratio = report["elnino"]["ratio"]
 
-    ok = hidx >= 0
     report["scenarios"] = {}
     for enso in ENSO:
         for rain in RAINS:
             p = rain * (ratio if enso == "elnino" else 1.0)
-            q = runoff.scs_runoff(p, cn)
-            q_up = terrain.upstream_mean(fd, grid["transform"], grid["crs"], q)
-            h_drain = runoff.stage(q_up, k, alpha)
-            h = np.full(hand.shape, np.nan)
-            h[ok] = h_drain.ravel()[hidx[ok]]
-            depth = runoff.flood_depth(hand, h, slope, channels | perm, perm)
+            depth, h, q = runoff.scenario_depth(p, cn, fd, grid["transform"], grid["crs"], hand, hidx, slope,
+                                                channels | perm, perm, k, alpha, cell_km2)
             write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid,
                   tags={"calibrated": "false", "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
                         "elnino_ratio": ratio, "git_commit": report["provenance"]["git_commit"],
@@ -180,7 +183,7 @@ def main(area: str, k: float, alpha: float):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("area")
-    ap.add_argument("--k", type=float, default=0.25)
-    ap.add_argument("--alpha", type=float, default=0.5)
+    ap.add_argument("--k", type=float, default=K_PROVISIONAL)
+    ap.add_argument("--alpha", type=float, default=ALPHA)
     a = ap.parse_args()
     main(a.area, a.k, a.alpha)

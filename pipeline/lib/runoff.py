@@ -63,10 +63,15 @@ def scs_runoff(p_mm, cn) -> np.ndarray:
     return np.where(np.isfinite(cn), q, np.nan)
 
 
-def stage(q_mm, k: float, alpha: float) -> np.ndarray:
-    """Effective flood stage h (m above the drainage cell) = k * Q^alpha (plan §4.3). k is calibrated in M-05."""
-    q = np.asarray(q_mm, dtype="float64")
-    return k * np.power(np.maximum(q, 0.0), alpha)
+def stage(v_up, k: float, alpha: float = 0.4) -> np.ndarray:
+    """Flood stage h (m above the drainage cell) = k * V_up^alpha, V_up = upstream runoff VOLUME in 1000 m3
+    (= sum over the upstream area of Q mm x cell km2), a discharge proxy for a storm of fixed duration.
+    F4.2: the plan's h = k * Q^alpha with Q a mean runoff DEPTH gave every channel the same stage (~3.05 m for a
+    10 km2 stream and the 3,422 km2 main stem alike). Depth grows downstream with discharge as d = c Q^f, f = 0.4
+    on average (Leopold & Maddock 1953, USGS Prof. Paper 252, p.16, at mean annual discharge;
+    https://pubs.usgs.gov/pp/0252/report.pdf). k is calibrated in M-05."""
+    v = np.asarray(v_up, dtype="float64")
+    return k * np.power(np.maximum(v, 0.0), alpha)
 
 
 def flood_depth(hand, h_at_drain, slope, connect_to, exclude, max_slope=15.0) -> np.ndarray:
@@ -96,3 +101,18 @@ def season_ratio(event_season_px: np.ndarray, clim_season_px: np.ndarray) -> flo
     climatological mean season total (plan §4.5). Pixels NaN in either are dropped."""
     ok = np.isfinite(event_season_px) & np.isfinite(clim_season_px)
     return float(event_season_px[ok].mean() / clim_season_px[ok].mean())
+
+
+def scenario_depth(p_mm: float, cn, fdir, transform, crs, hand, hand_index, slope, connect_to, exclude,
+                   k: float, alpha: float, cell_km2: float):
+    """One scenario on the M-03 grid: Q per cell -> upstream runoff volume V_up (1000 m3) -> stage of each DRAINAGE
+    cell -> each cell takes the stage of the drainage cell it drains to (hand_index) -> flood_depth.
+    Returns (depth m NaN = dry, h at each cell, Q mm)."""
+    from pipeline.lib import terrain
+    q = scs_runoff(p_mm, cn)
+    v_up = terrain.upstream_sum(fdir, transform, crs, q * cell_km2)
+    h_drain = stage(v_up, k, alpha)
+    ok = hand_index >= 0
+    h = np.full(hand.shape, np.nan)
+    h[ok] = h_drain.ravel()[hand_index[ok]]
+    return flood_depth(hand, h, slope, connect_to, exclude), h, q
