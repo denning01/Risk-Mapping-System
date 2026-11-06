@@ -108,6 +108,32 @@ def test_raster_covers_bbox():
     assert not ok and "west_m" in why
 
 
+@pytest.mark.parametrize("edge,dw,ds,de,dn", [
+    ("west_m", -0.001, 0, 0, 0), ("east_m", 0, 0, 0.001, 0),
+    ("south_m", 0, -0.001, 0, 0), ("north_m", 0, 0, 0, 0.001),
+])
+def test_raster_covers_bbox_each_edge(edge, dw, ds, de, dn):
+    """F1.10: a bbox ~111 m past ANY one edge of the grid is refused, and that edge is named."""
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    w, n = to_wgs(722600 + 1 * RES, 9977880 - 1 * RES)
+    e, s_ = to_wgs(722600 + 9 * RES, 9977880 - 9 * RES)
+    ok, why = scen.raster_covers_bbox(TF, (10, 10), CRS, [w + dw, s_ + ds, e + de, n + dn])
+    assert not ok and edge in why and sum(k in why for k in ("west_m", "east_m", "south_m", "north_m")) == 1
+
+
+def test_raster_covers_bbox_refuses_south_up_and_rotated():
+    """F1.10: a south-up grid (e > 0) or a rotated one is refused, not mis-measured."""
+    from affine import Affine
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    w, n = to_wgs(722600 + 1 * RES, 9977880 - 1 * RES)
+    e, s_ = to_wgs(722600 + 9 * RES, 9977880 - 9 * RES)
+    south_up = Affine(RES, 0, 722600.0, 0, RES, 9977880.0 - 10 * RES)   # same footprint, rows run north
+    rotated = Affine(RES, 1.0, 722600.0, 1.0, -RES, 9977880.0)
+    for tf in (south_up, rotated):
+        ok, why = scen.raster_covers_bbox(tf, (10, 10), CRS, [w, s_, e, n])
+        assert not ok and "north-up" in why
+
+
 def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None):
     data, depth = tmp / "data", tmp / "depth"
     sd = data / "nyando" / "scenarios"

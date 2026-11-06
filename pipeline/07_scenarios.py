@@ -153,7 +153,10 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
 
 def raster_covers_bbox(transform, shape_hw, crs, bbox, n=50) -> tuple[bool, str]:
     """True if the raster footprint contains the lon/lat bbox (edges densified, n points each),
-    to a tolerance of half a pixel."""
+    to a tolerance of half a pixel. Only north-up, unrotated grids are accepted (F1.10): any other
+    orientation is refused rather than mis-measured."""
+    if transform.b != 0 or transform.d != 0 or transform.a <= 0 or transform.e >= 0:
+        return False, f"raster is not north-up/unrotated (transform {tuple(transform)[:6]}); refused"
     w, s, e, nn = bbox
     t = np.linspace(0, 1, n)
     lons = np.concatenate([w + (e - w) * t, np.full(n, e), e - (e - w) * t, np.full(n, w)])
