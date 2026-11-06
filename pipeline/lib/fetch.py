@@ -18,7 +18,7 @@ from rasterio.merge import merge
 
 UA = "igad-flood-ews-mvp/0.1 (hackathon data download)"
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff,.vrt")
+os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff,.vrt,.zip")
 os.environ.setdefault("GDAL_HTTP_USERAGENT", UA)
 os.environ.setdefault("GDAL_HTTP_MAX_RETRY", "5")
 os.environ.setdefault("GDAL_HTTP_RETRY_DELAY", "3")

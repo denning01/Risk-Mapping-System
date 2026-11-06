@@ -89,7 +89,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     cfg = config.load(area)
     out = model_dir(area)
     out.mkdir(parents=True, exist_ok=True)
-    dem, grid = to_utm(raw_dir(area) / "dem_glo30.tif", cfg["utm_epsg"])
+    dem, grid = to_utm(raw_dir(area) / cfg["dem_file"], cfg["utm_epsg"])
     write(out / "dem_utm.tif", dem, grid)
     jrc, _ = to_utm(raw_dir(area) / "jrc_occurrence.tif", cfg["utm_epsg"], Resampling.max, like=grid)
     perm = jrc >= PERM_WATER_PCT

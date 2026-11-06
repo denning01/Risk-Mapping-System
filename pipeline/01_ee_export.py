@@ -46,6 +46,26 @@ def glo30_urls(bbox):
     return urls
 
 
+FABDEM = "https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn"   # FABDEM V1-2, University of Bristol
+
+
+def _lat10(v: int) -> str:
+    return ("S" if v < 0 else "N") + f"{abs(v):02d}"
+
+
+def fabdem_urls(bbox):
+    """FABDEM V1-2 1x1 deg tiles (named by SW corner, pixel-centre registered like GLO-30), read with GDAL range
+    requests straight out of the 10x10 deg zips (2 GB each) — no full zip download."""
+    w, s, e, n = bbox
+    urls = []
+    for lat in range(math.floor(s), math.floor(n) + 1):
+        for lon in range(math.floor(w), math.floor(e) + 1):
+            la, lo = math.floor(lat / 10) * 10, math.floor(lon / 10) * 10
+            z = f"{_lat10(la)}E{lo:03d}-{_lat10(la + 10)}E{lo + 10:03d}_FABDEM_V1-2.zip"
+            urls.append(f"/vsizip//vsicurl/{FABDEM}/{z}/{_ns(lat)}E{lon:03d}_FABDEM_V1-2.tif")
+    return urls
+
+
 def worldcover_urls(bbox):
     w, s, e, n = bbox
     urls = []
@@ -70,7 +90,7 @@ def jrc_urls(bbox):
 
 
 def vsi(urls):
-    return [f"/vsicurl/{u}" for u in urls]
+    return [u if u.startswith("/vsi") else f"/vsicurl/{u}" for u in urls]
 
 
 def chirps_job(url, cache: Path, dest: Path, bbox, date_range):
@@ -95,7 +115,14 @@ def run(area: str, use_ee: bool, only: set[str] | None):
         raise SystemExit("EE route not written yet: Earth Engine is not authenticated (BLOCKED:ee-auth)")
     want = lambda k: only is None or k in only  # noqa: E731
     report = {}
+    fabdem = cfg["dem_file"] == "dem_fabdem.tif"
     singles = [
+        ("dem", "dem_fabdem.tif", fabdem_urls(box), "FABDEM V1-2 (Copernicus GLO-30 with forests and buildings removed)",
+         "1 arcsec (~30 m)",
+         # from the tiles' own LICENCE tag (read 2026-11-06): non-commercial only
+         "The FABDEM dataset is freely available for non-commercial use under a Creative Commons \"CC BY-NC-SA 4.0\" "
+         "licence (University of Bristol and Fathom); doi:10.5523/bris.s5hqmjcdj8yo2ibzi9b4ew3sn",
+         ["2011-01-01", "2015-12-31"]) if fabdem else
         ("dem", "dem_glo30.tif", glo30_urls(box), "Copernicus DEM GLO-30 (DSM)", "1 arcsec (~30 m)",
          "Copernicus DEM (c) DLR e.V. 2010-2014 and (c) Airbus 2014-2018, provided under COPERNICUS by the "
          "European Union and ESA; free licence",

@@ -117,3 +117,25 @@ def test_snap_bounds_grows_outward_to_pixel_edges():
     assert (s, n) == (pytest.approx(-0.1005), pytest.approx(0.0005))
     # already on edges: unchanged
     assert fetch.snap_bounds([34.9995, -0.0995, 35.0995, 0.0005], t) == pytest.approx((34.9995, -0.0995, 35.0995, 0.0005))
+
+
+def test_fabdem_tiles_are_read_from_the_right_10_degree_zip():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("ex", Path(__file__).resolve().parents[1] / "01_ee_export.py")
+    ex = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ex)
+    base = "/vsizip//vsicurl/https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn/"
+    urls = ex.fabdem_urls([36.50, -1.50, 37.10, -0.95])
+    assert urls == [base + "S10E030-N00E040_FABDEM_V1-2.zip/S02E036_FABDEM_V1-2.tif",   # SW-corner names, as on the server
+                    base + "S10E030-N00E040_FABDEM_V1-2.zip/S02E037_FABDEM_V1-2.tif",
+                    base + "S10E030-N00E040_FABDEM_V1-2.zip/S01E036_FABDEM_V1-2.tif",
+                    base + "S10E030-N00E040_FABDEM_V1-2.zip/S01E037_FABDEM_V1-2.tif"]
+    # a box north of the equator uses the N00..N10 zip
+    assert ex.fabdem_urls([36.1, 0.2, 36.2, 0.3]) == [base + "N00E030-N10E040_FABDEM_V1-2.zip/N00E036_FABDEM_V1-2.tif"]
+
+
+def test_dem_file_follows_the_configured_dem():
+    from pipeline.lib import config
+    assert config.load("nairobi")["dem_file"] == "dem_fabdem.tif"
+    assert config.load("nyando")["dem_file"] == "dem_glo30.tif"
