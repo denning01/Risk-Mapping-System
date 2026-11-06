@@ -18,7 +18,7 @@ from rasterio.merge import merge
 
 UA = "igad-flood-ews-mvp/0.1 (hackathon data download)"
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
-os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff")
+os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.tiff,.vrt")
 os.environ.setdefault("GDAL_HTTP_USERAGENT", UA)
 os.environ.setdefault("GDAL_HTTP_MAX_RETRY", "5")
 os.environ.setdefault("GDAL_HTTP_RETRY_DELAY", "3")
@@ -89,6 +89,30 @@ def clip(sources: list[str], bbox, dest: Path) -> Path:
     finally:
         for d in dss:
             d.close()
+    return dest
+
+
+def warp_read(src: str, bbox, res: float, resampling=None) -> np.ndarray:
+    """Read any-CRS raster `src` resampled onto a WGS84 grid covering bbox at `res` degrees (NaN = nodata)."""
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_origin
+    from rasterio.vrt import WarpedVRT
+    w, s, e, n = bbox
+    width, height = round((e - w) / res), round((n - s) / res)
+    tr = from_origin(w, n, res, res)
+    with rasterio.open(src) as ds, WarpedVRT(ds, crs="EPSG:4326", transform=tr, width=width, height=height,
+                                             resampling=resampling or Resampling.bilinear,
+                                             src_nodata=ds.nodata, nodata=np.nan, dtype="float32") as vrt:
+        return vrt.read(1)
+
+
+def write_wgs84(arr: np.ndarray, bbox, res: float, dest: Path, nodata=np.nan) -> Path:
+    from rasterio.transform import from_origin
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(dest, "w", driver="GTiff", height=arr.shape[0], width=arr.shape[1], count=1,
+                       dtype=arr.dtype, crs="EPSG:4326", transform=from_origin(bbox[0], bbox[3], res, res),
+                       nodata=nodata, compress="deflate") as ds:
+        ds.write(arr, 1)
     return dest
 
 

@@ -19,8 +19,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import rasterio
-from rasterio.warp import Resampling, calculate_default_transform, reproject
+from rasterio.warp import Resampling
 import requests
 from pyproj import Transformer
 from rasterio.features import rasterize
@@ -30,30 +29,9 @@ from shapely import LineString, box, ops
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.lib import config, terrain  # noqa: E402
 from pipeline.lib.paths import model_dir, raw_dir  # noqa: E402
+from pipeline.lib.rio import RES, to_utm, write  # noqa: E402,F401
 
-RES = 30.0
 PERM_WATER_PCT = 80   # JRC occurrence >= 80 % = permanent water (plan §3 skeleton); also excluded from floods (M-04)
-
-
-def to_utm(src_path: Path, epsg: int, resampling=Resampling.bilinear, res=RES, like=None):
-    with rasterio.open(src_path) as src:
-        if like is None:
-            tr, w, h = calculate_default_transform(src.crs, f"EPSG:{epsg}", src.width, src.height,
-                                                   *src.bounds, resolution=res)
-        else:
-            tr, w, h = like["transform"], like["width"], like["height"]
-        dst = np.full((h, w), np.nan, dtype="float32")
-        reproject(rasterio.band(src, 1), dst, src_transform=src.transform, src_crs=src.crs,
-                  dst_transform=tr, dst_crs=f"EPSG:{epsg}", resampling=resampling,
-                  src_nodata=src.nodata, dst_nodata=np.nan)
-    return dst, {"transform": tr, "width": w, "height": h, "crs": f"EPSG:{epsg}"}
-
-
-def write(path: Path, arr, grid, dtype="float32", nodata=np.nan):
-    with rasterio.open(path, "w", driver="GTiff", height=grid["height"], width=grid["width"], count=1,
-                       dtype=dtype, crs=grid["crs"], transform=grid["transform"], nodata=nodata,
-                       compress="deflate", tiled=True, blockxsize=256, blockysize=256) as ds:
-        ds.write(arr.astype(dtype), 1)
 
 
 def png(path, arr, title, cmap, vmin=None, vmax=None, label=""):

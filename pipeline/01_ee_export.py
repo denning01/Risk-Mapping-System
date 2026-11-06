@@ -27,6 +27,8 @@ from pipeline.lib import config, fetch  # noqa: E402
 from pipeline.lib.paths import raw_dir  # noqa: E402
 
 CHIRPS = "https://data.chc.ucsb.edu/products/CHIRPS/v2.0"
+SOILGRIDS = "https://files.isric.org/soilgrids/latest/data"
+SOIL_RES = 0.0025   # deg (~280 m), close to SoilGrids' native 250 m
 CHIRPS_LIC = "CHIRPS: public domain (CC0); cite Funk et al. 2015, doi:10.1038/sdata.2015.66"
 
 
@@ -127,6 +129,22 @@ def run(area: str, use_ee: bool, only: set[str] | None):
         print(json.dumps({k: report[key][k] for k in ("shape", "covers_bbox", "min", "max", "nodata_share")}),
               flush=True)
 
+    if want("soilgrids"):
+        # Topsoil texture for hydrologic soil groups (M-04). Thickness-weighted mean over 0-30 cm.
+        layers = (("0-5cm", 5), ("5-15cm", 10), ("15-30cm", 15))
+        for var in ("clay", "sand"):
+            urls = [f"{SOILGRIDS}/{var}/{var}_{d}_mean.vrt" for d, _ in layers]
+            acc = sum(fetch.warp_read(f"/vsicurl/{u}", box, SOIL_RES) * t for u, (_, t) in zip(urls, layers))
+            pct = (acc / sum(t for _, t in layers) / 10.0).astype("float32")   # g/kg -> %
+            dest = fetch.write_wgs84(pct, box, SOIL_RES, out / f"soilgrids_{var}_0-30cm.tif")
+            report[f"soilgrids_{var}"] = fetch.sidecar(
+                dest, product=f"SoilGrids 2.0 {var} content, thickness-weighted mean 0-30 cm (%)", sources=urls,
+                bbox=box, native_scale="250 m (Interrupted Goode Homolosine), resampled bilinear to 0.0025 deg",
+                licence="ISRIC SoilGrids 2.0, Poggio et al. 2021, doi:10.5194/soil-7-217-2021; CC BY 4.0",
+                note="units: percent by mass (g/kg / 10); weights 5/10/15 cm")
+            print(json.dumps({k: report[f"soilgrids_{var}"][k] for k in ("shape", "covers_bbox", "min", "max",
+                                                                         "nodata_share")}), flush=True)
+
     cache = out / "_cache"
     jobs = []
     if want("chirps_daily"):
@@ -162,6 +180,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("area")
     ap.add_argument("--no-ee", action="store_true", help="direct downloads (EE not authenticated)")
-    ap.add_argument("--only", nargs="*", help="dem worldcover jrc worldpop chirps_daily chirps_monthly")
+    ap.add_argument("--only", nargs="*", help="dem worldcover jrc worldpop soilgrids chirps_daily chirps_monthly")
     a = ap.parse_args()
     run(a.area, use_ee=not a.no_ee, only=set(a.only) if a.only else None)
