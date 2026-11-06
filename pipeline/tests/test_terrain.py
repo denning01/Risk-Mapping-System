@@ -136,3 +136,16 @@ def test_flowdir_on_disk_keeps_pysheds_codes_and_uses_a_free_nodata():
     assert terrain.FDIR_NODATA not in (64, 128, 1, 2, 4, 8, 16, 32, 0, -1, -2)
     keep = np.isfinite(dem)
     np.testing.assert_array_equal(disk[keep], out["fdir"][keep].astype(np.int16))
+
+
+def test_upstream_mean_excludes_nan_cells_from_the_count():
+    """F3.17: NaN inputs (gaps) must drop out of numerator AND denominator. A field that is 7 where defined and
+    NaN on the whole west half must still average 7 everywhere downstream — counting NaN as 0 would give ~3.5."""
+    dem = valley()
+    t = Affine(DX, 0, 0, 0, -DX, 0)
+    out = terrain.hydro(dem, t, "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    vals = np.full(dem.shape, 7.0)
+    vals[:, :10] = np.nan
+    m = terrain.upstream_mean(out["fdir"], t, "EPSG:32736", vals)
+    np.testing.assert_allclose(m[1:-1, 10], 7.0)            # channel: mixes NaN-west and 7-east upstream areas
+    assert np.isnan(m[5, 3])                                 # a west cell whose whole upstream area is NaN
