@@ -199,3 +199,18 @@ def test_fill_depressions_fills_to_the_spill_level_and_leaves_outlets_alone():
     np.testing.assert_allclose(out[mask], dem[mask])
     lake = np.zeros_like(dem, bool); lake[4, 5] = True
     np.testing.assert_allclose(terrain.fill_depressions(dem, outlet=lake), dem)   # an outlet is never raised
+
+
+def test_hand_is_measured_from_the_raw_dem_not_the_filled_one_inside_a_depression():
+    """F2.10: a 3 m pit on the valley side is filled to its spill level; HAND there must use the pit's RAW
+    elevation (lower), not the filled surface, or the depression looks safer than it is."""
+    dem = valley()
+    pit = (20, 5)
+    dem[pit] -= 3.0                             # neighbours ~ +-0.5 m, so this is a closed depression
+    out = terrain.hydro(dem, Affine(DX, 0, 0, 0, -DX, 0), "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    assert out["cond"][pit] > dem[pit] + 2.0    # it really was filled
+    r, c = np.unravel_index(out["hand_index"][pit], dem.shape)
+    assert out["hand"][pit] == pytest.approx(max(dem[pit] - out["cond"][r, c], 0.0), abs=1e-9)
+    assert out["hand"][pit] < out["hand_filled"][pit] - 1.0   # here 0.0 vs 2.0
+    # outside the depression nothing changes
+    np.testing.assert_allclose(out["hand"][30, 1:-1], out["hand_filled"][30, 1:-1], atol=1e-9)

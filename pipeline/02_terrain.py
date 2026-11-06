@@ -153,6 +153,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     write(out / "drainage.tif", h["drainage"], grid, "uint8", 255)
     write(out / "perm_water.tif", perm, grid, "uint8", 255)
     write(out / "hand.tif", h["hand"], grid)
+    write(out / "hand_filled.tif", h["hand_filled"], grid)  # F2.10: pysheds HAND on the filled DEM, for comparison
     write(out / "hand_index.tif", h["hand_index"], grid, "int64", -1)
     write(out / "slope.tif", slope, grid)
     png(out / "terrain_hand.png", h["hand"], f"{cfg['name']} HAND (m), channels >= {channel_km2} km²",

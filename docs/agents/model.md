@@ -93,3 +93,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   then BFS routing of flats toward cells whose path terminates at an edge/outlet/nodata. Check routing by
   WALKING the main stem to the mouth and comparing upstream area to a published basin area — a pretty
   HAND map does not prove connectivity.
+- 2026-11-06 (F2.10) pysheds compute_hand measures on the FILLED surface: inside a filled depression HAND is
+  overstated by the fill depth (Kano plain: up to 20.9 m), so depressions look safe. hand = raw dem − filled
+  elevation of the drainage cell (via hand_index), floored at 0; hand_filled.tif kept for comparison.
+  Also: audit:findings ignores any `Fx.y CLOSED` line containing "routed"/"routing" (anti-hand-off rule) —
+  say "flow path" in a CLOSED line about flow routing.

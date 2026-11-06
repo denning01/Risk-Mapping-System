@@ -167,15 +167,24 @@ def hydro(dem: np.ndarray, transform: Affine, crs: str, channel_km2: float,
     if extra_drainage is not None:
         drainage |= extra_drainage
     dmask = Raster(drainage, viewfinder=fdir.viewfinder)
-    hand = g.compute_hand(fdir, cond, dmask)
+    hand_filled = np.asarray(g.compute_hand(fdir, cond, dmask), dtype="float64")
     # flat index of the drainage cell each cell's HAND is measured against (-1 where none)
     hidx = np.asarray(g.compute_hand(fdir, cond, dmask, return_index=True, nodata_out=-1)).astype("int64")
+    # F2.10: HAND from the RAW surface. pysheds measures on the filled DEM, which overstates HAND inside a filled
+    # depression by its fill depth (up to 20.9 m on the Kano plain), making closed depressions look SAFER than they
+    # are. hand = raw dem of the cell - filled elevation of its drainage cell, floored at 0 (a cell below its drain
+    # level sits in a depression that ponds first).
+    cond_a2 = np.asarray(cond, dtype="float64")
+    ok = (hidx >= 0) & np.isfinite(dem) & (dem != NODATA) & np.isfinite(hand_filled)
+    hand = np.full(dem.shape, np.nan)
+    hand[ok] = np.maximum(dem[ok] - cond_a2.ravel()[hidx[ok]], 0.0)
     cond_out = np.asarray(cond, dtype="float64").copy()
     # F3.5: never let the -9999 sentinel reach a reader. Mask by the INPUT DEM's validity: resolve_flats nudges
     # nodata cells by tiny increments, so an exact `== NODATA` test missed 6,694 of 8,317 cells on Nyando.
     cond_out[~np.isfinite(dem) | (dem == NODATA) | (cond_out <= NODATA + 1)] = np.nan
     return {"cond": cond_out, "fdir": np.asarray(fdir), "acc": np.asarray(acc),
-            "channels": channels, "drainage": drainage, "sinks": sinks, "flats_routed": flats_routed, "hand_index": hidx, "hand": np.asarray(hand, dtype="float64"), "cell_km2": cell_km2}
+            "channels": channels, "drainage": drainage, "sinks": sinks, "flats_routed": flats_routed, "hand_index": hidx, "hand": hand,
+            "hand_filled": hand_filled, "cell_km2": cell_km2}
 
 
 FDIR_NODATA = -32768   # F3.6: pysheds emits -1 (pit), -2 (flat), 0 (nodata) as real codes; never use them as the tag
