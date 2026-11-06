@@ -153,13 +153,20 @@ def check(area: str) -> dict:
         a = np.array(line)
         ax.plot(a[:, 0], a[:, 1], color="cyan", lw=1.8)
     if pts:
-        ins = sum(_inside(bbox, x, y) for x, y in pts)
+        # F1.4: share inside by LENGTH in UTM metres (vertex counts depend on how densely a way is mapped)
+        from pyproj import Transformer
+        from shapely import LineString, box as sbox, ops
+        to_utm = Transformer.from_crs(4326, cfg["utm_epsg"], always_xy=True).transform
+        geoms = [ops.transform(to_utm, LineString(line)) for line in lines if len(line) > 1]
+        aoi_utm = ops.transform(to_utm, sbox(*bbox).segmentize(0.001))
+        total = sum(g.length for g in geoms)
+        inside = sum(g.intersection(aoi_utm).length for g in geoms)
         west = min(pts, key=lambda p: p[0])
         out["river"] = {"name": RIVER[area], "osm": sorted(f"{h['osm_type']}/{h['osm_id']}" for h in hits),
-                        "vertices": len(pts), "vertices_inside": ins, "share_inside": round(ins / len(pts), 3),
-                        "westmost_vertex": [round(west[0], 4), round(west[1], 4)],
-                        "westmost_to_west_edge_km": round(config._GEOD.inv(w, west[1], west[0], west[1])[2] / 1000
-                                                          * (1 if west[0] >= w else -1), 2)}
+                        "length_km": round(total / 1000, 1), "length_inside_km": round(inside / 1000, 1),
+                        "share_inside_by_length": round(inside / total, 3) if total else None,
+                        # westmost vertex of the mapped ways — NOT necessarily the mouth (F1.3)
+                        "westmost_vertex": [round(west[0], 4), round(west[1], 4)]}
         ax.plot([], [], color="cyan", label=f"{RIVER[area]} ({len(hits)} OSM features via Nominatim)")
     ax.set_xlim(ext[0], ext[1])
     ax.set_ylim(ext[2], ext[3])

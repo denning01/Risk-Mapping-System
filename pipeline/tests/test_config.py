@@ -79,3 +79,50 @@ def test_data_root_env_and_default(monkeypatch, tmp_path):
     assert paths.model_dir("nyando") == tmp_path.resolve() / "processed" / "nyando" / "model"
     monkeypatch.setenv("RMS_DATA", "")
     assert paths.data_root() == (paths.REPO_ROOT.parent / "data").resolve()
+
+
+# --- closes F1.5: the load() guards each get a test ------------------------------------------
+def _write(tmp_path, name, **over):
+    base = {"id": name, "name": "X", "type": "rural", "bbox": "[35, -1, 35.1, -0.9]", "dem": "d",
+            "backtest_event": "{start: a, end: b}", "before_period": "{start: a, end: b}",
+            "user_types": "[farmer]"}
+    base.update(over)
+    (tmp_path / f"{name}.yaml").write_text("".join(f"{k}: {v}\n" for k, v in base.items()))
+
+
+def test_id_must_match_file_name(tmp_path):
+    _write(tmp_path, "x", id="y")
+    with pytest.raises(ValueError, match="file name"):
+        config.load("x", tmp_path)
+
+
+@pytest.mark.parametrize("bbox", ["[35.1, -1, 35, -0.9]", "[35, -0.9, 35.1, -1]"])
+def test_bbox_order_west_south_east_north(tmp_path, bbox):
+    _write(tmp_path, "x", bbox=bbox)
+    with pytest.raises(ValueError, match="west, south, east, north"):
+        config.load("x", tmp_path)
+
+
+def test_equator_belongs_to_the_north():
+    assert config.utm_epsg(35.0, 0.0) == 32636   # lat 0.0 is northern-hemisphere UTM (326zz)
+    assert config.utm_epsg(35.0, -1e-9) == 32736
+
+
+# --- F1.3: the Nyando River mouth (Wikidata Q58792399 P625, qualifier P518=Q1233637 "river mouth") ---
+NYANDO_MOUTH = (34.84887, -0.27878)   # https://www.wikidata.org/wiki/Q58792399 (retrieved 2026-11-06)
+
+
+def _inside(bbox, lon, lat):
+    w, s, e, n = bbox
+    return w <= lon <= e and s <= lat <= n
+
+
+def test_nyando_export_box_contains_the_river_mouth():
+    assert _inside(config.load("nyando")["export_bbox"], *NYANDO_MOUTH)
+
+
+@pytest.mark.xfail(strict=True, reason="bbox is still the audited 34.85 edge; the mouth is 0.12 km west of it. "
+                   "Moves to 34.80 when exposure's areas.json lands on data (operator ruling). strict=True turns "
+                   "this into a failure the moment the bbox moves, so the marker must then be removed.")
+def test_nyando_aoi_contains_the_river_mouth():
+    assert _inside(config.load("nyando")["bbox"], *NYANDO_MOUTH)
