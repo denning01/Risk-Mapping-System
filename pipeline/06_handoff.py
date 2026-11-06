@@ -43,6 +43,22 @@ def sha256(p: Path) -> str:
     return h.hexdigest()
 
 
+def slope_same_run(path: Path, a) -> list:
+    """An untagged slope.tif is accepted only if it was written by the same 02 run as hand.tif: written within 60 s of
+    it, and its p50/p99 equal the slope_deg that run recorded in terrain.json."""
+    hand = path.parent / "hand.tif"
+    tj = json.loads((path.parent / "terrain.json").read_text())
+    rec = next((v["slope_deg"] for v in tj.values() if isinstance(v, dict) and "slope_deg" in v), tj.get("slope_deg"))
+    out = []
+    dt = abs(path.stat().st_mtime - hand.stat().st_mtime)
+    if dt > 60:
+        out.append(f"slope.tif written {dt:.0f} s from hand.tif (> 60 s): not the same 02 run")
+    got = {"p50": float(np.nanpercentile(a, 50)), "p99": float(np.nanpercentile(a, 99))}
+    if rec is None or any(abs(got[k] - rec[k]) > 1e-6 for k in ("p50", "p99")):
+        out.append(f"slope.tif percentiles {got} != terrain.json {rec}")
+    return out
+
+
 def check(path: Path, cfg: dict, kind: str) -> dict:
     with rasterio.open(path) as ds:
         problems = []
@@ -51,6 +67,10 @@ def check(path: Path, cfg: dict, kind: str) -> dict:
         if ds.transform.b or ds.transform.d or abs(ds.transform.a - 30) > 1e-6 or abs(ds.transform.e + 30) > 1e-6:
             problems.append(f"not a north-up 30 m grid: {tuple(ds.transform)[:6]}")
         tags = ds.tags()
+        if kind == "slope" and "dem" not in tags:
+            # slope.tif written before 02 tagged it: prove it is from the SAME 02 run as hand.tif instead of rewriting it
+            problems += slope_same_run(path, ds.read(1))
+            tags = {**tags, "dem": cfg["dem_file"], "calibrated": "false", "provenance": "same 02 run as hand.tif"}
         if tags.get("dem") != cfg["dem_file"]:
             problems.append(f"DEM tag {tags.get('dem')} != configured {cfg['dem_file']} (one DEM per area)")
         if tags.get("calibrated") not in ("false", "true"):
@@ -84,7 +104,7 @@ def main(area: str):
     cfg = config.load(area)
     m = model_dir(area)
     files = [(m / "scenarios" / f"{r}_{e}_depth.tif", "depth") for e in ENSO for r in RAINS]
-    files += [(m / "hand.tif", "hand"), (m / "channels.tif", "channels")]
+    files += [(m / "hand.tif", "hand"), (m / "channels.tif", "channels"), (m / "slope.tif", "slope")]
     missing = [str(p) for p, _ in files if not p.exists()]
     if missing:
         sys.exit(f"REFUSED: missing {missing}")
@@ -121,7 +141,7 @@ def main(area: str):
         f"- **Where:** `$RMS_DATA/processed/{area}/model/` (RMS_DATA default /Users/mac/IGAD/data)",
         f"- **CRS:** EPSG:{cfg['utm_epsg']} (UTM), north-up, 30 m; grid {results[0]['shape'][0]}×{results[0]['shape'][1]} "
         f"(the M-03 export_bbox grid {cfg['export_bbox']}).",
-        f"- **DEM:** {results[0]['dem_product']} (`{cfg['dem_file']}`, same DEM on all 12 files). Licence: "
+        f"- **DEM:** {results[0]['dem_product']} (`{cfg['dem_file']}`, same DEM on all {len(results)} files; slope.tif in degrees, from the same 02 run as hand.tif). Licence: "
         f"{results[0]['dem_licence']}",
         "- **Depth:** float32 metres above ground, **NaN = dry**. Risk per DATA_CONTRACT: < 0.3 low, 0.3–1 medium, > 1 high.",
         f"- **Coverage:** every file covers handoff_bbox {cfg['handoff_bbox']} (densified UTM projection, "
@@ -137,7 +157,7 @@ def main(area: str):
            if list(rf["elnino"]["bbox"]) == list(cfg["bbox"]) else
            f"PROVISIONAL, not a slide number: computed over {rf['elnino']['bbox']}, not the area bbox {cfg['bbox']}."),
         f"- **Produced by** (stamped by the producing run, clean tree): depth rasters — 03_runoff_flood.py at commit "
-        f"{commit_depth}; hand.tif, channels.tif — 02_terrain.py at commit {commit_terrain}.",
+        f"{commit_depth}; hand.tif, channels.tif, slope.tif — 02_terrain.py at commit {commit_terrain}.",
         "- **Known limits:** screening-level HAND + SCS-CN, not a hydraulic model; closed depressions have HAND 0 and "
         "flood in every scenario with depth = h (not pond depth); HAND drain term is the filled level (F2.13).",
         "",

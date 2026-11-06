@@ -141,7 +141,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     write(out / "hand.tif", h["hand"], grid, tags=handoff_tags)
     write(out / "hand_filled.tif", h["hand_filled"], grid)  # F2.10: pysheds HAND on the filled DEM, for comparison
     write(out / "hand_index.tif", h["hand_index"], grid, "int64", -1)
-    write(out / "slope.tif", slope, grid)
+    write(out / "slope.tif", slope, grid, tags=handoff_tags)   # in the hand-off since 2026-11-06 (exposure relocation)
     png(out / "terrain_hand.png", h["hand"], f"{cfg['name']} HAND (m), channels >= {channel_km2} km²",
         "viridis_r", 0, 30, "m")
     png(out / "terrain_slope.png", slope, f"{cfg['name']} slope (deg)", "magma", 0, 30, "deg")

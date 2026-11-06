@@ -133,3 +133,27 @@ def test_handoff_check_refuses_a_raster_built_from_another_dem(tmp_path, monkeyp
             ds.update_tags(calibrated="false", dem=dem)
         problems = h.check(p, cfg, "hand")["problems"]
         assert (problems == []) == ok, (dem, problems)
+
+
+def test_untagged_slope_is_accepted_only_from_the_same_02_run(tmp_path):
+    """Exposure ranks relocation by slope: slope.tif joins the hand-off. A pre-tag slope.tif must come from the same 02
+    run as hand.tif (within 60 s, and terrain.json's p50/p99) or 06 refuses it."""
+    import importlib.util
+    import json
+    import os
+    from pathlib import Path
+
+    import numpy as np
+    spec = importlib.util.spec_from_file_location("ho", Path(__file__).resolve().parents[1] / "06_handoff.py")
+    ho = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ho)
+    a = np.arange(100, dtype="float32").reshape(10, 10)
+    (tmp_path / "slope.tif").write_bytes(b"x")
+    (tmp_path / "hand.tif").write_bytes(b"x")
+    rec = {"p50": float(np.nanpercentile(a, 50)), "p99": float(np.nanpercentile(a, 99))}
+    (tmp_path / "terrain.json").write_text(json.dumps({"slope_deg": rec}))
+    assert ho.slope_same_run(tmp_path / "slope.tif", a) == []
+    assert any("percentiles" in p for p in ho.slope_same_run(tmp_path / "slope.tif", a + 1))
+    t = (tmp_path / "hand.tif").stat().st_mtime
+    os.utime(tmp_path / "slope.tif", (t + 120, t + 120))
+    assert any("not the same 02 run" in p for p in ho.slope_same_run(tmp_path / "slope.tif", a))
