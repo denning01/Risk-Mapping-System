@@ -116,3 +116,20 @@ def scenario_depth(p_mm: float, cn, fdir, transform, crs, hand, hand_index, slop
     h = np.full(hand.shape, np.nan)
     h[ok] = h_drain.ravel()[hand_index[ok]]
     return flood_depth(hand, h, slope, connect_to, exclude), h, q
+
+
+def water_mask(perm, landcover) -> np.ndarray:
+    """Cells that never "flood": JRC occurrence >= 80 % (perm) OR ESA WorldCover 2021 permanent water (class 80).
+    JRC alone missed 5.22 km2 of Lake Victoria margin (JRC 69 %, DEM flattened at 1133.00 m) — M-06."""
+    return np.asarray(perm, bool) | (np.asarray(landcover) == 80)
+
+
+def season_rank(totals: dict, event_year: int, first: int, last: int) -> tuple[int, int]:
+    """Rank (1 = wettest) of event_year among the seasons first..last by area-mean total. Refuses a record with a
+    missing year: F5.3 — a rank over only the files on disk said "5th of 31" when the full 1991-2023 record gives
+    6th of 33 (2021-2022 were not downloaded)."""
+    missing = [y for y in range(first, last + 1) if y not in totals]
+    if missing:
+        raise ValueError(f"season record {first}-{last} is missing {missing}; a rank needs every season")
+    years = sorted((y for y in totals if first <= y <= last), key=lambda y: totals[y], reverse=True)
+    return years.index(event_year) + 1, len(years)

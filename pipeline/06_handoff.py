@@ -97,11 +97,8 @@ def main(area: str):
     tj = json.loads((m / "terrain.json").read_text())
     # The producing commit is what the producing run stamped, not "the last commit touching the script" (a later
     # refactor would claim rasters it never made). Refuse a run with no stamp or with uncommitted pipeline edits.
-    for name, rep in (("runoff_flood.json", rf), ("terrain.json", tj)):
-        pv = rep.get("provenance")
-        if not pv or pv.get("dirty") is not False:
-            sys.exit(f"REFUSED: {name} provenance {pv}: re-run its script from a clean committed tree")
-    commit_depth, commit_terrain = rf["provenance"]["git_commit"], tj["provenance"]["git_commit"]
+    commit_depth = handoff.check_provenance("runoff_flood.json", rf)
+    commit_terrain = handoff.check_provenance("terrain.json", tj)
     cal = rf["k_calibrated"]
     if any(r["calibrated"] != str(cal).lower() for r in results):
         sys.exit(f"REFUSED: raster calibrated tags {sorted({r['calibrated'] for r in results})} != runoff_flood.json {cal}")

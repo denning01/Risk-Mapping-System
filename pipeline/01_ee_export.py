@@ -8,7 +8,7 @@
   jrc_occurrence.tif   JRC Global Surface Water v1.4 occurrence (1984-2021), %, Google Cloud Storage
   worldpop_2020.tif    WorldPop Kenya 2020, 100 m, unconstrained (ken_ppp_2020), worldpop.org
   chirps/daily/        CHIRPS v2.0 Africa daily, 0.05 deg, 2023-10-01..2023-12-31 (event season)
-  chirps/monthly/      CHIRPS v2.0 Africa monthly, Oct/Nov/Dec 1991-2020 (WMO normal) and 2023
+  chirps/monthly/      CHIRPS v2.0 Africa monthly, Oct/Nov/Dec 1991-2023 (1991-2020 = WMO normal; full record for ranks)
 All are clipped to the config's export_bbox (wider than the AOI; see configs/<area>.yaml).
 The Sentinel-1 2023 flood mask needs Earth Engine and is NOT produced on this route.
 """
@@ -155,7 +155,7 @@ def run(area: str, use_ee: bool, only: set[str] | None):
                 jobs.append((f"{CHIRPS}/africa_daily/tifs/p05/2023/{f}", out / "chirps" / "daily" / f"{day}.tif",
                              [day, day]))
     if want("chirps_monthly"):
-        for y in list(range(1991, 2021)) + [2023]:
+        for y in range(1991, 2024):   # F5.3: the FULL record 1991-2023, so a rank is over every season (no gaps)
             for m in (10, 11, 12):
                 last = calendar.monthrange(y, m)[1]
                 jobs.append((f"{CHIRPS}/africa_monthly/tifs/chirps-v2.0.{y}.{m:02d}.tif.gz",

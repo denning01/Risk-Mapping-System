@@ -113,3 +113,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   two versions. 02/03 now refuse when a posted hand-off names the area's rasters, unless --rewrite-posted (only
   after telling the operator "about to rewrite <area> rasters"); re-post the hand-off right after. The hand-off
   table carries FULL sha256 + exact bytes: exposure snapshots and verifies copies against it.
+- 2026-11-06 (F5.3) "Nth wettest of M" over the files on disk is a rank over a GAPPY record (2021-2022 never
+  downloaded): 5th of 31 vs the true 6th of 33. runoff.season_rank refuses a record with a missing year. A guard
+  in a script (water mask, provenance check) needs a test that reaches the script's path, or a check on the
+  real outputs — a unit test of a helper the script could bypass is not enough.

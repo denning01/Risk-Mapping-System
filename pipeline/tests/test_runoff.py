@@ -128,3 +128,19 @@ def test_flood_mask_is_strict_at_the_stage_and_at_15_degrees():
     ch = np.array([[True, False, False]])
     d = runoff.flood_depth(hand, np.full(hand.shape, 1.0), slope, ch, np.zeros(hand.shape, bool))
     assert d[0, 0] == 1.0 and np.isnan(d[0, 1]) and np.isnan(d[0, 2])     # HAND == h dry; slope == 15 dry
+
+
+def test_water_mask_adds_worldcover_water_to_jrc():
+    perm = np.array([True, False, False, False])
+    lc = np.array([30, 80, 90, 10])                      # WorldCover 80 = permanent water; 90 wetland is NOT water
+    np.testing.assert_array_equal(runoff.water_mask(perm, lc), [True, True, False, False])
+
+
+def test_season_rank_refuses_a_record_with_missing_years():
+    totals = {y: float(y % 7) for y in range(1991, 2024)}
+    totals[2023] = 5.5                                     # only years with value 6 are wetter
+    rank, n = runoff.season_rank(totals, 2023, 1991, 2023)
+    assert n == 33 and rank == 1 + sum(v > 5.5 for y, v in totals.items() if y != 2023)
+    del totals[2021], totals[2022]
+    with pytest.raises(ValueError, match=r"missing \[2021, 2022\]"):
+        runoff.season_rank(totals, 2023, 1991, 2023)

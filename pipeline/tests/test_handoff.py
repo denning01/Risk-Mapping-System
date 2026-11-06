@@ -68,3 +68,44 @@ def test_rewriting_rasters_named_by_a_posted_handoff_is_refused(tmp_path, monkey
     with pytest.raises(SystemExit, match="about to rewrite nyando rasters"):
         paths.refuse_if_posted("nyando", allow=False)
     paths.refuse_if_posted("nyando", allow=True)                        # explicit --rewrite-posted
+
+
+def test_margin_counts_every_side():
+    box = config.load("nyando")["handoff_bbox"]
+    tr, w, h = handoff.grid_for(box, 32736, 30.0, pad_px=1)
+    from affine import Affine
+    shrunk = {
+        "west": (Affine(30.0, 0, tr.c + 60, 0, -30.0, tr.f), w - 2, h),
+        "east": (tr, w - 2, h),
+        "north": (Affine(30.0, 0, tr.c, 0, -30.0, tr.f - 60), w, h - 2),
+        "south": (tr, w, h - 2),
+    }
+    for side, (t2, w2, h2) in shrunk.items():
+        assert handoff.margin_px(t2, w2, h2, 32736, box) < 0, side
+
+
+def test_handoff_refuses_dirty_or_unstamped_runs():
+    import pytest
+    assert handoff.check_provenance("x.json", {"provenance": {"git_commit": "abc1234", "dirty": False}}) == "abc1234"
+    for rep in ({}, {"provenance": {"git_commit": "abc1234", "dirty": True}}, {"provenance": {"git_commit": "", "dirty": False}}):
+        with pytest.raises(SystemExit, match="REFUSED"):
+            handoff.check_provenance("x.json", rep)
+
+
+def test_no_posted_nyando_depth_raster_floods_worldcover_water():
+    """F5.4: the WorldCover-80 exclusion, checked on the REAL rasters (a bypass inside 03 would otherwise pass)."""
+    import numpy as np
+    import pytest
+    import rasterio
+    from rasterio.warp import Resampling
+    from pipeline.lib.paths import model_dir, raw_dir
+    from pipeline.lib.rio import grid_of, to_utm
+    m = model_dir("nyando")
+    files = [m / "scenarios" / f"{r}_{e}_depth.tif" for e in ("normal", "elnino") for r in (50, 100, 150, 200, 250)]
+    wc = raw_dir("nyando") / "worldcover_2021.tif"
+    if not wc.exists() or not all(f.exists() for f in files):
+        pytest.skip("Nyando rasters not on this machine")
+    lc, _ = to_utm(wc, 32736, Resampling.mode, like=grid_of(files[0]))
+    for f in files:
+        with rasterio.open(f) as ds:
+            assert not (np.isfinite(ds.read(1)) & (lc == 80)).any(), f

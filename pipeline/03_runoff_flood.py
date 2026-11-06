@@ -86,10 +86,12 @@ def chirps_ratio(area: str, bbox) -> dict:
     clim = np.nanmean(np.stack([totals[y] for y in clim_years]), axis=0)
     ratio = runoff.season_ratio(totals[EVENT_YEAR], clim)
     area_mean = {y: float(np.nanmean(t)) for y, t in totals.items()}
-    rank = sorted(area_mean, key=area_mean.get, reverse=True).index(EVENT_YEAR) + 1
+    rank, n_years = runoff.season_rank(area_mean, EVENT_YEAR, min(totals), EVENT_YEAR)
+    wetter = sorted((y for y in area_mean if area_mean[y] > area_mean[EVENT_YEAR]), key=area_mean.get, reverse=True)
     return {"ratio": round(ratio, 4), "event": f"OND {EVENT_YEAR}", "event_mm": round(area_mean[EVENT_YEAR], 1),
             "clim_mm": round(float(np.nanmean(clim)), 1), "clim_years": [min(clim_years), max(clim_years)],
-            "n_clim_years": len(clim_years), "pixels": n_px, "rank_wettest": rank, "of_years": len(totals),
+            "n_clim_years": len(clim_years), "pixels": n_px, "rank_wettest": rank, "of_years": n_years, "wetter_years": wetter,
+            "wetter_mm": {str(y): round(area_mean[y], 1) for y in wetter},
             "years": [min(totals), max(totals)], "bbox": list(bbox),
             "source": "CHIRPS v2.0 monthly 0.05 deg (Funk et al. 2015, doi:10.1038/sdata.2015.66), UCSB CHC"}
 
@@ -138,7 +140,7 @@ def main(area: str, k: float, alpha: float):
     # Water never "floods": JRC occurrence >= 80 % (perm, from M-03) OR WorldCover 2021 permanent water (class 80).
     # The JRC rule alone let 5.22 km2 of Lake Victoria margin near (34.826, -0.314) — DEM flattened at 1133.00 m,
     # WorldCover 80, JRC occurrence 69 % — show as "flooded" in every scenario (found in the M-06 map).
-    water = perm | (lc == 80)
+    water = runoff.water_mask(perm, lc)
     write(m / "cn.tif", cn, grid)
     write(m / "hsg.tif", np.where(hsg < 0, 255, hsg.astype("int16")), grid, "uint8", 255)
 
@@ -187,12 +189,32 @@ def main(area: str, k: float, alpha: float):
     print(json.dumps({k_: report[k_] for k_ in ("aoi_landcover_share", "aoi_hsg_share", "aoi_cn", "elnino")}, indent=1))
 
 
+def elnino_only(area: str):
+    """Refresh runoff_flood.json["elnino"] (ratio, rank) without touching any raster. The ratio itself is applied
+    to the posted depth rasters; refuse if it changed (that would need a full, announced rewrite)."""
+    cfg = config.load(area)
+    f = model_dir(area) / "runoff_flood.json"
+    rep = json.loads(f.read_text())
+    new = chirps_ratio(area, cfg["bbox"])
+    if new["ratio"] != rep["elnino"]["ratio"]:
+        sys.exit(f"REFUSED: ratio {rep['elnino']['ratio']} -> {new['ratio']} changes the depth rasters; full re-run needed")
+    new["provenance"] = provenance()
+    rep["elnino"] = new
+    f.write_text(json.dumps(rep, indent=2))
+    print(json.dumps(new, indent=1))
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("area")
     ap.add_argument("--k", type=float, default=K_PROVISIONAL)
     ap.add_argument("--alpha", type=float, default=ALPHA)
     ap.add_argument("--rewrite-posted", action="store_true", help="operator was told 'about to rewrite <area> rasters'")
+    ap.add_argument("--elnino-only", action="store_true",
+                    help="recompute only the El Nino block of runoff_flood.json; writes NO raster")
     a = ap.parse_args()
-    refuse_if_posted(a.area, a.rewrite_posted)
-    main(a.area, a.k, a.alpha)
+    if a.elnino_only:
+        elnino_only(a.area)
+    else:
+        refuse_if_posted(a.area, a.rewrite_posted)
+        main(a.area, a.k, a.alpha)

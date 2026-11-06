@@ -42,3 +42,13 @@ def grid_for(bbox_wgs84, crs, res: float, pad_px: int = 1):
     w = math.ceil((bx1 + pad_px * res - x0) / res)
     h = math.ceil((y1 - (by0 - pad_px * res)) / res)
     return Affine(res, 0, x0, 0, -res, y1), w, h
+
+
+def check_provenance(name: str, report: dict) -> str:
+    """The producing run's stamp must exist and be clean; returns its commit. A dirty or unstamped run cannot be
+    traced to code, so the hand-off refuses it (SystemExit)."""
+    import sys
+    pv = report.get("provenance")
+    if not pv or pv.get("dirty") is not False or not pv.get("git_commit"):
+        sys.exit(f"REFUSED: {name} provenance {pv}: re-run its script from a clean committed tree")
+    return pv["git_commit"]
