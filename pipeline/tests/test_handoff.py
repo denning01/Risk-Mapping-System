@@ -109,3 +109,27 @@ def test_no_posted_nyando_depth_raster_floods_worldcover_water():
     for f in files:
         with rasterio.open(f) as ds:
             assert not (np.isfinite(ds.read(1)) & (lc == 80)).any(), f
+
+
+def test_handoff_check_refuses_a_raster_built_from_another_dem(tmp_path, monkeypatch):
+    """Operator ruling 2026-11-06: never mix DEMs within one area."""
+    import importlib.util
+    from pathlib import Path
+    import numpy as np
+    import rasterio
+    from affine import Affine
+    spec = importlib.util.spec_from_file_location("h", Path(__file__).resolve().parents[1] / "06_handoff.py")
+    h = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(h)
+    monkeypatch.setenv("RMS_DATA", str(tmp_path))
+    cfg = config.load("nairobi")                                      # dem_file = dem_fabdem.tif
+    tr, w, hh = handoff.grid_for(cfg["handoff_bbox"], cfg["utm_epsg"], 30.0, pad_px=2)
+    p = tmp_path / "processed" / "nairobi" / "model" / "hand.tif"
+    p.parent.mkdir(parents=True)
+    for dem, ok in (("dem_fabdem.tif", True), ("dem_glo30.tif", False)):
+        with rasterio.open(p, "w", driver="GTiff", height=hh, width=w, count=1, dtype="float32",
+                           crs=f"EPSG:{cfg['utm_epsg']}", transform=tr, nodata=np.nan) as ds:
+            ds.write(np.zeros((1, hh, w), "float32"))
+            ds.update_tags(calibrated="false", dem=dem)
+        problems = h.check(p, cfg, "hand")["problems"]
+        assert (problems == []) == ok, (dem, problems)

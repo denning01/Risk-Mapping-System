@@ -120,8 +120,9 @@ def run(area: str, use_ee: bool, only: set[str] | None):
         ("dem", "dem_fabdem.tif", fabdem_urls(box), "FABDEM V1-2 (Copernicus GLO-30 with forests and buildings removed)",
          "1 arcsec (~30 m)",
          # from the tiles' own LICENCE tag (read 2026-11-06): non-commercial only
-         "The FABDEM dataset is freely available for non-commercial use under a Creative Commons \"CC BY-NC-SA 4.0\" "
-         "licence (University of Bristol and Fathom); doi:10.5523/bris.s5hqmjcdj8yo2ibzi9b4ew3sn",
+         "FABDEM V1-2, CC BY-NC-SA 4.0, (c) University of Bristol / Fathom — non-commercial use only (tile LICENCE tag: "
+         "\"freely available for non-commercial use under a Creative Commons CC BY-NC-SA 4.0 licence\"); "
+         "doi:10.5523/bris.s5hqmjcdj8yo2ibzi9b4ew3sn",
          ["2011-01-01", "2015-12-31"]) if fabdem else
         ("dem", "dem_glo30.tif", glo30_urls(box), "Copernicus DEM GLO-30 (DSM)", "1 arcsec (~30 m)",
          "Copernicus DEM (c) DLR e.V. 2010-2014 and (c) Airbus 2014-2018, provided under COPERNICUS by the "

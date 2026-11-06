@@ -51,6 +51,8 @@ def check(path: Path, cfg: dict, kind: str) -> dict:
         if ds.transform.b or ds.transform.d or abs(ds.transform.a - 30) > 1e-6 or abs(ds.transform.e + 30) > 1e-6:
             problems.append(f"not a north-up 30 m grid: {tuple(ds.transform)[:6]}")
         tags = ds.tags()
+        if tags.get("dem") != cfg["dem_file"]:
+            problems.append(f"DEM tag {tags.get('dem')} != configured {cfg['dem_file']} (one DEM per area)")
         if tags.get("calibrated") not in ("false", "true"):
             problems.append(f"no calibrated tag (tags {sorted(tags)})")
         m = handoff.margin_px(ds.transform, ds.width, ds.height, ds.crs, cfg["handoff_bbox"])
@@ -64,7 +66,8 @@ def check(path: Path, cfg: dict, kind: str) -> dict:
                 problems.append(f"negative depth {np.nanmin(a)}")
         out = {"file": str(path.relative_to(model_dir(cfg["id"]))), "crs": f"EPSG:{ds.crs.to_epsg()}",
                "shape": [ds.height, ds.width], "dtype": ds.dtypes[0], "nodata": str(ds.nodata),
-               "margin_px": round(m, 1), "calibrated": tags.get("calibrated"), "sha256": sha256(path), "bytes": path.stat().st_size, "problems": problems}
+               "margin_px": round(m, 1), "calibrated": tags.get("calibrated"), "dem_product": tags.get("dem_product"),
+               "dem_licence": tags.get("dem_licence"), "sha256": sha256(path), "bytes": path.stat().st_size, "problems": problems}
         if kind == "depth":
             # flooded area inside handoff_bbox, for exposure to cross-check its own count
             from pyproj import Transformer
@@ -115,6 +118,8 @@ def main(area: str):
         f"- **Where:** `$RMS_DATA/processed/{area}/model/` (RMS_DATA default /Users/mac/IGAD/data)",
         f"- **CRS:** EPSG:{cfg['utm_epsg']} (UTM), north-up, 30 m; grid {results[0]['shape'][0]}×{results[0]['shape'][1]} "
         f"(the M-03 export_bbox grid {cfg['export_bbox']}).",
+        f"- **DEM:** {results[0]['dem_product']} (`{cfg['dem_file']}`, same DEM on all 12 files). Licence: "
+        f"{results[0]['dem_licence']}",
         "- **Depth:** float32 metres above ground, **NaN = dry**. Risk per DATA_CONTRACT: < 0.3 low, 0.3–1 medium, > 1 high.",
         f"- **Coverage:** every file covers handoff_bbox {cfg['handoff_bbox']} (densified UTM projection, "
         f"{handoff.DENSIFY} pts/edge) by ≥ {handoff.MIN_MARGIN_PX:.0f} px; smallest margin here "

@@ -127,7 +127,10 @@ def main(area: str, channel_km2: float, sweep: bool):
     report["chosen_vs_osm"] = channel_vs_osm(acc_km2, (channel_km2,), osm, aoi, h["fdir"])[0]
     # Hand-off rasters (AGENTS.md model -> exposure) carry their provenance; calibrated=false until M-05 (operator ruling
     # 2026-11-06): HAND/channels are not calibrated themselves, but every hand-off raster says where calibration stands.
-    handoff_tags = {"calibrated": "false", "git_commit": report["provenance"]["git_commit"],
+    dem_side = json.loads((raw_dir(area) / cfg["dem_file"]).with_suffix(".json").read_text())
+    report["dem"] = {"file": cfg["dem_file"], "product": dem_side["product"], "licence": dem_side["licence"]}
+    handoff_tags = {"calibrated": "false", "dem": cfg["dem_file"], "dem_product": dem_side["product"],
+                    "dem_licence": dem_side["licence"], "git_commit": report["provenance"]["git_commit"],
                     "dirty": report["provenance"]["dirty"], "producer": "pipeline/02_terrain.py"}
     write(out / "dem_cond.tif", h["cond"], grid)
     write(out / "flowdir.tif", terrain.fdir_for_disk(h["fdir"], dem), grid, "int16", terrain.FDIR_NODATA)

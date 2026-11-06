@@ -121,6 +121,10 @@ def main(area: str, k: float, alpha: float):
     cfg = config.load(area)
     m, raw = model_dir(area), raw_dir(area)
     grid = grid_of(m / "hand.tif")
+    # One DEM per area (operator ruling 2026-11-06): the terrain this run builds on must come from the configured DEM.
+    dem = json.loads((m / "terrain.json").read_text()).get("dem") or {}
+    if dem.get("file") != cfg["dem_file"]:
+        sys.exit(f"REFUSED: terrain built from {dem.get('file')} but config says {cfg['dem_file']}; re-run 02 first")
     epsg = cfg["utm_epsg"]
     hand = read(m / "hand.tif")
     hidx = read(m / "hand_index.tif").astype("int64")
@@ -166,7 +170,8 @@ def main(area: str, k: float, alpha: float):
             depth, h, q = runoff.scenario_depth(p, cn, fd, grid["transform"], grid["crs"], hand, hidx, slope,
                                                 channels | water, water, k, alpha, cell_km2)
             write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid,
-                  tags={"calibrated": "false", "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
+                  tags={"calibrated": "false", "dem": dem["file"], "dem_product": dem["product"],
+                        "dem_licence": dem["licence"], "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
                         "elnino_ratio": ratio, "git_commit": report["provenance"]["git_commit"],
                         "dirty": report["provenance"]["dirty"], "producer": "pipeline/03_runoff_flood.py",
                         "units": "m", "nodata": "NaN = dry"})
