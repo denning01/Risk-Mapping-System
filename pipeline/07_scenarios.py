@@ -171,6 +171,24 @@ def raster_covers_bbox(transform, shape_hw, crs, bbox, n=50) -> tuple[bool, str]
     return (not bad, f"bbox {bbox} not covered by raster; uncovered by {bad}" if bad else "covered")
 
 
+def aoi_mask(shape_hw, transform, crs, bbox) -> np.ndarray:
+    """True for cells whose CENTRE lies inside the lon/lat bbox (edges densified before projecting).
+    Everything counted or drawn (flood polygons, km2, shelter safety) is restricted to the AOI: a model
+    raster may cover a larger export box (nyando model grid: [34.7, -0.65, 35.9, 0.15] vs AOI [34.80, -0.45, 35.30, 0])."""
+    from shapely.geometry import box
+    poly = reproject(box(*bbox).segmentize(0.001), "EPSG:4326", crs)
+    return rasterize([(poly, 1)], out_shape=shape_hw, transform=transform, fill=0, dtype="uint8",
+                     all_touched=False).astype(bool)
+
+
+def _population_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("pop05", Path(__file__).resolve().parent / "05_population.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
 def shelters_safety(shelters: list[dict], depth: np.ndarray, transform, crs) -> list[dict]:
     """safe = the shelter's cell is not flooded. A shelter OUTSIDE the raster has no flood information,
     so it is conservatively safe=False and flagged in `_outside` (stripped before writing)."""
@@ -246,6 +264,93 @@ def cmd_standin(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------------------------
+# snapshot: freeze a model hand-off before reading it (the model may rewrite its directory at any time)
+# ---------------------------------------------------------------------------------------------
+import re as _re
+
+_ROW = _re.compile(r"^\|\s*`(?P<path>[^`]+)`\s*\|\s*(?P<km2>[\d.]+|–|-)\s*\|[^|]*\|\s*(?P<bytes>[\d,]+)\s*\|\s*`(?P<sha>[0-9a-f]+)")
+
+
+def parse_handoff(text: str) -> dict:
+    """{relative path: {"bytes": int, "sha_prefix": str, "km2": float|None}} from a hand-off markdown table."""
+    rows = {}
+    for line in text.splitlines():
+        m = _ROW.match(line.strip())
+        if m:
+            km2 = m["km2"]
+            rows[m["path"]] = {"bytes": int(m["bytes"].replace(",", "")), "sha_prefix": m["sha"],
+                               "km2": None if km2 in ("–", "-") else float(km2)}
+    return rows
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def snapshot(model_dir: Path, handoff: Path, out_root: Path) -> Path:
+    """Copy the hand-off's depth rasters into out_root/<git_commit tag>/, verifying size and sha256 ON THE COPIES
+    against the hand-off table. Raises (and leaves nothing behind) on any mismatch or mixed commits."""
+    import shutil
+    import tempfile
+    text = handoff.read_text()
+    table = parse_handoff(text)
+    want = [f"scenarios/{k}_depth.tif" for k in scenario_keys()]
+    missing = [w for w in want if w not in table]
+    if missing:
+        raise ValueError(f"hand-off table lacks {missing}")
+    out_root.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".snap-", dir=out_root))
+    try:
+        commits, shas = set(), {}
+        for rel in want:
+            dst = tmp / Path(rel).name
+            shutil.copyfile(model_dir / rel, dst)
+            sha, size = _sha256(dst), dst.stat().st_size
+            exp = table[rel]
+            if size != exp["bytes"] or not sha.startswith(exp["sha_prefix"]):
+                raise ValueError(f"{rel}: copy is {size} B sha256 {sha[:16]}, hand-off says {exp['bytes']} B "
+                                 f"{exp['sha_prefix']} — the model directory changed; nothing kept")
+            with rasterio.open(dst) as ds:
+                commits.add(ds.tags().get("git_commit"))
+            shas[rel] = sha
+        if len(commits) != 1 or None in commits:
+            raise ValueError(f"depth rasters carry git_commit tags {commits}; expected exactly one")
+        commit = commits.pop()
+        (tmp / "handoff.md").write_text(text)
+        (tmp / "snapshot.json").write_text(json.dumps({"from": str(model_dir), "handoff": str(handoff),
+                                                       "git_commit": commit, "sha256": shas,
+                                                       "handoff_km2": {r: table[r]["km2"] for r in want}}, indent=1))
+        final = out_root / commit
+        if final.exists():
+            old = json.loads((final / "snapshot.json").read_text())["sha256"]
+            if old != shas:
+                raise ValueError(f"{final} exists with different contents")
+            shutil.rmtree(tmp)
+        else:
+            tmp.rename(final)
+        return final
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def cmd_snapshot(args) -> int:
+    out_root = rms_data() / "processed" / args.area / "exposure" / "model_snapshot"
+    try:
+        d = snapshot(Path(args.model_dir), Path(args.handoff), out_root)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    print(f"snapshot {d}  (all 10 depth rasters: size + sha256 match the hand-off table on the copies)")
+    return 0
+
+
 def cmd_write(args) -> int:
     data_dir, depth_dir = Path(args.data_dir), Path(args.depth_dir)
     scen_dir = data_dir / args.area / "scenarios"
@@ -264,9 +369,47 @@ def cmd_write(args) -> int:
         if not ok:
             print(f"ERROR: {key}_depth.tif: {why}; nothing written", file=sys.stderr)
             return 1
+    if args.population and not (args.population_mode and args.population_weight):
+        print("ERROR: --population needs --population-mode A|B and --population-weight worldpop|buildings "
+              "(no defaults: each is a ruling)", file=sys.stderr)
+        return 1
+    if args.population_weight == "buildings" and not args.buildings:
+        print("ERROR: --population-weight buildings needs --buildings", file=sys.stderr)
+        return 1
     problems = []
+    snap = depth_dir / "snapshot.json"
+    handoff_km2 = json.loads(snap.read_text())["handoff_km2"] if snap.exists() else {}
+    if handoff_km2:
+        print(f"second method: flooded km2 compared with the hand-off table ({snap})")
+    mask = grid = pop = people = bld = None
+    if args.population or args.buildings:
+        pop = _population_module()
+    pdir = rms_data() / "processed" / args.area / "exposure"
+    if args.population:
+        pman = json.loads((pdir / "population_manifest.json").read_text())
+        wp_people, wp_tf = pop.read_people(pdir / "worldpop_2020_aoi.tif")
+        with rasterio.open(pdir / "county_id_aoi.tif") as cds:
+            wp_ids = cds.read(1)
+        print(f"population: {pman['unit']} {pman['year']} projection {pman['projection']}; mode written: "
+              f"{args.population_mode} ({pman['modes'][args.population_mode]})")
+    if args.buildings:
+        bld = dict(np.load(pdir / "open_buildings_aoi.npz"))
+        print(f"buildings: {len(bld['lon']):,} Open Buildings points in bbox, counted at {pop.OB_PRECISION} % precision")
     for key in scenario_keys():
         depth, tf, crs, tags = _read(depth_dir / f"{key}_depth.tif")
+        if grid != (tf, str(crs), depth.shape):
+            grid = (tf, str(crs), depth.shape)
+            mask = aoi_mask(depth.shape, tf, crs, bbox)
+            print(f"AOI mask: {int(mask.sum())} of {mask.size} cells ({mask.sum() * abs(tf.a * tf.e) / 1e6:.1f} km2)")
+            if args.population:
+                from rasterio.features import geometry_mask
+                from shapely.geometry import box
+                people = pop.people_on_grid(wp_people, wp_tf, depth.shape, tf, crs)
+                county = pop.ids_on_grid(wp_ids, wp_tf, depth.shape, tf, crs)
+                native = float(wp_people[~geometry_mask([box(*bbox)], out_shape=wp_people.shape, transform=wp_tf)].sum())
+                print(f"  WorldPop 2020 in AOI: native grid {native:,.0f}  on flood grid {people[mask].sum():,.0f}  "
+                      f"({people[mask].sum() / native - 1:+.3%})")
+        depth = np.where(mask, depth, np.nan)
         is_mock = tags.get("MOCK") == "1"
         arrival = None
         ap = depth_dir / f"{key}_arrival.tif"
@@ -282,8 +425,20 @@ def cmd_write(args) -> int:
         if args.source == "model" and (is_mock or carried_mock):
             raise SystemExit(f"{key}: --source model refused: depth MOCK={is_mock}, carried exposure "
                              f"source={exp_old.get('source')!r}")
+        population, year, buildings = exp_old["population"], exp_old["year"], exp_old["buildings"]
+        wet = classify_risk(depth) > 0          # depth is already NaN outside the AOI
+        both = w2 = None
+        if args.population:
+            both = pop.exposed_both_ways(pop.exposed_by_county(people, county, wet), pman)
+            if bld is not None:
+                w2 = pop.exposed_building_weighted(bld, wet, county, mask, tf, crs, pman)
+            chosen = w2 if args.population_weight == "buildings" else both
+            population = chosen[args.population_mode]
+            year = pman["year"]
+        if bld is not None:
+            buildings = pop.buildings_in_wet(bld, wet, tf, crs)
         exposure = {
-            "year": exp_old["year"], "population": exp_old["population"], "buildings": exp_old["buildings"],
+            "year": year, "population": population, "buildings": buildings,
             "flooded_area_km2": round(st["flooded_area_m2"] / 1e6, 2), "roads_cut": exp_old["roads_cut"],
             "source": args.source,
         }
@@ -303,9 +458,17 @@ def cmd_write(args) -> int:
         _dump(scen_dir / f"{key}.shelters.json", shelters)
         _dump(scen_dir / f"{key}.routes.json", routes)
         c = st["cells_by_risk"]
+        hk = handoff_km2.get(f"scenarios/{key}_depth.tif")
+        if hk is not None and abs(st["flooded_area_m2"] / 1e6 - hk) > 0.01:
+            problems.append(f"{key}: flooded {st['flooded_area_m2'] / 1e6:.2f} km2 != hand-off table {hk} km2")
         print(f"{key:<12}{len(feats):>5}{c['low']:>8}/{c['medium']}/{c['high']:<7}"
               f"{st['flooded_area_m2']/1e6:>9.2f}{st['polygon_area_m2']/1e6:>9.2f}"
-              f"{len(safe_ids):>5}/{len(shelters):<4}{kb:>12.1f}")
+              f"{len(safe_ids):>5}/{len(shelters):<4}{kb:>12.1f}"
+              + (f"   people A {both['A']['low']:,}/{both['A']['medium']:,}/{both['A']['high']:,}"
+                 f"  B {both['B']['low']:,}/{both['B']['medium']:,}/{both['B']['high']:,}"
+                 + (f"  | W2 A {w2['A']['medium']:,} B {w2['B']['low']:,}/{w2['B']['medium']:,}/{w2['B']['high']:,}" if w2 else "")
+                 + f"  [wrote {args.population_weight}/{args.population_mode}]" if both else "")
+              + (f"   buildings {buildings:,}" if bld is not None else ""))
         if kb > args.max_kb:
             problems.append(f"{key}: geojson {kb:.0f} KiB exceeds --max-kb {args.max_kb}")
     print(f"\n{len(problems)} warning(s)")
@@ -323,6 +486,11 @@ def main(argv=None) -> int:
     s.add_argument("--out-dir", default=None)
     s.add_argument("--res", type=float, default=30.0)
     s.set_defaults(fn=cmd_standin)
+    n = sub.add_parser("snapshot", help="copy + sha256-verify a model hand-off's depth rasters before use")
+    n.add_argument("--area", required=True, choices=["nairobi", "nyando"])
+    n.add_argument("--model-dir", required=True)
+    n.add_argument("--handoff", required=True)
+    n.set_defaults(fn=cmd_snapshot)
     w = sub.add_parser("write", help="depth rasters -> contract files for all 20 scenarios")
     w.add_argument("--area", required=True, choices=["nairobi", "nyando"])
     w.add_argument("--depth-dir", required=True)
@@ -331,6 +499,14 @@ def main(argv=None) -> int:
     w.add_argument("--simplify-m", type=float, default=15.0, help="Douglas-Peucker tolerance in metres")
     w.add_argument("--arrival-bin-h", type=float, default=1.0)
     w.add_argument("--max-kb", type=float, default=3072, help="warn above this geojson size")
+    w.add_argument("--population", action="store_true",
+                   help="exposed people from 05_population.py prepare output (else carried from the existing file)")
+    w.add_argument("--population-mode", choices=["A", "B"], default=None,
+                   help="A: population.json unit factor everywhere; B: per-county factors (required with --population)")
+    w.add_argument("--population-weight", choices=["worldpop", "buildings"], default=None,
+                   help="dasymetric weight inside each county's part of the AOI (required with --population)")
+    w.add_argument("--buildings", action="store_true",
+                   help="buildings at risk from 05_population.py buildings output (else carried)")
     w.set_defaults(fn=cmd_write)
     args = p.parse_args(argv)
     return args.fn(args)

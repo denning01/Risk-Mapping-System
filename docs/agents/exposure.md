@@ -79,3 +79,14 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (E-03) Take an origin's coordinates from its OSM feature (by id), never type them. A large OSM area's
   representative point can sit far from any road (West Kano scheme: 605 m from the drive graph), so check the snap
   distance to both graphs before choosing it. "X market" in mock data is not evidence that an OSM marketplace exists.
+- 2026-11-06 (E-04) A flood model's raster can cover a bigger box than the AOI: mask to the AOI BEFORE counting km2,
+  people or buildings (aoi_mask). A test whose rounded output hides a 12-vs-8 cell difference is not a test.
+- 2026-11-06 (E-04/E-06) Never read a model directory in place: it was rewritten mid-run (10:38-10:39) and produced a
+  silent mix of two model versions. `07_scenarios.py snapshot` copies + sha256-checks first; read only the copy.
+- 2026-11-06 (E-04) Unconstrained WorldPop (ken_ppp_2020) puts ~41 % of Nyando's people in pixels with no building, so
+  flood exposure in farmland came out ~6x too high (16 vs 2-3 people per flooded building). Sanity-check people per
+  flooded building against the AOI average. Weight by building footprint area (W2) instead.
+- 2026-11-06 (E-04) A rural AOI can span several counties (Nyando: Kisumu 47 %, Kericho 40 %); population.json has one.
+  Measure the county shares before scaling. data.worldpop.org has no HTTP range support and drops long downloads:
+  start the 300 MB national file early; the 1 km aggregate (3 MB) is enough for county-level sums.
+- 2026-11-06 Use `date` for ROUND timestamps; a guessed timestamp needed an erratum.
