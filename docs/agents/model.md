@@ -109,3 +109,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (M-06) JRC occurrence >= 80 % misses lake margins: 5.22 km² of Lake Victoria (WorldCover 80, GLO-30
   flattened at 1133.00 m, JRC 69 %) showed as "flooded" in every scenario. Water = JRC >= 80 OR WorldCover 80.
   A flood patch with straight edges and one DEM value is a water body, not a floodplain — look at the map.
+- 2026-11-06 (operator ruling) Rewriting hand-off rasters in place while exposure read them gave exposure a mix of
+  two versions. 02/03 now refuse when a posted hand-off names the area's rasters, unless --rewrite-posted (only
+  after telling the operator "about to rewrite <area> rasters"); re-post the hand-off right after. The hand-off
+  table carries FULL sha256 + exact bytes: exposure snapshots and verifies copies against it.

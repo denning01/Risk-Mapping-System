@@ -30,3 +30,14 @@ def provenance() -> dict:
     run = lambda *a: subprocess.run(["git", *a], cwd=REPO_ROOT, capture_output=True, text=True).stdout.strip()  # noqa: E731
     return {"git_commit": run("rev-parse", "--short", "HEAD"),
             "dirty": bool(run("status", "--porcelain", "--", "pipeline", "configs", "requirements.txt"))}
+
+
+def refuse_if_posted(area: str, allow: bool) -> None:
+    """Operator ruling 2026-11-06: rasters named by a POSTED hand-off are being read (and snapshotted) by exposure.
+    Never rewrite them unless the operator was told "about to rewrite <area> rasters" (then pass --rewrite-posted),
+    and re-post the hand-off right after. A WITHDRAWN hand-off names nothing."""
+    import sys
+    f = REPO_ROOT.parent / "rms-audit" / "handoffs" / f"flood-{area}.md"
+    if f.exists() and "WITHDRAWN" not in f.read_text()[:200] and not allow:
+        sys.exit(f"REFUSED: {f} names the {area} rasters this run would overwrite. Send the operator "
+                 f"'about to rewrite {area} rasters' first, then re-run with --rewrite-posted, then re-post the hand-off.")

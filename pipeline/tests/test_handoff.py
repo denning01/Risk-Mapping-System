@@ -52,3 +52,19 @@ def test_every_nyando_handoff_raster_on_disk_covers_the_ruled_box():
             assert ds.crs.to_epsg() == 32736, f
             assert handoff.margin_px(ds.transform, ds.width, ds.height, ds.crs, RULED_NYANDO) >= 1.0, f
             assert ds.tags().get("calibrated") in ("false", "true"), f
+
+
+def test_rewriting_rasters_named_by_a_posted_handoff_is_refused(tmp_path, monkeypatch):
+    """Operator ruling 2026-11-06: exposure read a mix of two versions when the depth rasters were rewritten in place."""
+    import pytest
+    from pipeline.lib import paths
+    (tmp_path / "rms-audit" / "handoffs").mkdir(parents=True)
+    monkeypatch.setattr(paths, "REPO_ROOT", tmp_path / "repo")
+    paths.refuse_if_posted("nyando", allow=False)                       # no hand-off posted: allowed
+    f = tmp_path / "rms-audit" / "handoffs" / "flood-nyando.md"
+    f.write_text("**WITHDRAWN — do not use.**\n")
+    paths.refuse_if_posted("nyando", allow=False)                       # withdrawn: names nothing
+    f.write_text("**k = 0.0191 is PROVISIONAL**\n# Hand-off\n")
+    with pytest.raises(SystemExit, match="about to rewrite nyando rasters"):
+        paths.refuse_if_posted("nyando", allow=False)
+    paths.refuse_if_posted("nyando", allow=True)                        # explicit --rewrite-posted

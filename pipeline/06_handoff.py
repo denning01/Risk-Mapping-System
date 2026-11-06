@@ -138,8 +138,8 @@ def main(area: str):
         "|---|---|---|---|---|",
     ]
     for r in results:
-        lines.append(f"| `{r['file']}` | {r.get('flooded_km2_in_handoff_bbox', '–')} | {r['margin_px']} | {r['bytes']:,} "
-                     f"| `{r['sha256'][:16]}…` |")
+        lines.append(f"| `{r['file']}` | {r.get('flooded_km2_in_handoff_bbox', '–')} | {r['margin_px']} | {r['bytes']} "
+                     f"| `{r['sha256']}` |")
     dest = REPO_ROOT.parent / "rms-audit" / "handoffs" / f"flood-{area}.md"
     dest.write_text("\n".join(lines) + "\n")
     print(f"wrote {dest}")

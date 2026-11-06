@@ -37,7 +37,7 @@ from shapely import box, ops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.lib import config, runoff, terrain  # noqa: E402
-from pipeline.lib.paths import model_dir, provenance, raw_dir  # noqa: E402
+from pipeline.lib.paths import model_dir, provenance, raw_dir, refuse_if_posted  # noqa: E402
 from pipeline.lib.rio import grid_of, read, to_utm, write  # noqa: E402
 
 RAINS = (50, 100, 150, 200, 250)        # docs/DATA_CONTRACT.md
@@ -192,5 +192,7 @@ if __name__ == "__main__":
     ap.add_argument("area")
     ap.add_argument("--k", type=float, default=K_PROVISIONAL)
     ap.add_argument("--alpha", type=float, default=ALPHA)
+    ap.add_argument("--rewrite-posted", action="store_true", help="operator was told 'about to rewrite <area> rasters'")
     a = ap.parse_args()
+    refuse_if_posted(a.area, a.rewrite_posted)
     main(a.area, a.k, a.alpha)

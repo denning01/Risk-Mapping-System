@@ -28,7 +28,7 @@ from shapely import LineString, box, ops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.lib import config, terrain  # noqa: E402
-from pipeline.lib.paths import model_dir, provenance, raw_dir  # noqa: E402
+from pipeline.lib.paths import model_dir, provenance, raw_dir, refuse_if_posted  # noqa: E402
 from pipeline.lib.rio import RES, to_utm, write  # noqa: E402,F401
 
 PERM_WATER_PCT = 80   # JRC occurrence >= 80 % = permanent water (plan §3 skeleton); also excluded from floods (M-04)
@@ -167,5 +167,7 @@ if __name__ == "__main__":
     ap.add_argument("area")
     ap.add_argument("--channel-km2", type=float, default=10.0)
     ap.add_argument("--sweep", action="store_true")
+    ap.add_argument("--rewrite-posted", action="store_true", help="operator was told 'about to rewrite <area> rasters'")
     a = ap.parse_args()
+    refuse_if_posted(a.area, a.rewrite_posted)
     main(a.area, a.channel_km2, a.sweep)
