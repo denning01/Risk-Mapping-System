@@ -123,3 +123,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   batchEecuUsageSeconds; record it as null with that reason, do not invent a figure. The F1-vs-k curve is flat
   (0.11–0.19), because channel and HAND-0 cells flood at any k. Say "k is weakly identified" rather than presenting
   the argmax as sharp.
+- 2026-11-06 (M-07): chain pipeline steps with `&&`, never `;`. After a crashed 03, a `;`-chained 06 posted a hand-off
+  from the PREVIOUS run's rasters (it checks the files, not that 03 just succeeded). Unit tests of a helper
+  (calibrated_k) did not reach the crash in main (cfg used before load); put the decision in a function that main
+  calls and test that function. Urban Sentinel-1 change detection (Nairobi) gives building speckle, not floods: an
+  argmax on the edge of the k grid means "not identified" — refuse it, do not ship it.
