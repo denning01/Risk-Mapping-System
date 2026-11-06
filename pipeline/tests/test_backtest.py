@@ -64,7 +64,8 @@ def test_03_takes_k_from_the_backtest_when_one_exists(tmp_path, monkeypatch):
     d = tmp_path / "processed" / "nyando" / "model" / "backtest"
     d.mkdir(parents=True)
     (d / "backtest.json").write_text(json.dumps({"provenance": {"git_commit": "abc1234"}, "best": {
-        "k": 0.0126, "all": {"f1": 0.19, "iou": 0.1, "precision": 0.12, "recall": 0.46}}}))
+        "k": 0.0126, "all": {"f1": 0.19, "iou": 0.1, "precision": 0.12, "recall": 0.46}},
+        "curve": [{"k": 0.0005}, {"k": 0.0126}, {"k": 0.05}]}))
     c = rf.calibrated_k("nyando")
     assert c["k"] == 0.0126 and c["f1"] == 0.19 and c["commit"] == "abc1234"
 
