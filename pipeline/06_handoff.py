@@ -107,7 +107,8 @@ def main(area: str):
         sys.exit(f"REFUSED: raster calibrated tags {sorted({r['calibrated'] for r in results})} != runoff_flood.json {cal}")
     first = (f"**k = {rf['k']} is PROVISIONAL and UNCALIBRATED (M-05 BLOCKED:ee-auth).** Every raster below is tagged "
              "calibrated=false; numbers built on them are provisional." if not cal else
-             f"k = {rf['k']} calibrated in M-05 (see ROUND).")
+             f"**k = {rf['k']} is CALIBRATED (M-05)**: {rf['k_note']}. Every raster below is tagged calibrated=true. "
+             "Screening-level: the backtest score is modest and is reported as such.")
     lines = [
         first,
         "",
@@ -124,8 +125,10 @@ def main(area: str):
         f"- **Coverage:** every file covers handoff_bbox {cfg['handoff_bbox']} (densified UTM projection, "
         f"{handoff.DENSIFY} pts/edge) by ≥ {handoff.MIN_MARGIN_PX:.0f} px; smallest margin here "
         f"{min(r['margin_px'] for r in results)} px. Tests: " + ", ".join(f"`{t}`" for t in COVERAGE_TESTS) + ".",
-        f"- **k = {rf['k']}, α = {rf['alpha']} — NOT CALIBRATED.** {rf['k_note']}. The depth rasters WILL be "
-        "regenerated after M-05; exposure numbers built on these are provisional and must say so.",
+        (f"- **k = {rf['k']}, α = {rf['alpha']} — calibrated.** {rf['k_note']}. Backtest: "
+         f"`$RMS_DATA/processed/{area}/model/backtest/` (backtest.json, backtest.png, observed.tif)." if cal else
+         f"- **k = {rf['k']}, α = {rf['alpha']} — NOT CALIBRATED.** {rf['k_note']}. The depth rasters WILL be "
+         "regenerated after M-05; exposure numbers built on these are provisional and must say so."),
         f"- **El Niño:** P × {rf['elnino']['ratio']} (CHIRPS OND {rf['elnino']['event'][-4:]} / OND "
         f"{rf['elnino']['clim_years'][0]}–{rf['elnino']['clim_years'][1]} mean over bbox {rf['elnino']['bbox']}). "
         + ("Computed over the ruled 34.80 AOI (bbox flipped, operator ruling): this is the slide number."

@@ -51,6 +51,18 @@ ALPHA = 0.4                             # Leopold & Maddock 1953 (USGS PP 252 p.
 K_PROVISIONAL = 0.0191
 
 
+def calibrated_k(area: str):
+    """M-05: k from processed/<area>/model/backtest/backtest.json (05_backtest.py, best F1 against the Sentinel-1
+    mask), or None when the area has no backtest yet (then K_PROVISIONAL, tagged calibrated=false)."""
+    f = model_dir(area) / "backtest" / "backtest.json"
+    if not f.exists():
+        return None
+    b = json.loads(f.read_text())
+    return {"k": b["best"]["k"], "f1": b["best"]["all"]["f1"], "iou": b["best"]["all"]["iou"],
+            "precision": b["best"]["all"]["precision"], "recall": b["best"]["all"]["recall"],
+            "commit": b["provenance"]["git_commit"]}
+
+
 def aoi_mask(cfg, grid) -> np.ndarray:
     """Same construction as 02_terrain.py (F2.15: one AOI mask definition for every reported number)."""
     to_utm_xy = Transformer.from_crs(4326, grid["crs"], always_xy=True).transform
@@ -116,8 +128,11 @@ def png(path, depth, aoi, title):
     plt.close(fig)
 
 
-def main(area: str, k: float, alpha: float):
+def main(area: str, k: float | None, alpha: float):
     prov = provenance()   # at START (see 02_terrain.py)
+    cal = calibrated_k(area) if k is None else None
+    if k is None:
+        k = cal["k"] if cal else K_PROVISIONAL
     cfg = config.load(area)
     m, raw = model_dir(area), raw_dir(area)
     grid = grid_of(m / "hand.tif")
@@ -148,8 +163,11 @@ def main(area: str, k: float, alpha: float):
     write(m / "cn.tif", cn, grid)
     write(m / "hsg.tif", np.where(hsg < 0, 255, hsg.astype("int16")), grid, "uint8", 255)
 
-    report = {"provenance": prov, "area": area, "k": k, "alpha": alpha, "k_calibrated": False,
-              "k_note": "provisional, NOT calibrated (anchor: outlet stage 3.05 m at 150 mm normal); M-05 calibrates k on the Sentinel-1 2023 mask (blocked on EE)",
+    report = {"provenance": prov, "area": area, "k": k, "alpha": alpha, "k_calibrated": cal is not None,
+              "k_note": (f"calibrated in M-05 against the Sentinel-1 Nov 2023 flood mask (05_backtest.py at {cal['commit']}): "
+                         f"best F1 {cal['f1']}, IoU {cal['iou']}, precision {cal['precision']}, recall {cal['recall']}"
+                         if cal else "provisional, NOT calibrated (anchor: outlet stage 3.05 m at 150 mm normal); "
+                         "M-05 calibrates k on a Sentinel-1 flood mask"),
               "stage_form": "h = k * V_up^alpha, V_up = upstream runoff volume (1000 m3); alpha 0.4 Leopold & Maddock 1953 USGS PP 252 p.16",
               "aoi_cells": int(aoi.sum()), "cell_km2": cell_km2, "max_slope_deg": 15.0,
               "cn_table": {str(c): {"tr55": t, "A_B_C_D": list(v)} for c, (t, v) in runoff.CN_TABLE.items()}}
@@ -170,7 +188,7 @@ def main(area: str, k: float, alpha: float):
             depth, h, q = runoff.scenario_depth(p, cn, fd, grid["transform"], grid["crs"], hand, hidx, slope,
                                                 channels | water, water, k, alpha, cell_km2)
             write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid,
-                  tags={"calibrated": "false", "dem": dem["file"], "dem_product": dem["product"],
+                  tags={"calibrated": str(cal is not None).lower(), "dem": dem["file"], "dem_product": dem["product"],
                         "dem_licence": dem["licence"], "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
                         "elnino_ratio": ratio, "git_commit": report["provenance"]["git_commit"],
                         "dirty": report["provenance"]["dirty"], "producer": "pipeline/03_runoff_flood.py",
@@ -212,7 +230,8 @@ def elnino_only(area: str):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("area")
-    ap.add_argument("--k", type=float, default=K_PROVISIONAL)
+    ap.add_argument("--k", type=float, default=None,
+                    help="override; default = backtest k if backtest.json exists (calibrated), else K_PROVISIONAL")
     ap.add_argument("--alpha", type=float, default=ALPHA)
     ap.add_argument("--rewrite-posted", action="store_true", help="operator was told 'about to rewrite <area> rasters'")
     ap.add_argument("--elnino-only", action="store_true",

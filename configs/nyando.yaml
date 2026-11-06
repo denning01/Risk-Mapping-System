@@ -10,7 +10,10 @@ dem_fallback: USGS/SRTMGL1_003
 backtest_event:                         # Nov 2023 short-rains / El Nino floods
   start: "2023-11-01"
   end: "2023-11-30"
-  verified: false                       # dates from the plan, NOT yet checked against ICPAC/OCHA/EMS (M-05)
+  verified: false                       # dates from the plan; no primary source names Nyando flooding in Nov 2023 that
+                                        # we could reach (ReliefWeb/HDX 403, no EMS activation; M-05 2026-11-06). The
+                                        # backtest's evidence is the satellite itself: S1 acquisitions 2023-11-08 and
+                                        # 2023-11-20 (raw/nyando/s1/s1.json) show 26 km2 of new water (VH)
 before_period:
   start: "2023-09-01"
   end: "2023-10-10"
