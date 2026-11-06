@@ -255,19 +255,24 @@ def _gn():
     ([("o1", "Far", "n3", "farmer")], "outside bbox"),
     ([("o1", "Ghost", "n9", "farmer")], "not in osm_places"),
     ([("o1", "Roadless", "n4", "farmer")], "from the walk graph"),
+    ([("o1", "Good", "n1", "farmer")], "from the drive graph"),         # F4.5: near the walk graph, far from drive
     ([("o1", "Good", "n1", "farmer")], "no origin"),                  # run with two user_types: one uncovered
 ])
 def test_build_origins_checks(monkeypatch, spec, err):
     monkeypatch.setitem(rt.ORIGINS, "nyando", spec)
     uts = ["farmer", "trader"] if err == "no origin" else ["farmer"]
+    gn = _gn()
+    if err == "from the drive graph":
+        import numpy as np
+        gn["drive"] = (np.array([35.009]), np.array([-0.201]))          # ~620 m from n1; walk nodes still ~11 m
     if err is None:
-        rows, checks = rt.build_origins("nyando", _places(), uts, BBOX, _gn())
+        rows, checks = rt.build_origins("nyando", _places(), uts, BBOX, gn)
         assert rows == [{"id": "o1", "name": "Good", "lon": 35.005, "lat": -0.205, "user_type": "farmer"}]
         assert checks[0]["nearest_other_osm_name"] == "Next Village" and checks[0]["nearest_other_m"] == 111
         assert checks[0]["snap_m"]["walk"] == 11
     else:
         with pytest.raises(ValueError, match=err):
-            rt.build_origins("nyando", _places(), uts, BBOX, _gn())
+            rt.build_origins("nyando", _places(), uts, BBOX, gn)
 
 
 def test_committed_origins_cover_every_user_type():
@@ -275,3 +280,36 @@ def test_committed_origins_cover_every_user_type():
     areas = {a["id"]: a for a in json.loads((Path(__file__).resolve().parents[2] / "web/public/data/areas.json").read_text())}
     for a, spec in rt.ORIGINS.items():
         assert {s[3] for s in spec} == set(areas[a]["user_types"]) and 3 <= len(spec) <= 6
+
+
+# ---- F4.6: the COMMITTED origins.json files are exactly what ORIGINS + the OSM points give ----
+OSM_POINTS = Path(__file__).resolve().parent / "data" / "origins_osm_points.json"
+
+
+def test_committed_origins_json_matches_origins_and_osm_points():
+    import json
+    pts = json.loads(OSM_POINTS.read_text())
+    root = Path(__file__).resolve().parents[2] / "web" / "public" / "data"
+    for a, spec in rt.ORIGINS.items():
+        committed = json.loads((root / a / "origins.json").read_text())
+        assert [(o["id"], o["name"], o["user_type"]) for o in committed] == [(i, n, u) for i, n, _, u in spec]
+        for o, (_, _, osm, _) in zip(committed, spec):
+            lon, lat = pts[a][osm]["lonlat"]
+            assert (o["lon"], o["lat"]) == (pytest.approx(lon, abs=1e-5), pytest.approx(lat, abs=1e-5)), (a, o["id"])
+
+
+def test_osm_points_fixture_equals_the_places_cache_when_present():
+    """The committed fixture cannot drift from the cache it was copied from (checked where $RMS_DATA exists)."""
+    import json
+    pts = json.loads(OSM_POINTS.read_text())
+    checked = 0
+    for a, spec in rt.ORIGINS.items():
+        cache = rt.rms_data() / "processed" / a / "exposure" / "osm_places.geojson"
+        if not cache.exists():
+            continue
+        F = {f["properties"]["osm"]: f for f in json.loads(cache.read_text())["features"]}
+        for _, _, osm, _ in spec:
+            assert F[osm]["geometry"]["coordinates"] == pts[a][osm]["lonlat"] and F[osm]["properties"]["name"] == pts[a][osm]["name"]
+            checked += 1
+    if not checked:
+        pytest.skip("no osm_places cache under $RMS_DATA")
