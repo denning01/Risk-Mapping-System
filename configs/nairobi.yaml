@@ -4,6 +4,9 @@ id: nairobi
 name: Nairobi (urban)
 type: urban
 bbox: [36.78, -1.33, 36.92, -1.22]      # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+# HUMAN DECISION 2026-11-06 (via operator): FABDEM STAYS — bare-earth DEM for flow and depth; buildings are handled by
+# the exposure footprint overlay. CC BY-NC-SA 4.0 accepted for the MVP. Do NOT switch to GLO-30. Licence on the M-10
+# data-sources slide.
 dem: projects/sat-io/open-datasets/FABDEM   # EE community catalog id; no-EE route (M-07): FABDEM V1-2 tiles read
                                             # from the University of Bristol zips (01_ee_export.fabdem_urls). CC BY-NC-SA 4.0.
 dem_fallback: COPERNICUS/DEM/GLO30
