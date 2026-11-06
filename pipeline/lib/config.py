@@ -61,6 +61,10 @@ def load(area: str, config_dir: Path | None = None) -> dict:
             raise ValueError(f"{path}: export_bbox {cfg['export_bbox']} must contain bbox {cfg['bbox']}")
     else:
         cfg["export_bbox"] = list(cfg["bbox"])
+    hb = cfg.setdefault("handoff_bbox", list(cfg["bbox"]))
+    eb = cfg["export_bbox"]
+    if not (eb[0] <= hb[0] and eb[1] <= hb[1] and eb[2] >= hb[2] and eb[3] >= hb[3]):
+        raise ValueError(f"{path}: export_bbox {eb} must contain handoff_bbox {hb}")
     cfg["center"] = [(w + e) / 2, (s + n) / 2]
     cfg["utm_epsg"] = utm_epsg(*cfg["center"])
     cfg["area_km2"] = bbox_area_km2_geodesic(cfg["bbox"])

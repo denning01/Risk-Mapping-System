@@ -21,3 +21,12 @@ def raw_dir(area: str) -> Path:
 def model_dir(area: str) -> Path:
     """processed/<area>/model — written only by the model lead."""
     return data_root() / "processed" / area / "model"
+
+
+def provenance() -> dict:
+    """Git commit of the code that is producing an output, and whether pipeline/ or configs/ had uncommitted edits
+    (a dirty run cannot be traced to a commit; 06_handoff.py refuses it)."""
+    import subprocess
+    run = lambda *a: subprocess.run(["git", *a], cwd=REPO_ROOT, capture_output=True, text=True).stdout.strip()  # noqa: E731
+    return {"git_commit": run("rev-parse", "--short", "HEAD"),
+            "dirty": bool(run("status", "--porcelain", "--", "pipeline", "configs", "requirements.txt"))}

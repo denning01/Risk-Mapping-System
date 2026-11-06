@@ -28,7 +28,7 @@ from shapely import LineString, box, ops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.lib import config, terrain  # noqa: E402
-from pipeline.lib.paths import model_dir, raw_dir  # noqa: E402
+from pipeline.lib.paths import model_dir, provenance, raw_dir  # noqa: E402
 from pipeline.lib.rio import RES, to_utm, write  # noqa: E402,F401
 
 PERM_WATER_PCT = 80   # JRC occurrence >= 80 % = permanent water (plan §3 skeleton); also excluded from floods (M-04)
@@ -94,7 +94,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     perm = jrc >= PERM_WATER_PCT
     h = terrain.hydro(dem, grid["transform"], grid["crs"], channel_km2, extra_drainage=perm)
     slope = terrain.slope_deg(dem, RES, RES)
-    report = {"flats_routed": h["flats_routed"], "sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
+    report = {"provenance": provenance(), "flats_routed": h["flats_routed"], "sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
               "channel_km2": channel_km2, "channel_cells": int(h["channels"].sum()),
               "hand_m": {q: float(np.nanpercentile(h["hand"], p)) for q, p in
                          (("p01", 1), ("p50", 50), ("p99", 99))},

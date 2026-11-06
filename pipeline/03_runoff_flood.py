@@ -34,7 +34,7 @@ from shapely import box, ops
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from pipeline.lib import config, runoff, terrain  # noqa: E402
-from pipeline.lib.paths import model_dir, raw_dir  # noqa: E402
+from pipeline.lib.paths import model_dir, provenance, raw_dir  # noqa: E402
 from pipeline.lib.rio import grid_of, read, to_utm, write  # noqa: E402
 
 RAINS = (50, 100, 150, 200, 250)        # docs/DATA_CONTRACT.md
@@ -130,7 +130,7 @@ def main(area: str, k: float, alpha: float):
     write(m / "cn.tif", cn, grid)
     write(m / "hsg.tif", np.where(hsg < 0, 255, hsg.astype("int16")), grid, "uint8", 255)
 
-    report = {"area": area, "k": k, "alpha": alpha, "k_calibrated": False,
+    report = {"provenance": provenance(), "area": area, "k": k, "alpha": alpha, "k_calibrated": False,
               "k_note": "provisional, NOT calibrated: M-05 calibrates k on the Sentinel-1 2023 mask (blocked on EE)",
               "aoi_cells": int(aoi.sum()), "cell_km2": cell_km2, "max_slope_deg": 15.0,
               "cn_table": {str(c): {"tr55": t, "A_B_C_D": list(v)} for c, (t, v) in runoff.CN_TABLE.items()}}

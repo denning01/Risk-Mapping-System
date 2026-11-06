@@ -18,3 +18,6 @@ user_types: [settler, farmer, trader]
 # (OSM river ways reach 35.59 E) and so it contains the operator-ruled west edge 34.80 (2026-11-05).
 # Rasters are clipped to `bbox` only on export to the app.
 export_bbox: [34.70, -0.65, 35.90, 0.15]
+# Model -> exposure hand-off rasters must cover this box (exposure 07_scenarios.py refuses less, to half a pixel).
+# Operator ruling 2026-11-05: Nyando west edge 34.80; exposure's areas.json uses it once it lands on data.
+handoff_bbox: [34.80, -0.45, 35.30, 0.00]
