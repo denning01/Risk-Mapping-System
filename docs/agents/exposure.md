@@ -60,3 +60,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-05 (E-01) `verify:all` on a clean checkout: tsc fails on `LayoutProps` until `next build` has
   generated `.next/types` (it runs tsc first), and pytest is SKIPPED because `ls` of the missing
   `tests/` glob exits 1. Both reported to the operator; run `.venv/bin/python -m pytest -q` yourself.
+- 2026-11-06 (R1 remediation) A test with a symmetric fixture cannot catch a row/col transpose — put the
+  wet probe and its transpose on opposite classes. Test each guard on its OWN input (MOCK tag alone,
+  carried source alone), not only the case where both trip. File sizes: `du` reports disk blocks (816K),
+  not bytes (806231 B = 787.3 KiB); measure with os.path.getsize.

@@ -82,15 +82,43 @@ def test_shelter_safety():
     far = to_wgs(800000, 9900000)                              # outside the raster
     sh = [{"id": i, "lon": p[0], "lat": p[1], "safe": None} for i, p in (("w", wet), ("d", dry), ("f", far))]
     out = {s["id"]: s for s in scen.shelters_safety(sh, grid(), TF, CRS)}
-    assert (out["w"]["safe"], out["d"]["safe"], out["f"]["safe"]) == (False, True, True)
+    assert (out["w"]["safe"], out["d"]["safe"], out["f"]["safe"]) == (False, True, False)  # outside = not safe
     assert out["f"]["_outside"] and not out["w"]["_outside"]
 
 
-def _write_inputs(tmp: Path, mock: bool):
+def test_shelter_safety_row_col_not_transposed():
+    """F1.4: wet at (row 0, col 9), dry at its transpose (row 9, col 0) — a row/col swap flips both."""
+    d = grid()
+    d[0, 9] = 0.5
+    assert np.isnan(d[9, 0])
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    wet = to_wgs(722600 + 9.5 * RES, 9977880 - 0.5 * RES)    # x = col 9, y = row 0
+    dry = to_wgs(722600 + 0.5 * RES, 9977880 - 9.5 * RES)    # x = col 0, y = row 9
+    sh = [{"id": i, "lon": p[0], "lat": p[1], "safe": None} for i, p in (("w", wet), ("d", dry))]
+    out = {s["id"]: s["safe"] for s in scen.shelters_safety(sh, d, TF, CRS)}
+    assert out == {"w": False, "d": True}
+
+
+def test_raster_covers_bbox():
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    w, n = to_wgs(722600 + 1 * RES, 9977880 - 1 * RES)
+    e, s_ = to_wgs(722600 + 9 * RES, 9977880 - 9 * RES)
+    assert scen.raster_covers_bbox(TF, (10, 10), CRS, [w, s_, e, n])[0]
+    ok, why = scen.raster_covers_bbox(TF, (10, 10), CRS, [w - 0.001, s_, e, n])   # ~111 m west of the grid
+    assert not ok and "west_m" in why
+
+
+def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None):
     data, depth = tmp / "data", tmp / "depth"
     sd = data / "nyando" / "scenarios"
     sd.mkdir(parents=True)
     depth.mkdir()
+    to_wgs0 = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    if bbox is None:  # inside the 10x10 grid
+        w, n = to_wgs0(722600 + 1 * RES, 9977880 - 1 * RES)
+        e, s_ = to_wgs0(722600 + 9 * RES, 9977880 - 9 * RES)
+        bbox = [w, s_, e, n]
+    (data / "areas.json").write_text(json.dumps([{"id": "nyando", "bbox": bbox}]))
     prof = dict(driver="GTiff", width=10, height=10, count=1, dtype="float32", crs=CRS, transform=TF, nodata=np.nan)
     to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
     wet = to_wgs(722600 + 4.5 * RES, 9977880 - 4.5 * RES)
@@ -100,7 +128,7 @@ def _write_inputs(tmp: Path, mock: bool):
             if mock:
                 ds.update_tags(MOCK="1")
         (sd / f"{k}.exposure.json").write_text(json.dumps({"year": 2026, "population": {"low": 1, "medium": 2, "high": 3},
-                                                           "buildings": 4, "flooded_area_km2": 99, "roads_cut": [], "source": "mock"}))
+                                                           "buildings": 4, "flooded_area_km2": 99, "roads_cut": [], "source": carried_source}))
         (sd / f"{k}.shelters.json").write_text(json.dumps([{"id": "s1", "name": "x", "type": "school", "lon": wet[0],
                                                             "lat": wet[1], "capacity": None, "safe": True}]))
         (sd / f"{k}.routes.json").write_text("[]")
@@ -123,6 +151,53 @@ def test_write_refuses_model_label_on_mock(tmp_path):
     data, depth = _write_inputs(tmp_path, mock=True)
     with pytest.raises(SystemExit):
         scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data), "--source", "model"])
+
+
+def test_write_refuses_model_label_on_mock_raster_even_if_carried_is_model(tmp_path):
+    """F1.5: the raster's MOCK tag alone must block --source model."""
+    data, depth = _write_inputs(tmp_path, mock=True, carried_source="model")
+    with pytest.raises(SystemExit):
+        scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data), "--source", "model"])
+
+
+def test_write_model_allowed_when_all_inputs_real(tmp_path):
+    data, depth = _write_inputs(tmp_path, mock=False, carried_source="model")
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data), "--source", "model"]) == 0
+
+
+def test_write_fails_if_raster_does_not_cover_bbox(tmp_path):
+    """F2.2: a raster narrower than areas.json's bbox fails before anything is written."""
+    data, depth = _write_inputs(tmp_path, mock=True, bbox=[34.0, -0.3, 35.5, 0.0])
+    before = (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text()
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]) == 1
+    assert not (data / "nyando" / "scenarios" / "50_normal.geojson").exists()
+    assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before
+
+
+def test_standin_tags_mock_and_roundtrips(tmp_path):
+    """F1.7: every stand-in raster carries MOCK=1, and the rasterised area matches the mock polygon."""
+    data, out = tmp_path / "data", tmp_path / "out"
+    sd = data / "nyando" / "scenarios"
+    sd.mkdir(parents=True)
+    bbox = [35.0, -0.21, 35.01, -0.2]
+    (data / "areas.json").write_text(json.dumps([{"id": "nyando", "bbox": bbox}]))
+    sq = [[[35.002, -0.208], [35.006, -0.208], [35.006, -0.204], [35.002, -0.204], [35.002, -0.208]]]
+    fc = {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": sq},
+                                                      "properties": {"risk": "medium", "depth_m": 0.5, "arrival_h": 3}}]}
+    for k in scen.scenario_keys():
+        (sd / f"{k}.geojson").write_text(json.dumps(fc))
+    assert scen.main(["standin", "--area", "nyando", "--data-dir", str(data), "--out-dir", str(out)]) == 0
+    tifs = sorted(out.glob("*.tif"))
+    assert len(tifs) == 20
+    for t in tifs:
+        with rasterio.open(t) as ds:
+            assert ds.tags().get("MOCK") == "1", t.name
+            assert ds.crs.to_epsg() == 32736
+            assert scen.raster_covers_bbox(ds.transform, (ds.height, ds.width), ds.crs, bbox)[0]
+    with rasterio.open(out / "50_normal_depth.tif") as ds:
+        wet_m2 = np.isfinite(ds.read(1)).sum() * 900
+    poly_m2 = scen.reproject(shape(fc["features"][0]["geometry"]), "EPSG:4326", "EPSG:32736").area
+    assert wet_m2 == pytest.approx(poly_m2, rel=0.05)
 
 
 def test_write_fails_on_missing_raster(tmp_path):

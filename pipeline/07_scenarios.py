@@ -151,9 +151,26 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     return feats, stats
 
 
+def raster_covers_bbox(transform, shape_hw, crs, bbox, n=50) -> tuple[bool, str]:
+    """True if the raster footprint contains the lon/lat bbox (edges densified, n points each),
+    to a tolerance of half a pixel."""
+    w, s, e, nn = bbox
+    t = np.linspace(0, 1, n)
+    lons = np.concatenate([w + (e - w) * t, np.full(n, e), e - (e - w) * t, np.full(n, w)])
+    lats = np.concatenate([np.full(n, s), s + (nn - s) * t, np.full(n, nn), nn - (nn - s) * t])
+    xs, ys = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lons, lats)
+    h, wd = shape_hw
+    left, top = transform.c, transform.f
+    right, bottom = left + transform.a * wd, top + transform.e * h
+    tol = abs(transform.a) / 2
+    gaps = {"west_m": left - xs.min(), "east_m": xs.max() - right, "south_m": bottom - ys.min(), "north_m": ys.max() - top}
+    bad = {k: round(float(v), 1) for k, v in gaps.items() if v > tol}
+    return (not bad, f"bbox {bbox} not covered by raster; uncovered by {bad}" if bad else "covered")
+
+
 def shelters_safety(shelters: list[dict], depth: np.ndarray, transform, crs) -> list[dict]:
-    """safe = the shelter's cell is not flooded. A shelter outside the raster keeps safe=True and
-    gets flagged in the returned list's `_outside` (stripped before writing)."""
+    """safe = the shelter's cell is not flooded. A shelter OUTSIDE the raster has no flood information,
+    so it is conservatively safe=False and flagged in `_outside` (stripped before writing)."""
     to_utm = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform
     flooded = classify_risk(depth) > 0
     out = []
@@ -163,7 +180,7 @@ def shelters_safety(shelters: list[dict], depth: np.ndarray, transform, crs) -> 
         row, col = int(row), int(col)
         inside = 0 <= row < depth.shape[0] and 0 <= col < depth.shape[1]
         s2 = dict(s)
-        s2["safe"] = not (inside and bool(flooded[row, col]))
+        s2["safe"] = inside and not bool(flooded[row, col])
         s2["_outside"] = not inside
         out.append(s2)
     return out
@@ -235,7 +252,15 @@ def cmd_write(args) -> int:
         return 1
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}"
-          f"{'safe/shel':>10}{'geojson KB':>11}")
+          f"{'safe/shel':>10}{'geojson KiB':>12}")
+    # pre-pass: every raster must cover the area's bbox, checked BEFORE anything is overwritten
+    bbox = _load_area(data_dir, args.area)["bbox"]
+    for key in scenario_keys():
+        with rasterio.open(depth_dir / f"{key}_depth.tif") as ds:
+            ok, why = raster_covers_bbox(ds.transform, (ds.height, ds.width), ds.crs, bbox)
+        if not ok:
+            print(f"ERROR: {key}_depth.tif: {why}; nothing written", file=sys.stderr)
+            return 1
     problems = []
     for key in scenario_keys():
         depth, tf, crs, tags = _read(depth_dir / f"{key}_depth.tif")
@@ -262,7 +287,7 @@ def cmd_write(args) -> int:
         shelters = shelters_safety(json.loads((scen_dir / f"{key}.shelters.json").read_text()), depth, tf, crs)
         for s in shelters:
             if s.pop("_outside"):
-                problems.append(f"{key}: shelter {s['id']} is outside the depth raster (safe kept True)")
+                problems.append(f"{key}: shelter {s['id']} is outside the depth raster (marked safe=false)")
         safe_ids = {s["id"] for s in shelters if s["safe"]}
         routes = json.loads((scen_dir / f"{key}.routes.json").read_text())
         for r in routes:
@@ -277,9 +302,9 @@ def cmd_write(args) -> int:
         c = st["cells_by_risk"]
         print(f"{key:<12}{len(feats):>5}{c['low']:>8}/{c['medium']}/{c['high']:<7}"
               f"{st['flooded_area_m2']/1e6:>9.2f}{st['polygon_area_m2']/1e6:>9.2f}"
-              f"{len(safe_ids):>5}/{len(shelters):<4}{kb:>11.1f}")
+              f"{len(safe_ids):>5}/{len(shelters):<4}{kb:>12.1f}")
         if kb > args.max_kb:
-            problems.append(f"{key}: geojson {kb:.0f} KB exceeds --max-kb {args.max_kb}")
+            problems.append(f"{key}: geojson {kb:.0f} KiB exceeds --max-kb {args.max_kb}")
     print(f"\n{len(problems)} warning(s)")
     for p in problems:
         print("  WARN", p)
