@@ -13,7 +13,9 @@ dem_fallback: COPERNICUS/DEM/GLO30
 backtest_event:                         # Apr-May 2024 long-rains floods
   start: "2024-04-20"
   end: "2024-05-10"
-  verified: false                       # dates from the plan, NOT yet checked against a primary source (M-07)
+  verified: false                       # partly: a UNOSAT product "Flood impact analysis in Nairobi Kenya as of 1 May 2024"
+                                        # (Pleiades, 1 May 2024) lies inside the window — seen only as a catalogue title,
+                                        # https://geo.btaa.org/catalog/70148c8d-4d8a-4e70-8c03-c9bb8370cfb7 (HDX blocked, 403)
 before_period:
   start: "2024-03-01"
   end: "2024-04-10"

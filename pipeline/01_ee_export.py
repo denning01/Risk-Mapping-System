@@ -106,6 +106,17 @@ def chirps_job(url, cache: Path, dest: Path, bbox, date_range):
     return meta
 
 
+def daily_days(cfg) -> list[str]:
+    """CHIRPS daily days to fetch: OND of the backtest year when the event falls in OND (Nyando, 2023 short rains),
+    plus the backtest window and the 15 days before it (05_backtest.py sums up to 10 days before each S1 date)."""
+    from datetime import date, timedelta
+    s, e = date.fromisoformat(cfg["backtest_event"]["start"]), date.fromisoformat(cfg["backtest_event"]["end"])
+    days = {s - timedelta(days=15) + timedelta(days=i) for i in range((e - s).days + 16)}
+    if s.month in (10, 11, 12):
+        days |= {date(s.year, 10, 1) + timedelta(days=i) for i in range(92)}
+    return sorted(d.isoformat() for d in days)
+
+
 def run(area: str, use_ee: bool, only: set[str] | None):
     cfg = config.load(area)
     box = cfg["export_bbox"]
@@ -176,12 +187,11 @@ def run(area: str, use_ee: bool, only: set[str] | None):
     cache = out / "_cache"
     jobs = []
     if want("chirps_daily"):
-        for m in (10, 11, 12):
-            for d in range(1, calendar.monthrange(2023, m)[1] + 1):
-                f = f"chirps-v2.0.2023.{m:02d}.{d:02d}.tif.gz"
-                day = f"2023-{m:02d}-{d:02d}"
-                jobs.append((f"{CHIRPS}/africa_daily/tifs/p05/2023/{f}", out / "chirps" / "daily" / f"{day}.tif",
-                             [day, day]))
+        for day in daily_days(cfg):
+            y, m, d = day.split("-")
+            f = f"chirps-v2.0.{y}.{m}.{d}.tif.gz"
+            jobs.append((f"{CHIRPS}/africa_daily/tifs/p05/{y}/{f}", out / "chirps" / "daily" / f"{day}.tif",
+                         [day, day]))
     if want("chirps_monthly"):
         for y in range(1991, 2024):   # F5.3: the FULL record 1991-2023, so a rank is over every season (no gaps)
             for m in (10, 11, 12):

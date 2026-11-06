@@ -139,3 +139,12 @@ def test_dem_file_follows_the_configured_dem():
     from pipeline.lib import config
     assert config.load("nairobi")["dem_file"] == "dem_fabdem.tif"
     assert config.load("nyando")["dem_file"] == "dem_glo30.tif"
+
+
+def test_chirps_daily_days_cover_each_backtest_window():
+    """M-07: daily CHIRPS follows the config's backtest window (Nairobi Apr-May 2024), not a hard-coded 2023 OND."""
+    from pipeline.lib import config
+    ny = ex.daily_days(config.load("nyando"))
+    assert len(ny) == 92 and ny[0] == "2023-10-01" and ny[-1] == "2023-12-31"
+    nb = ex.daily_days(config.load("nairobi"))
+    assert nb[0] == "2024-04-05" and nb[-1] == "2024-05-10" and len(nb) == 36 and len(set(nb)) == 36
