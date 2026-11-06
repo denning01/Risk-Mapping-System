@@ -214,3 +214,21 @@ def test_hand_is_measured_from_the_raw_dem_not_the_filled_one_inside_a_depressio
     assert out["hand"][pit] < out["hand_filled"][pit] - 1.0   # here 0.0 vs 2.0
     # outside the depression nothing changes
     np.testing.assert_allclose(out["hand"][30, 1:-1], out["hand_filled"][30, 1:-1], atol=1e-9)
+
+
+def test_hand_uses_the_filled_level_of_a_drainage_cell_that_sits_in_a_filled_pit():
+    """F2.13: the drain term is cond[drain] (the water surface the cell spills to), not dem[drain]. A 2 m pit IN the
+    channel is filled to its spill level; side cells draining into it get HAND above that level."""
+    dem = valley()
+    dem[20, 10] -= 2.0
+    out = terrain.hydro(dem, Affine(DX, 0, 0, 0, -DX, 0), "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    flat = out["hand_index"].ravel()
+    cond, raw = out["cond"].ravel(), dem.ravel()
+    ok = flat >= 0
+    hit = np.zeros(dem.size, bool)
+    hit[ok] = (cond[flat[ok]] - raw[flat[ok]]) > 1.0          # drains to a drainage cell filled by > 1 m
+    hit &= np.isfinite(out["hand"].ravel()) & (flat != np.arange(dem.size))   # not the drain cell itself
+    assert hit.sum() >= 2
+    h = out["hand"].ravel()[hit]
+    np.testing.assert_allclose(h, np.maximum(raw[hit] - cond[flat[hit]], 0.0), atol=1e-9)
+    assert (h < np.maximum(raw[hit] - raw[flat[hit]], 0.0) - 1.0).all()   # dem[drain] would be > 1 m higher

@@ -174,6 +174,9 @@ def hydro(dem: np.ndarray, transform: Affine, crs: str, channel_km2: float,
     # depression by its fill depth (up to 20.9 m on the Kano plain), making closed depressions look SAFER than they
     # are. hand = raw dem of the cell - filled elevation of its drainage cell, floored at 0 (a cell below its drain
     # level sits in a depression that ponds first).
+    # F2.13 METHOD CHOICE: the drain term is cond[drain], the FILLED level = the water surface the cell spills to,
+    # not dem[drain]. On Nyando half the AOI drains to a filled drainage cell; dem[drain] would cut HAND < 1 m by
+    # 8.6 % (auditor, R2). M-04's method text states this.
     cond_a2 = np.asarray(cond, dtype="float64")
     ok = (hidx >= 0) & np.isfinite(dem) & (dem != NODATA) & np.isfinite(hand_filled)
     hand = np.full(dem.shape, np.nan)
