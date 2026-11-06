@@ -1,6 +1,7 @@
 """M-11 forecast anchor: official seasonal outlook + a dated forecast snapshot, mapped to the slider scenarios.
 
-    .venv/bin/python pipeline/08_forecast.py nyando
+    .venv/bin/python pipeline/08_forecast.py nyando                      # new snapshot (network)
+    .venv/bin/python pipeline/08_forecast.py nyando 2026-11-06T1102Z     # rebuild from that cached snapshot, no network
 
 Writes $RMS_DATA/processed/<area>/forecast/forecast.json and caches every raw API response under
 $RMS_DATA/raw/<area>/forecast/<UTC timestamp>/. NOT written to web/public/data: the contract for it is pending Person B.
@@ -11,7 +12,8 @@ Labels: "official outlook" (ICPAC) and "forecast snapshot" (Open-Meteo / GloFAS)
     map's own legend (rounded to the 10 % band) — see OUTLOOK below and the ROUND for the method and its output.
 (b) Open-Meteo forecast API (daily precipitation_sum, 16 days) at a 3x3 grid of points over the AOI bbox, averaged;
     GloFAS v4 river discharge (Open-Meteo flood API, 30 days) at the model's outlet cell (highest flow accumulation on a
-    channel inside the AOI), with the same cell's 1991-2020 daily record for context.
+    channel inside the AOI), with the same cell's daily record for context. 1991-2020 is REQUESTED, but the API's GloFAS
+    record holds nulls before 1997-01-01, so the climatology is over the finite days only and its real period is reported.
 (c) Mapping rule to the slider: rain_mm = the slider value (50..250 mm in 24 h, DATA_CONTRACT) nearest to the WETTEST
     forecast day (AOI mean); if that day is < 25 mm the forecast is below every scenario and maps to none.
     enso = "elnino" when the official statement says El Nino conditions are established (GHACOF74: yes), else "normal".
@@ -55,6 +57,10 @@ OUTLOOK = {
 
 
 def get(url: str, cache: Path, name: str) -> dict:
+    f = cache / f"{name}.json"
+    if f.exists():
+        print(f"cached: {f}")
+        return json.loads(f.read_bytes())
     cache.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "igad-flood-ews-mvp"})
     with urllib.request.urlopen(req, timeout=120) as r:
@@ -83,16 +89,30 @@ def outlet(area: str) -> tuple[float, float, float]:
     return round(lon, 4), round(lat, 4), round(float(acc[r, c]) * 900 / 1e6, 1)
 
 
+def clim(times: list, values: list, peak: float) -> dict:
+    """Climatology over the FINITE days of the record (nulls dropped), with the period those days actually span."""
+    t = np.array(times)
+    q = np.array([np.nan if v is None else v for v in values], dtype=float)
+    ok = np.isfinite(q)
+    t, q = t[ok], q[ok]
+    return {"period": f"{t[0]}..{t[-1]}", "days": int(q.size), "missing_days_in_request": int((~ok).sum()),
+            "p50_m3s": round(float(np.median(q)), 2), "p95_m3s": round(float(np.percentile(q, 95)), 2),
+            "p99_m3s": round(float(np.percentile(q, 99)), 2), "max_m3s": round(float(q.max()), 2),
+            "peak_percentile": round(float((q < peak).mean() * 100), 1)}
+
+
 def map_rain(max_day_mm: float):
     if max_day_mm < MIN_MAPPED_MM:
         return None
     return min(RAINS, key=lambda r: abs(r - max_day_mm))
 
 
-def main(area: str):
+def main(area: str, stamp: str | None = None):
     prov = provenance()
     cfg = config.load(area)
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%MZ")
+    if stamp is not None and not (raw_dir(area) / "forecast" / stamp).is_dir():
+        sys.exit(f"no cached snapshot {stamp}")
+    stamp = stamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%MZ")
     cache = raw_dir(area) / "forecast" / stamp
     w, s, e, n = cfg["bbox"]
     lats = [round(v, 4) for v in np.linspace(s, n, 3) for _ in range(3)]
@@ -113,9 +133,8 @@ def main(area: str):
     hist = get(hist_url, cache, "glofas_1991_2020")
     q = np.array(fl["daily"]["river_discharge_max"], dtype=float)
     qm = np.array(fl["daily"]["river_discharge_mean"], dtype=float)
-    qh = np.array(hist["daily"]["river_discharge"], dtype=float)
-    qh = qh[np.isfinite(qh)]
     peak = float(np.nanmax(qm))
+    cl = clim(hist["daily"]["time"], hist["daily"]["river_discharge"], peak)
     rain = map_rain(float(aoi_mean[i]))
     enso = "elnino" if OUTLOOK["enso_established"] else "normal"
     rep = {
@@ -137,11 +156,9 @@ def main(area: str):
                   "ensemble_max_m3s": [round(float(v), 2) for v in q],
                   "peak_ensemble_mean_m3s": round(peak, 2),
                   "peak_day": fl["daily"]["time"][int(np.nanargmax(qm))],
-                  "clim_1991_2020": {"url": hist_url, "days": int(qh.size), "p50_m3s": round(float(np.median(qh)), 2),
-                                     "p95_m3s": round(float(np.percentile(qh, 95)), 2),
-                                     "p99_m3s": round(float(np.percentile(qh, 99)), 2),
-                                     "max_m3s": round(float(qh.max()), 2)},
-                  "peak_percentile_of_1991_2020_days": round(float((qh < peak).mean() * 100), 1),
+                  "clim": {"url": hist_url, "requested": "1991-01-01..2020-12-31"}
+                          | {k: v for k, v in cl.items() if k != "peak_percentile"},
+                  "peak_percentile_of_clim_days": cl["peak_percentile"],
                   "note": "context only; discharge does not select a slider scenario"},
         "mapping": {"rule": f"rain_mm = slider value nearest to the wettest forecast day (AOI mean of {len(fc)} points); "
                             f"< {MIN_MAPPED_MM:g} mm maps to none. enso = elnino when the official statement says El "
@@ -160,10 +177,10 @@ def main(area: str):
                       "precip": {k: rep["precipitation"][k] for k in ("total_16d_mm", "wettest_day", "wettest_day_mm",
                                                                        "wettest_point_day_mm")},
                       "river": {k: rep["river"][k] for k in ("model_outlet", "glofas_cell", "peak_ensemble_mean_m3s",
-                                                             "peak_day", "peak_percentile_of_1991_2020_days")}
-                      | {"clim": rep["river"]["clim_1991_2020"]},
+                                                             "peak_day", "peak_percentile_of_clim_days")}
+                      | {"clim": rep["river"]["clim"]},
                       "mapping": rep["mapping"]}, indent=1, ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else None)

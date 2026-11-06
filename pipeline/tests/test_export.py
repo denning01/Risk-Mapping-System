@@ -159,3 +159,14 @@ def test_forecast_maps_the_wettest_day_to_the_nearest_slider_value():
     assert fc.map_rain(76.0) == 100 and fc.map_rain(180.0) == 200 and fc.map_rain(400.0) == 250
     assert fc.OUTLOOK["enso_established"] is True
     assert fc.OUTLOOK["above_normal_pct_band"] == {"nyando": [70, 80], "nairobi": [80, 90]}
+
+
+def test_forecast_climatology_drops_null_days_and_reports_the_real_period():
+    """M-11: the API's GloFAS record is null before 1997, so a '1991-2020' label would be false."""
+    spec = importlib.util.spec_from_file_location("fc2", Path(__file__).resolve().parents[1] / "08_forecast.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    c = fc.clim(["1991-01-01", "1991-01-02", "1997-01-01", "1997-01-02", "1997-01-03", "1997-01-04"],
+                [None, None, 1.0, 2.0, 3.0, 4.0], peak=3.5)
+    assert c["period"] == "1997-01-01..1997-01-04" and c["days"] == 4 and c["missing_days_in_request"] == 2
+    assert c["p50_m3s"] == 2.5 and c["max_m3s"] == 4.0 and c["peak_percentile"] == 75.0   # 3 of 4 finite days below 3.5
