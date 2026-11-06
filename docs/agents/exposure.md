@@ -64,3 +64,12 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   wet probe and its transpose on opposite classes. Test each guard on its OWN input (MOCK tag alone,
   carried source alone), not only the case where both trip. File sizes: `du` reports disk blocks (816K),
   not bytes (806231 B = 787.3 KiB); measure with os.path.getsize.
+- 2026-11-06 (E-02) Public Overpass was at capacity (main + kumi + private.coffee + mail.ru all failed). Use the
+  Geofabrik Kenya extract ($RMS_DATA/raw/osm/kenya-261104.osm.pbf, md5-checked) + pyosmium; one pass ~5 min,
+  prepare ~7 min for both areas. curl to Overpass without a UA returns 406.
+- 2026-11-06 (E-02) OSM has real tag errors (a residential street tagged "120 mph"): cap tagged maxspeed at 110 km/h.
+  Drive times are FREE-FLOW, not congested — say so wherever minutes are shown.
+- 2026-11-06 (E-02) GDAL's OSM driver (pyogrio) is a usable independent check, but its default osmconf puts closed
+  ways tagged only healthcare=* in `lines`, not `multipolygons`, so it undercounts clinics by design.
+- 2026-11-06 (E-02) Rural Nyando is thinly mapped in OSM (60 schools, 15 health facilities in ~2,500 km2) — confirmed by
+  two readers, so it is the map, not the code. Relocation in E-05 must not rely on OSM shelters alone.

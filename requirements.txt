@@ -9,6 +9,7 @@ numpy
 pandas
 scipy
 osmnx
+osmium
 networkx
 xgboost
 scikit-learn
