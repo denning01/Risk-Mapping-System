@@ -3,7 +3,8 @@
 id: nyando
 name: Nyando, Kisumu (rural)
 type: rural
-bbox: [34.85, -0.45, 35.30, 0.00]       # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+bbox: [34.80, -0.45, 35.30, 0.00]       # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+                                        # (west edge 34.85 -> 34.80: operator ruling 2026-11-05, flipped after data e472d23)
 dem: COPERNICUS/DEM/GLO30               # EE id (verify in M-02 with ee.data.getAsset)
 dem_fallback: USGS/SRTMGL1_003
 backtest_event:                         # Nov 2023 short-rains / El Nino floods

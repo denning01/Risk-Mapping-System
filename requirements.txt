@@ -3,11 +3,13 @@ earthengine-api
 rasterio
 geopandas
 shapely
+pyproj
 pysheds
 numpy
 pandas
 scipy
 osmnx
+osmium
 networkx
 xgboost
 scikit-learn

@@ -34,8 +34,8 @@ def test_both_areas_load_with_derived_fields():
     assert config.areas() == ["nairobi", "nyando"]
     ny, nb = config.load("nyando"), config.load("nairobi")
     assert ny["utm_epsg"] == 32736 and nb["utm_epsg"] == 32737
-    # 0.45 x 0.45 deg at the equator ~ (0.45*111.32)*(0.45*110.6) ~ 2493 km2; 0.14 x 0.11 deg ~ 190 km2
-    assert 2400 < ny["area_km2"] < 2600
+    # 0.50 x 0.45 deg at the equator ~ (0.50*111.32)*(0.45*110.6) ~ 2770 km2 (west edge 34.80); 0.14 x 0.11 deg ~ 190 km2
+    assert 2700 < ny["area_km2"] < 2850
     assert 180 < nb["area_km2"] < 200
 
 
@@ -121,8 +121,6 @@ def test_nyando_export_box_contains_the_river_mouth():
     assert _inside(config.load("nyando")["export_bbox"], *NYANDO_MOUTH)
 
 
-@pytest.mark.xfail(strict=True, reason="bbox is still the audited 34.85 edge; the mouth is 0.12 km west of it. "
-                   "Moves to 34.80 when exposure's areas.json lands on data (operator ruling). strict=True turns "
-                   "this into a failure the moment the bbox moves, so the marker must then be removed.")
 def test_nyando_aoi_contains_the_river_mouth():
+    # bbox moved 34.85 -> 34.80 (operator ruling; exposure areas.json on data e472d23); was a strict xfail before
     assert _inside(config.load("nyando")["bbox"], *NYANDO_MOUTH)

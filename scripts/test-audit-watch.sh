@@ -58,7 +58,7 @@ git -C "$DEV/rms-model" -c user.email=t@t -c user.name=t commit -q --allow-empty
 git -C "$DEV/rms-model" branch -q -M a/model
 git -C "$DEV/rms-model" worktree add -q --detach "$DEV/rms-model-audit" a/model
 TIP="$(commit "round 1's commit")"
-printf '# Audit log — security\n<!-- rounds are appended below this line -->\n' > "$LOG"
+printf '# Audit log — model\n<!-- rounds are appended below this line -->\n' > "$LOG"
 
 # tmux reports the executable's FILE NAME (the real one is ~/.local/share/claude/versions/2.1.276).
 # A symlink reports its target, and macOS SIGKILLs an unsigned copy of a platform binary (exit 137)
@@ -97,10 +97,10 @@ while IFS= read -r line; do
 done
 FAKE
 printf ready > "$A/mode"; printf ready > "$L/mode"
-tmux new-session -d -s "$SESS" -n security -x 200 -y 40 "$FAKE_CMD '$L'"
-LP="$(tmux list-panes -t "$SESS:security" -F '#{pane_id}' | head -n 1)"
+tmux new-session -d -s "$SESS" -n model -x 200 -y 40 "$FAKE_CMD '$L'"
+LP="$(tmux list-panes -t "$SESS:model" -F '#{pane_id}' | head -n 1)"
 tmux set-option -p -t "$LP" @role "lead · test" >/dev/null
-AP="$(tmux split-window -h -t "$SESS:security" -P -F '#{pane_id}' "$FAKE_CMD '$A'")"
+AP="$(tmux split-window -h -t "$SESS:model" -P -F '#{pane_id}' "$FAKE_CMD '$A'")"
 tmux set-option -p -t "$AP" @role "auditor · test" >/dev/null
 sleep 1.5
 for p in "$LP" "$AP"; do
@@ -123,7 +123,7 @@ setmode "$A" dialog; watch1
 [ "$(approved)" = 0 ] && ok "permission dialog on screen -> held, nothing approved" || bad "APPROVED A PERMISSION DIALOG"
 # 5
 setmode "$A" ready; watch1
-if [ "$(got)" = 1 ] && grep -qF '[audit-watch security R1]' "$A/received"; then ok "idle -> ROUND 1 delivered"; else bad "ROUND 1 not delivered (got=$(got))"; fi
+if [ "$(got)" = 1 ] && grep -qF '[audit-watch model R1]' "$A/received"; then ok "idle -> ROUND 1 delivered"; else bad "ROUND 1 not delivered (got=$(got))"; fi
 [ "$(audit_head)" = "$TIP" ] && ok "idle + clean: watcher moved the audit checkout to $TIP" || bad "audit checkout not moved"
 grep -qF "git checkout --detach $TIP" "$A/received" && ok "prompt names the commit and how to check it out" || bad "prompt lacks the commit"
 grep -q 'DELIVERED ROUND 1' "$WLOG" && ok "delivery confirmed on screen, then logged" || bad "no DELIVERED line"
@@ -135,28 +135,28 @@ printf '\nROUND 1 · AUDITOR · 2026-09-18T00:05Z · test\nMETHOD:    still work
 # 7
 printf 'VERDICT:   ACCEPT\n' >> "$LOG"; watch1
 [ "$(got)" = 1 ] && ok "VERDICT appended -> auditor not re-woken" || bad "woke the auditor for its own verdict"
-grep -qF '[audit-watch security V1]' "$L/received" && grep -q 'VERDICT: ACCEPT' "$L/received" \
+grep -qF '[audit-watch model V1]' "$L/received" && grep -q 'VERDICT: ACCEPT' "$L/received" \
   && ok "VERDICT appended -> the LEAD is prompted with it" || bad "lead not told about the verdict"
 # 8
 watch1; [ "$(lead_got)" = 1 ] && ok "verdict sent to the lead once" || bad "verdict sent to lead $(lead_got) times"
 # 9 — busy auditor: deliver NOW (Claude queues it); never move the checkout under a working session
 TIP2="$(commit "round 2's commit")"; lead_round 2 1; setmode "$A" busy; watch1
-grep -qF '[audit-watch security R2]' "$A/received" && ok "auditor BUSY -> ROUND 2 delivered immediately (queued)" || bad "busy auditor made it wait"
+grep -qF '[audit-watch model R2]' "$A/received" && ok "auditor BUSY -> ROUND 2 delivered immediately (queued)" || bad "busy auditor made it wait"
 [ "$(audit_head)" = "$TIP" ] && grep -qF "git checkout --detach $TIP2" "$A/received" \
   && ok "busy: checkout left alone; the prompt carries $TIP2 instead" || bad "busy checkout/prompt wrong"
 setmode "$A" ready
 # 10 — a newer LEAD round lands before the auditor answers the previous one
 lead_round 3 1; verdict 2 ACCEPT; watch1
-grep -qF '[audit-watch security R3]' "$A/received" && ok "late ROUND 2 verdict does not hide ROUND 3" || bad "late verdict hid ROUND 3"
+grep -qF '[audit-watch model R3]' "$A/received" && ok "late ROUND 2 verdict does not hide ROUND 3" || bad "late verdict hid ROUND 3"
 # 11 — auto mode: HOLD (operator decision: auditor is manual only), then deliver once manual again
 lead_round 4 1; setmode "$A" auto; watch1
-! grep -qF '[audit-watch security R4]' "$A/received" && grep -q 'R\{0\}OUND 4 waiting — auditor is NOT in manual mode' "$WLOG" \
+! grep -qF '[audit-watch model R4]' "$A/received" && grep -q 'R\{0\}OUND 4 waiting — auditor is NOT in manual mode' "$WLOG" \
   && ok "auditor in AUTO mode -> ROUND 4 held, with the reason" || bad "delivered to an auditor in auto mode"
 setmode "$A" ready; watch1
-grep -qF '[audit-watch security R4]' "$A/received" && ok "back in manual -> the held ROUND 4 is delivered" || bad "held round not delivered after manual restored"
+grep -qF '[audit-watch model R4]' "$A/received" && ok "back in manual -> the held ROUND 4 is delivered" || bad "held round not delivered after manual restored"
 # 12 — dirty audit checkout: deliver anyway, do not touch it
 TIP5="$(commit "round 5")"; lead_round 5 1; touch "$DEV/rms-model-audit/injected-bypass.txt"; H="$(audit_head)"; watch1
-grep -qF '[audit-watch security R5]' "$A/received" && [ "$(audit_head)" = "$H" ] && grep -qF "git checkout --detach $TIP5" "$A/received" \
+grep -qF '[audit-watch model R5]' "$A/received" && [ "$(audit_head)" = "$H" ] && grep -qF "git checkout --detach $TIP5" "$A/received" \
   && ok "dirty audit checkout -> delivered, checkout untouched, auditor told to check out $TIP5" || bad "dirty checkout mishandled"
 rm "$DEV/rms-model-audit/injected-bypass.txt"
 # 13 — answered by hand, never delivered by the watcher
@@ -207,7 +207,7 @@ lead_round 7 1; tmux respawn-pane -k -t "$AP" "env PS1='$ ' bash --norc -i"; sle
 [ -f "$A/launched" ] && grep -q 'restricted' "$A/launched" && grep -q 'RELAUNCHED' "$WLOG" \
   && ok "auditor exited, lead live -> auditor relaunched with its audit flags" || bad "exited auditor not relaunched"
 # The relaunch is not the delivery: the prompt must actually land (live bug: --debug swallowed it).
-grep -qF '[audit-watch security R7]' "$A/received" && grep -q 'INDEPENDENT AUDITOR' "$A/received" \
+grep -qF '[audit-watch model R7]' "$A/received" && grep -q 'INDEPENDENT AUDITOR' "$A/received" \
   && ok "relaunched auditor actually RECEIVED the round (+ its cold-start brief), confirmed on screen" || bad "relaunched auditor never got its prompt"
 grep -q -- '--debug --permission-mode' "$A/launched" \
   && ok "--debug is not last in the flags, so it cannot swallow a prompt" || bad "--debug positioned where it eats the next argument"
