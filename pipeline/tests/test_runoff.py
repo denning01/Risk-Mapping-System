@@ -144,3 +144,33 @@ def test_season_rank_refuses_a_record_with_missing_years():
     del totals[2021], totals[2022]
     with pytest.raises(ValueError, match=r"missing \[2021, 2022\]"):
         runoff.season_rank(totals, 2023, 1991, 2023)
+
+
+def _fake_chirps(root, years):
+    import rasterio
+    from rasterio.transform import from_origin
+    d = root / "raw" / "nyando" / "chirps" / "monthly"
+    d.mkdir(parents=True)
+    for y in years:
+        for m in (10, 11, 12):
+            with rasterio.open(d / f"{y}-{m:02d}.tif", "w", driver="GTiff", height=2, width=2, count=1, dtype="float32",
+                               crs="EPSG:4326", transform=from_origin(34.9, -0.1, 0.05, 0.05), nodata=-9999) as ds:
+                ds.write(np.full((1, 2, 2), 100.0 + (y == 2023) * 50 + y % 5, "float32"))
+
+
+def test_chirps_ratio_in_03_refuses_a_record_missing_its_first_years(tmp_path, monkeypatch):
+    """F5.8: the rank range starts at the WMO normal's first year (1991), not at the first file found."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("rf", Path(__file__).resolve().parents[1] / "03_runoff_flood.py")
+    rf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rf)
+    monkeypatch.setenv("RMS_DATA", str(tmp_path))
+    box = [34.9, -0.2, 35.0, -0.1]
+    _fake_chirps(tmp_path, range(1991, 2024))
+    full = rf.chirps_ratio("nyando", box)
+    assert full["of_years"] == 33 and full["rank_wettest"] == 1
+    for m in (10, 11, 12):
+        (tmp_path / "raw" / "nyando" / "chirps" / "monthly" / f"1991-{m:02d}.tif").unlink()
+    with pytest.raises(ValueError, match=r"missing \[1991\]"):
+        rf.chirps_ratio("nyando", box)

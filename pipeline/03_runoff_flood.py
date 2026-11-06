@@ -86,7 +86,7 @@ def chirps_ratio(area: str, bbox) -> dict:
     clim = np.nanmean(np.stack([totals[y] for y in clim_years]), axis=0)
     ratio = runoff.season_ratio(totals[EVENT_YEAR], clim)
     area_mean = {y: float(np.nanmean(t)) for y, t in totals.items()}
-    rank, n_years = runoff.season_rank(area_mean, EVENT_YEAR, min(totals), EVENT_YEAR)
+    rank, n_years = runoff.season_rank(area_mean, EVENT_YEAR, CLIM[0], EVENT_YEAR)   # F5.8: fixed start, not min(totals)
     wetter = sorted((y for y in area_mean if area_mean[y] > area_mean[EVENT_YEAR]), key=area_mean.get, reverse=True)
     return {"ratio": round(ratio, 4), "event": f"OND {EVENT_YEAR}", "event_mm": round(area_mean[EVENT_YEAR], 1),
             "clim_mm": round(float(np.nanmean(clim)), 1), "clim_years": [min(clim_years), max(clim_years)],
