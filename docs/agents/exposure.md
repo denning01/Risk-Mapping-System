@@ -107,3 +107,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   errors cancel); use an asymmetric notch. Don't promise a number you read from the wrong column.
 - 2026-11-06 A zsh helper with "${3:+--flag $3}" passes "--flag value" as ONE word (no word splitting), argparse rejects
   it, and an `echo exit=$?` after a redirect can still print 0. Write landing commands out in full.
+- 2026-11-06 (E-08) A slide doc drafted from memory of the data over-claims. "Loses 4 segments from 150 mm" was really 3 at
+  100–150 and 4 from 200, and the river names were never measured. Check every sentence against routes_check / the JSON,
+  and match the tables to the files by script (all 20 rows), before committing. Reported impacts: IFRC GO PDFs
+  (go-api.ifrc.org/api/DownloadFile/…) are fetchable primary sources when ReliefWeb/OCHA return 403.
