@@ -289,9 +289,25 @@ validate_role() {
   return $problems
 }
 
+# ---- PREVIEW: the web app on data, always up --------------------------------------------------
+# The demo is what `data` shows, so the app runs from the operator's checkout (data) with hot reload.
+# Created by ensure_session on every build path (--queue, --start, --restore, boot), so a reboot
+# brings it back without anyone remembering. Never restarted if the window already exists.
+PREVIEW_PORT="${PREVIEW_PORT:-3030}"
+ensure_preview() {
+  window_exists preview && return 0
+  tmux new-window -d -t "$SESSION" -n preview -c "$DEV_ROOT/$MAIN_DIR_NAME/web"
+  tmux send-keys -t "$SESSION:preview" "npm run dev -- --port $PREVIEW_PORT" C-m
+  local p; p="$(tmux list-panes -t "$SESSION:preview" -F '#{pane_id}' | head -1)"
+  tmux set-option -p -t "$p" @role "preview · data · http://localhost:$PREVIEW_PORT" >/dev/null
+  tmux set-window-option -t "$SESSION:preview" pane-border-status top >/dev/null
+  tmux set-window-option -t "$SESSION:preview" pane-border-format " #{@role} " >/dev/null
+}
+
 ensure_session() {
-  tmux has-session -t "$SESSION" 2>/dev/null && return 0
+  tmux has-session -t "$SESSION" 2>/dev/null && { ensure_preview; return 0; }
   tmux new-session -d -s "$SESSION" -n services -c "$DEV_ROOT/$MAIN_DIR_NAME"
+  ensure_preview
   tmux send-keys -t "$SESSION:services" \
     "clear; printf 'services · data (Person A integration) · do not develop here\n  web       cd web && npm run dev -- --port 3000\n  pipeline  source ../.venv/bin/activate\n  gate      npm run verify:all\n  ee auth   ../.venv/bin/earthengine authenticate   (human, once)\n\n'" C-m
   local p; p="$(tmux list-panes -t "$SESSION:services" -F '#{pane_id}' | head -1)"
@@ -311,7 +327,7 @@ ensure_session() {
 # after every command that creates a window. It moves ONLY the windows in ORDER, so the devtmux
 # windows sharing this session name (dev/agents/claude — see --kill) keep their places ahead of them
 # and are never renumbered out from under the tool that made them.
-ORDER=(operator services $(roles | grep -vx operator) watch)
+ORDER=(preview services operator $(roles | grep -vx operator) watch)   # preview, then services, then operator: human's request 2026-11-06
 
 order_windows() {
   tmux has-session -t "$SESSION" 2>/dev/null || return 0
