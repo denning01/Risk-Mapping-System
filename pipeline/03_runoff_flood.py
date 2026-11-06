@@ -130,17 +130,26 @@ def png(path, depth, aoi, title):
     plt.close(fig)
 
 
-def main(area: str, k: float | None, alpha: float):
-    prov = provenance()   # at START (see 02_terrain.py)
-    cal = calibrated_k(area) if k is None else None
-    transfer = None
-    if k is None and cal is None and cfg.get("k_transfer_from"):
+def choose_k(area: str, cfg: dict, k: float | None):
+    """(k, own calibration or None, transferred calibration or None). An explicit k wins (uncalibrated); else this
+    area's backtest; else the config's k_transfer_from area's backtest (tagged uncalibrated); else K_PROVISIONAL."""
+    if k is not None:
+        return k, None, None
+    cal = calibrated_k(area)
+    if cal:
+        return cal["k"], cal, None
+    if cfg.get("k_transfer_from"):
         transfer = calibrated_k(cfg["k_transfer_from"])
         if transfer is None:
             sys.exit(f"REFUSED: k_transfer_from {cfg['k_transfer_from']} has no valid calibration")
-    if k is None:
-        k = cal["k"] if cal else transfer["k"] if transfer else K_PROVISIONAL
+        return transfer["k"], None, transfer
+    return K_PROVISIONAL, None, None
+
+
+def main(area: str, k: float | None, alpha: float):
+    prov = provenance()   # at START (see 02_terrain.py)
     cfg = config.load(area)
+    k, cal, transfer = choose_k(area, cfg, k)
     m, raw = model_dir(area), raw_dir(area)
     grid = grid_of(m / "hand.tif")
     # One DEM per area (operator ruling 2026-11-06): the terrain this run builds on must come from the configured DEM.

@@ -115,3 +115,22 @@ def test_real_nyando_backtest_k_is_inside_the_grid_and_nairobi_transfers_it():
     assert rf.calibrated_k("nyando")["k"] == json.loads(REAL.read_text())["best"]["k"]
     assert config.load("nairobi")["k_transfer_from"] == "nyando"
     assert config.load("nyando").get("k_transfer_from") is None
+
+
+def test_choose_k_order_explicit_then_own_then_transfer_then_provisional(tmp_path, monkeypatch):
+    """03.main's k choice, run through the same function main calls (1104d37 crashed main on an unbound cfg)."""
+    rf = _load("03_runoff_flood.py")
+    monkeypatch.setenv("RMS_DATA", str(tmp_path))
+    cfg = {"k_transfer_from": "nyando"}
+    with pytest.raises(SystemExit, match="no valid calibration"):
+        rf.choose_k("nairobi", cfg, None)
+    assert rf.choose_k("nairobi", {}, None) == (rf.K_PROVISIONAL, None, None)
+    _bt(tmp_path / "processed" / "nyando" / "model" / "backtest", 0.0126)
+    k, cal, tr = rf.choose_k("nairobi", cfg, None)
+    assert k == 0.0126 and cal is None and tr["k"] == 0.0126
+    _bt(tmp_path / "processed" / "nairobi" / "model" / "backtest", 0.05, on_edge=True)   # own backtest, edge -> ignored
+    assert rf.choose_k("nairobi", cfg, None)[2]["k"] == 0.0126
+    _bt(tmp_path / "processed" / "nairobi" / "model" / "backtest", 0.02)
+    k, cal, tr = rf.choose_k("nairobi", cfg, None)
+    assert k == 0.02 and cal["k"] == 0.02 and tr is None
+    assert rf.choose_k("nairobi", cfg, 0.03) == (0.03, None, None)
