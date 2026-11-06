@@ -221,6 +221,65 @@ def extract(pbf: Path, areas: dict[str, list[float]]) -> dict:
     return out
 
 
+PLACE_AREA_LANDUSE = {"farmland", "farmyard", "orchard"}  # kept even unnamed: candidate farm origins
+
+
+def place_kind(tags: dict) -> str | None:
+    """Which named-place class an OSM object belongs to for origin checks (E-03), or None."""
+    if "place" in tags and "name" in tags:
+        return f"place={tags['place']}"
+    if tags.get("amenity") == "marketplace":
+        return "amenity=marketplace"
+    if tags.get("boundary") == "administrative" and "name" in tags:
+        return f"admin_level={tags.get('admin_level')}"
+    if tags.get("landuse") in PLACE_AREA_LANDUSE:
+        return f"landuse={tags['landuse']}"
+    return None
+
+
+def extract_places(pbf: Path, areas: dict[str, list[float]]) -> dict:
+    """Named places (place=*, marketplaces, admin areas) and farmland per area bbox + buffer: id -> [feature]."""
+    import osmium
+    from shapely.geometry import MultiPolygon, Polygon, mapping
+    buf = {a: (b[0] - BUFFER_DEG, b[1] - BUFFER_DEG, b[2] + BUFFER_DEG, b[3] + BUFFER_DEG) for a, b in areas.items()}
+    out = {a: [] for a in areas}
+
+    def add(osm, kind, tags, lon, lat, geom=None):
+        for a, bb in buf.items():
+            if bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]:
+                out[a].append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
+                               "properties": {"osm": osm, "kind": kind, "name": tags.get("name"),
+                                              "area_km2": None if geom is None else round(_area_km2(geom), 4)}})
+
+    for obj in osmium.FileProcessor(str(pbf)).with_locations().with_areas():
+        if obj.is_way() or obj.is_relation() or not len(obj.tags):
+            continue
+        tags = dict(obj.tags)
+        kind = place_kind(tags)
+        if not kind:
+            continue
+        if obj.is_node():
+            add(f"n{obj.id}", kind, tags, obj.location.lon, obj.location.lat)
+        else:
+            try:
+                polys = [Polygon([(n.lon, n.lat) for n in ring], [[(n.lon, n.lat) for n in inner]
+                                                                  for inner in obj.inner_rings(ring)])
+                         for ring in obj.outer_rings()]
+            except osmium.InvalidLocationError:
+                continue
+            if not polys:
+                continue
+            geom = MultiPolygon(polys) if len(polys) > 1 else polys[0]
+            c = geom.representative_point()
+            add(f"w{obj.orig_id()}" if obj.from_way() else f"r{obj.orig_id()}", kind, tags, c.x, c.y, geom)
+    return out
+
+
+def _area_km2(geom) -> float:
+    from pyproj import Geod
+    return abs(Geod(ellps="WGS84").geometry_area_perimeter(geom)[0]) / 1e6
+
+
 def dedupe_shelters(sh: list[dict]) -> tuple[list[dict], int]:
     """Drop a node shelter that lies inside an area shelter of the same type (same facility mapped twice)."""
     from shapely.geometry import Point
@@ -316,14 +375,10 @@ def md5(path: Path) -> str:
 
 def cmd_prepare(args) -> int:
     import osmnx as ox
-    pbf = Path(args.pbf or rms_data() / "raw" / "osm" / PBF_NAME)
-    md5_file = pbf.with_suffix(pbf.suffix + ".md5")
-    digest = md5(pbf)
-    expected = md5_file.read_text().split()[0] if md5_file.exists() else None
-    print(f"pbf {pbf} md5 {digest} expected {expected}")
-    if expected and digest != expected:
-        print("ERROR: PBF checksum mismatch", file=sys.stderr)
+    chk = check_pbf(args.pbf)
+    if not chk:
         return 1
+    pbf, digest = chk
     meta = {a: load_area(a) for a in args.area}
     t0 = time.time()
     ex = extract(pbf, {a: m["bbox"] for a, m in meta.items()})
@@ -382,6 +437,117 @@ def cmd_prepare(args) -> int:
     return 0
 
 
+def check_pbf(pbf_arg) -> tuple[Path, str] | None:
+    pbf = Path(pbf_arg or rms_data() / "raw" / "osm" / PBF_NAME)
+    md5_file = pbf.with_suffix(pbf.suffix + ".md5")
+    digest = md5(pbf)
+    expected = md5_file.read_text().split()[0] if md5_file.exists() else None
+    print(f"pbf {pbf} md5 {digest} expected {expected}")
+    if expected and digest != expected:
+        print("ERROR: PBF checksum mismatch", file=sys.stderr)
+        return None
+    return pbf, digest
+
+
+def cmd_places(args) -> int:
+    import collections
+    chk = check_pbf(args.pbf)
+    if not chk:
+        return 1
+    pbf, digest = chk
+    t0 = time.time()
+    pl = extract_places(pbf, {a: load_area(a)["bbox"] for a in args.area})
+    print(f"read in {time.time() - t0:.0f} s")
+    for a, feats in pl.items():
+        outd = rms_data() / "processed" / a / "exposure"
+        outd.mkdir(parents=True, exist_ok=True)
+        (outd / "osm_places.geojson").write_text(json.dumps(
+            {"type": "FeatureCollection", "source": PBF_URL, "pbf_md5": digest, "features": feats}))
+        print(a, len(feats), dict(collections.Counter(f["properties"]["kind"] for f in feats)))
+    return 0
+
+
+# E-03 demo origins. Coordinates are NOT typed here: each is the OSM feature's own point (node location, or the
+# representative point of an area) read from osm_places.geojson, so a typo cannot move an origin.
+ORIGINS = {
+    "nairobi": [
+        ("nbi-o1", "Mathare", "n11155030940", "informal_settlement_resident"),
+        ("nbi-o2", "Kibera", "n11007276790", "informal_settlement_resident"),
+        ("nbi-o3", "Westlands (commute to Kasarani)", "n30121815", "commuter"),     # Kasarani = OSM n289910864
+        ("nbi-o4", "Gikomba Market", "n7005142185", "trader"),
+    ],
+    "nyando": [
+        ("nya-o1", "Ahero town", "n3901069801", "settler"),
+        ("nya-o2", "Katito Market", "w540459358", "trader"),
+        ("nya-o3", "Farm in the Ahero Irrigation Scheme", "w1133831832", "farmer"),   # West Kano w1144291596: 605 m from drive graph
+    ],
+}
+MAX_SNAP_M = 500.0  # an origin further than this from the walk graph cannot start a credible route
+
+
+def build_origins(area: str, places: list[dict], user_types: list[str], bbox, graph_nodes: dict) -> tuple[list, list]:
+    """-> (origins.json rows, check rows). Raises ValueError on any failed check.
+    graph_nodes: network -> (lon array, lat array)."""
+    from pyproj import Geod
+    g = Geod(ellps="WGS84")
+    by_id = {f["properties"]["osm"]: f for f in places}
+    rows, checks, errors = [], [], []
+    for oid, name, osm, ut in ORIGINS[area]:
+        f = by_id.get(osm)
+        if f is None:
+            errors.append(f"{oid}: OSM {osm} not in osm_places")
+            continue
+        lon, lat = f["geometry"]["coordinates"]
+        if ut not in user_types:
+            errors.append(f"{oid}: user_type {ut!r} not in {user_types}")
+        if not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+            errors.append(f"{oid}: {lon},{lat} outside bbox {bbox}")
+        others = [h for h in places if h["properties"]["name"] and h["properties"]["osm"] != osm]
+        d_near, near = min(((g.inv(lon, lat, *h["geometry"]["coordinates"])[2], h) for h in others),
+                           key=lambda t: t[0])
+        snap = {}
+        for nt, (xs, ys) in graph_nodes.items():
+            snap[nt] = float(np.min(g.inv(np.full(len(xs), lon), np.full(len(xs), lat), xs, ys)[2]))
+            if snap[nt] > MAX_SNAP_M:
+                errors.append(f"{oid}: {snap[nt]:.0f} m from the {nt} graph (> {MAX_SNAP_M:.0f})")
+        rows.append({"id": oid, "name": name, "lon": round(lon, 5), "lat": round(lat, 5), "user_type": ut})
+        checks.append({"id": oid, "osm": osm, "osm_name": f["properties"]["name"], "osm_kind": f["properties"]["kind"],
+                       "nearest_other_osm_name": near["properties"]["name"], "nearest_other_m": round(d_near),
+                       "snap_m": {k: round(v) for k, v in snap.items()}})
+    missing = set(user_types) - {r["user_type"] for r in rows}
+    if missing:
+        errors.append(f"user_types with no origin (the app picks the first origin of a type): {sorted(missing)}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return rows, checks
+
+
+def cmd_origins(args) -> int:
+    import networkx as nx
+    data_dir = Path(args.data_dir)
+    for a in args.area:
+        meta = load_area(a, data_dir)
+        exd = rms_data() / "processed" / a / "exposure"
+        places = json.loads((exd / "osm_places.geojson").read_text())["features"]
+        gn = {}
+        for nt in ("walk", "drive"):
+            G = nx.read_graphml(exd / f"graph_{nt}.graphml")
+            gn[nt] = (np.array([float(d["x"]) for _, d in G.nodes(data=True)]),
+                      np.array([float(d["y"]) for _, d in G.nodes(data=True)]))
+        try:
+            rows, checks = build_origins(a, places, meta["user_types"], meta["bbox"], gn)
+        except ValueError as e:
+            print(f"ERROR {a}: {e}", file=sys.stderr)
+            return 1
+        (data_dir / a / "origins.json").write_text(json.dumps(rows, ensure_ascii=False))
+        (exd / "origins_check.json").write_text(json.dumps(checks, indent=1, ensure_ascii=False))
+        for r, c in zip(rows, checks):
+            print(f"{a} {r['id']} {r['name']!r} {r['user_type']} {r['lon']},{r['lat']} <- OSM {c['osm']} "
+                  f"{c['osm_kind']} {c['osm_name']!r}; nearest other named OSM: {c['nearest_other_osm_name']!r} "
+                  f"{c['nearest_other_m']} m; snap walk {c['snap_m']['walk']} m drive {c['snap_m']['drive']} m")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -389,6 +555,14 @@ def main(argv=None) -> int:
     s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
     s.add_argument("--pbf", default=None)
     s.set_defaults(fn=cmd_prepare)
+    s = sub.add_parser("places", help="cache named OSM places per area (origin checks, E-03)")
+    s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
+    s.add_argument("--pbf", default=None)
+    s.set_defaults(fn=cmd_places)
+    s = sub.add_parser("origins", help="write <area>/origins.json from OSM features (E-03)")
+    s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
+    s.add_argument("--data-dir", default=str(Path(__file__).resolve().parents[1] / "web" / "public" / "data"))
+    s.set_defaults(fn=cmd_origins)
     args = p.parse_args(argv)
     return args.fn(args)
 

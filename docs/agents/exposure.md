@@ -76,3 +76,6 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (E-02) osmnx simplification returns list-valued attributes (`highway`, `name`, ...) in SET order, which
   changes with PYTHONHASHSEED; anything that takes element [0] (osmnx add_edge_speeds does) is non-reproducible.
   Same counts across runs does not mean same graph: compare sum(travel_time) under two seeds. Fixed by slowest_class.
+- 2026-11-06 (E-03) Take an origin's coordinates from its OSM feature (by id), never type them. A large OSM area's
+  representative point can sit far from any road (West Kano scheme: 605 m from the drive graph), so check the snap
+  distance to both graphs before choosing it. "X market" in mock data is not evidence that an OSM marketplace exists.

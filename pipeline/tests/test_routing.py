@@ -202,3 +202,76 @@ def test_merged_two_class_edge_uses_slowest_class(tmp_path):
         H = rt.add_travel_times(H, "drive", urban=False)
         assert {d["speed_kph"] for _, _, d in H.edges(data=True)} == {rt.HWY_KPH["residential"]}
     assert rt.slowest_class(["motorway", "made_up_class"]) == "made_up_class"   # unknown -> FALLBACK_KPH (25) < 80
+
+
+# ---- E-03: named places for origin checks ----
+def test_place_kind():
+    assert rt.place_kind({"place": "suburb", "name": "Kibera"}) == "place=suburb"
+    assert rt.place_kind({"place": "suburb"}) is None                      # unnamed place is useless for a check
+    assert rt.place_kind({"amenity": "marketplace"}) == "amenity=marketplace"
+    assert rt.place_kind({"boundary": "administrative", "admin_level": "5", "name": "X"}) == "admin_level=5"
+    assert rt.place_kind({"landuse": "farmland"}) == "landuse=farmland"
+    assert rt.place_kind({"landuse": "residential", "name": "Y"}) is None
+    assert rt.place_kind({"amenity": "school", "name": "Z"}) is None
+
+
+def test_extract_places_on_handwritten_osm(tmp_path):
+    n = lambda i, lon, lat, tags="": f'<node id="{i}" version="1" lat="{lat}" lon="{lon}">{tags}</node>'
+    t = lambda k, v: f'<tag k="{k}" v="{v}"/>'
+    sq = lambda wid, refs, tags: (f'<way id="{wid}" version="1">' + "".join(f'<nd ref="{r}"/>' for r in refs)
+                                  + tags + "</way>")
+    body = [n(1, 35.005, -0.205, t("place", "village") + t("name", "In Village")),
+            n(2, 35.50, -0.205, t("place", "village") + t("name", "Far Village")),          # outside bbox+buffer
+            n(3, 35.025, -0.205, t("place", "hamlet") + t("name", "Buffer Hamlet")),        # in the 0.02 deg buffer
+            n(10, 35.006, -0.207), n(11, 35.007, -0.207), n(12, 35.007, -0.206), n(13, 35.006, -0.206),
+            n(20, 35.60, -0.207), n(21, 35.601, -0.207), n(22, 35.601, -0.206), n(23, 35.60, -0.206),
+            sq(100, (10, 11, 12, 13, 10), t("landuse", "farmland")),
+            sq(101, (20, 21, 22, 23, 20), t("amenity", "marketplace") + t("name", "Far Market"))]
+    f = tmp_path / "p.osm"
+    f.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n' + "\n".join(body) + "\n</osm>\n")
+    got = {p["properties"]["osm"]: p for p in rt.extract_places(f, {"nyando": BBOX})["nyando"]}
+    assert sorted(got) == ["n1", "n3", "w100"]
+    farm = got["w100"]["properties"]
+    assert farm["kind"] == "landuse=farmland" and farm["name"] is None
+    assert farm["area_km2"] == pytest.approx(0.0124, rel=0.02)                 # 0.001 deg x 0.001 deg at the equator
+
+
+def _places():
+    P = lambda osm, kind, name, lon, lat: {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                                           "properties": {"osm": osm, "kind": kind, "name": name, "area_km2": None}}
+    return [P("n1", "place=town", "Good Town", 35.005, -0.205), P("n2", "place=village", "Next Village", 35.006, -0.205),
+            P("n3", "place=town", "Far Town", 35.20, -0.205), P("n4", "place=town", "Roadless Town", 35.009, -0.2099)]
+
+
+def _gn():
+    import numpy as np
+    xy = (np.array([35.0051, 35.008]), np.array([-0.205, -0.205]))     # ~11 m from n1; n4 is ~550 m from the nearest
+    return {"walk": xy, "drive": xy}
+
+
+@pytest.mark.parametrize("spec,err", [
+    ([("o1", "Good", "n1", "farmer")], None),
+    ([("o1", "Good", "n1", "pilot")], "user_type 'pilot'"),
+    ([("o1", "Far", "n3", "farmer")], "outside bbox"),
+    ([("o1", "Ghost", "n9", "farmer")], "not in osm_places"),
+    ([("o1", "Roadless", "n4", "farmer")], "from the walk graph"),
+    ([("o1", "Good", "n1", "farmer")], "no origin"),                  # run with two user_types: one uncovered
+])
+def test_build_origins_checks(monkeypatch, spec, err):
+    monkeypatch.setitem(rt.ORIGINS, "nyando", spec)
+    uts = ["farmer", "trader"] if err == "no origin" else ["farmer"]
+    if err is None:
+        rows, checks = rt.build_origins("nyando", _places(), uts, BBOX, _gn())
+        assert rows == [{"id": "o1", "name": "Good", "lon": 35.005, "lat": -0.205, "user_type": "farmer"}]
+        assert checks[0]["nearest_other_osm_name"] == "Next Village" and checks[0]["nearest_other_m"] == 111
+        assert checks[0]["snap_m"]["walk"] == 11
+    else:
+        with pytest.raises(ValueError, match=err):
+            rt.build_origins("nyando", _places(), uts, BBOX, _gn())
+
+
+def test_committed_origins_cover_every_user_type():
+    import json
+    areas = {a["id"]: a for a in json.loads((Path(__file__).resolve().parents[2] / "web/public/data/areas.json").read_text())}
+    for a, spec in rt.ORIGINS.items():
+        assert {s[3] for s in spec} == set(areas[a]["user_types"]) and 3 <= len(spec) <= 6
