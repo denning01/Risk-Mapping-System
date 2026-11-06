@@ -55,6 +55,12 @@ def load(area: str, config_dir: Path | None = None) -> dict:
     zones = {utm_epsg(w, (s + n) / 2) % 100, utm_epsg(e - 1e-9, (s + n) / 2) % 100}
     if len(zones) > 1:
         raise ValueError(f"{path}: bbox straddles UTM zones {sorted(zones)}")
+    if "export_bbox" in cfg:
+        ew, es, ee_, en = cfg["export_bbox"]
+        if not (ew <= w and es <= s and ee_ >= e and en >= n):
+            raise ValueError(f"{path}: export_bbox {cfg['export_bbox']} must contain bbox {cfg['bbox']}")
+    else:
+        cfg["export_bbox"] = list(cfg["bbox"])
     cfg["center"] = [(w + e) / 2, (s + n) / 2]
     cfg["utm_epsg"] = utm_epsg(*cfg["center"])
     cfg["area_km2"] = bbox_area_km2_geodesic(cfg["bbox"])

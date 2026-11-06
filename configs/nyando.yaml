@@ -14,3 +14,7 @@ before_period:
   start: "2023-09-01"
   end: "2023-10-10"
 user_types: [settler, farmer, trader]
+# Download box (M-02): wider than the AOI so flow accumulation (M-03) sees the upstream Nyando catchment
+# (OSM river ways reach 35.59 E) and so it contains the operator-ruled west edge 34.80 (2026-11-05).
+# Rasters are clipped to `bbox` only on export to the app.
+export_bbox: [34.70, -0.65, 35.90, 0.15]

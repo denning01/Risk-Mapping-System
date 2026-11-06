@@ -60,3 +60,12 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   response and back off. A river is many OSM ways: take them all, not the first hit (the first Nyando
   hit was only the upper reach). Nominatim's "Muhoroni" landed ~13 km from the town the OSM tiles
   label: geocodes are pins to eyeball, never assertions.
+- 2026-11-06 (M-02) No-EE sources, as of today: CHIRPS moved from `products/CHIRPS-2.0/` (404) to
+  `products/CHIRPS/v2.0/`; its 3-monthly product starts only in 2015, so seasonal climatology comes from
+  monthly files; CHC answers 429 at 4 parallel workers (2 is fine). worldpop.org refuses byte ranges on
+  GET (HEAD says `Accept-Ranges: bytes`, GET resume -> curl rc=33; GDAL /vsicurl/ -> "Range downloading
+  not supported"), so the 312 MB Kenya file must come down in one unbroken transfer; `curl` exited 0
+  with a truncated file overnight — always compare against Content-Length. GLO-30/WorldCover/JRC COGs
+  read fine by window over /vsicurl/.
+- 2026-11-06 (M-02/M-03) pysheds 0.5 calls np.in1d, removed in numpy 2.4; this venv has numpy 2.5.
+  Shimmed in pipeline/lib/terrain.py (lands with M-03), not by downgrading the shared venv.
