@@ -183,3 +183,15 @@ def test_exposed_building_weighted_spreads_county_people_by_footprint_area():
     wet2 = np.array([[False, False], [False, True]])                       # county 2's only building now wet
     out2 = pop.exposed_building_weighted(b, wet2, county, mask, tf, "EPSG:32736", man)
     assert out2["B"]["medium"] == 500 and out2["A"]["medium"] == 1000      # 500 x 1.0 (B) vs 500 x 2.0 (A)
+
+
+def test_built_cells_marks_centroid_cells_at_the_precision_threshold():
+    from pyproj import Transformer
+    tf = from_origin(722600.0, 9977880.0, 30, 30)
+    to = Transformer.from_crs(32736, 4326, always_xy=True).transform
+    pts = [to(722600 + 2.5 * 30, 9977880 - 0.5 * 30),      # row 0, col 2
+           to(722600 + 0.5 * 30, 9977880 - 3.5 * 30)]      # row 3, col 0, low confidence: not counted
+    b = {"lon": np.array([p[0] for p in pts]), "lat": np.array([p[1] for p in pts]),
+         "conf": np.array([0.9, 0.5]), "thr85": np.full(2, 0.716)}
+    g = pop.built_cells(b, (5, 5), tf, "EPSG:32736")
+    assert g.sum() == 1 and g[0, 2] and not g[2, 0]

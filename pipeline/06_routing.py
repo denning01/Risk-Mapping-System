@@ -592,9 +592,14 @@ def cmd_origins(args) -> int:
 # flood-aware routing (E-05)
 # ---------------------------------------------------------------------------------------------
 # RULES (stated; each one is a CHOICE unless a source is named):
-#  * An edge is CUT in a scenario when ANY point sampled every SAMPLE_STEP_M along its geometry lies in a flooded cell
-#    (depth > 0, any risk class). Stricter than "midpoint flooded": a long simplified edge with one flooded end is cut.
-#    Half the 30 m cell, so every cell an edge crosses gets a sample.
+#  * An edge is CUT in a scenario when ANY point sampled every SAMPLE_STEP_M along its geometry lies in a flooded cell.
+#    Stricter than "midpoint flooded": a long simplified edge with one flooded end is cut. Half the 30 m cell, so every
+#    cell an edge crosses gets a sample. "Flooded" differs by mode (operator ruling 2026-11-06, part 2):
+#      WALK edges: depth > 0, ANY depth (errs safe).
+#      DRIVE edges: depth >= DRIVE_CUT_M = 0.3 m. Source: US National Weather Service, "Turn Around Don't Drown",
+#        https://www.weather.gov/safety/flood-turn-around-dont-drown : "It takes just 12 inches of rushing water to carry
+#        away most cars" (12 in = 0.305 m; 0.3 m is also the contract's low/medium boundary). The NWS figure is for MOVING
+#        water; the model gives still depth, so this is a screening threshold. Drive snap legs use the same 0.3 m mask.
 #  * BRIDGES: a sample within BRIDGE_TOL_M of an OSM way tagged bridge=* (any value but "no") is never wet: the deck
 #    stands above the river cell the flood raster marks. Matched per WAY from the raw OSM XML the graph was built from,
 #    not per graph edge, because simplification merged approach roads into bridge edges (Nyando drive: median bridge-
@@ -609,25 +614,36 @@ def cmd_origins(args) -> int:
 #  * A route that cannot be found is NOT written (the contract has no "unreachable" leg); it is listed in the run's
 #    routes_check.json and printed, so it is reported, never silently dropped.
 SAMPLE_STEP_M = 15.0
+DRIVE_CUT_M = 0.3
 BRIDGE_TOL_M = 5.0
 MAX_DEST_SNAP_M = 500.0       # a shelter further than this from the walk graph is not routed to
 COMMUTE = {"nbi-o3": ("n289910864", "Kasarani")}   # origin id -> (OSM place id, name); place=suburb, in osm_places
 # Relocation (Nyando settlers, farmers): candidate = a walk-graph node inside the bbox, in a DRY cell, HAND >= HAND_MIN_M,
-# reachable on foot on the cut graph within RELOC_MAX_MIN. Score (weights sum to 1), highest first:
+# whose 30 m cell holds NO Open Buildings footprint (operator ruling 2026-11-06 part 3: a site is open ground, and on the
+# surface DEM a built cell's HAND is overstated by ~1-2 m), reachable on foot on the cut graph within RELOC_MAX_MIN. Score (weights sum to 1), highest first:
 #   hand    min(HAND / HAND_FULL_M, 1)                height above the nearest drainage (model hand.tif)
+#   slope   1 at <= 4 %, linear to 0 at 10 %          UNHCR site gradient (below); only when slope is given
 #   road    1 if a drive-graph node lies within ROAD_NEAR_M, else 0   (vehicle access for supplies / evacuation)
 #   service 1 if a SAFE school or health facility lies within SERVICE_NEAR_M, else 0
 #   time    1 - minutes / RELOC_MAX_MIN               shorter walk is better
 # HAND is used as a ROBUST LOCAL value (robust_hand): the 25th percentile over a HAND_WINDOW x HAND_WINDOW cell window
-# (150 m at 30 m). The model's DEM is Copernicus GLO-30, a SURFACE model: roofs and trees lift single cells (Ahero town,
-# 56322d6: a 13 m spike between 4-6 m neighbours), and an evacuee cannot stand on a roof. A site must be high across most
-# of its neighbourhood, not in one cell. NaN HAND counts as 0 (not high ground). LIMITATION: dense towns still read high.
-# Slope is NOT a criterion: the DEM is not in the model hand-off table, so it is not sha-verified (asked of the operator).
+# (150 m at 30 m): a site must be high across most of its neighbourhood, not in one cell. NaN HAND counts as 0.
+# LIMITATION (model's wording, operator correction 2026-11-06): "Nyando terrain is GLO-30, a surface model: on buildings it
+# sits 0.8-1.8 m above bare earth, so HAND there is overstated, and flood depth understated, by about 1-2 m. Nairobi uses
+# bare-earth FABDEM." (Ahero's 12-14 m HAND is mostly real height above drainage, NOT a roof artefact.)
+# SLOPE (model slope.tif, degrees, in the hand-off table and sha-verified since the 14:21 re-posts; operator ruling part 3):
+# robust local slope = median over the same 150 m window, as a percent gradient (100 tan). Source: UNHCR Emergency Handbook
+# (4th ed.), "Principles & Standards for Settlement Planning", https://emergency.unhcr.org/print/pdf/node/531 :
+# "Ideally, a site should have a slope of 2%-4% for good drainage, and not more than 10% to avoid erosion ...".
+# So: a candidate steeper than SLOPE_MAX_PCT (10 %) is excluded; slope score is 1 up to SLOPE_IDEAL_PCT (4 %), falling
+# linearly to 0 at 10 %. (The 2 % lower bound is for drainage; a flatter site is still dry here, so not penalised: CHOICE.)
 HAND_MIN_M, HAND_FULL_M = 5.0, 15.0
 HAND_WINDOW, HAND_PCT = 5, 25
 RELOC_MAX_MIN = 120.0
 ROAD_NEAR_M, SERVICE_NEAR_M = 250.0, 1000.0
-RELOC_WEIGHTS = {"hand": 0.4, "road": 0.2, "service": 0.2, "time": 0.2}
+RELOC_WEIGHTS = {"hand": 0.4, "road": 0.2, "service": 0.2, "time": 0.2}                   # without slope (Nairobi has none)
+RELOC_WEIGHTS_SLOPE = {"hand": 0.3, "slope": 0.2, "road": 0.15, "service": 0.15, "time": 0.2}   # with slope (CHOICE)
+SLOPE_IDEAL_PCT, SLOPE_MAX_PCT = 4.0, 10.0
 ROAD_CLASS_ORDER = ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"]
 ROADS_CUT_MAX = 8
 
@@ -636,6 +652,12 @@ def _names(v) -> list[str]:
     if v is None or (isinstance(v, float) and np.isnan(v)):
         return []
     return sorted(set(v)) if isinstance(v, list) else [str(v)]
+
+
+def flood_masks(depth: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(walk-flooded, drive-flooded) from a depth raster (m; NaN or <= 0 = dry). See the RULES above."""
+    d = np.nan_to_num(depth, nan=0.0)
+    return d > 0, d >= DRIVE_CUT_M
 
 
 def bridge_lines(osm_xml: Path) -> list[list[tuple[float, float]]]:
@@ -848,8 +870,17 @@ def robust_hand(hand: np.ndarray) -> np.ndarray:
     return percentile_filter(np.nan_to_num(hand.astype("float32"), nan=0.0), HAND_PCT, size=HAND_WINDOW, mode="nearest")
 
 
+def robust_slope_pct(slope_deg: np.ndarray) -> np.ndarray:
+    """Median slope over a HAND_WINDOW square window, as a percent gradient; NaN counts as steep (excluded)."""
+    from scipy.ndimage import median_filter
+    pct = 100.0 * np.tan(np.radians(np.nan_to_num(slope_deg.astype("float32"), nan=90.0 - 1e-3)))
+    return median_filter(np.minimum(pct, 1e4), size=HAND_WINDOW, mode="nearest")
+
+
 def relocation_candidates(RG: RoutingGraph, wet, wet_tf, hand, hand_tf, bbox, drive: RoutingGraph,
-                          safe_services: list[tuple[float, float]], dist_s, snap_m: float) -> list[dict]:
+                          safe_services: list[tuple[float, float]], dist_s, snap_m: float, built=None,
+                          slope_pct=None) -> list[dict]:
+    """`built`: bool grid on the HAND grid, True where a building footprint sits (excluded); None = not applied."""
     """Scored candidates (best first) among nodes reachable from the origin; see the RULES above."""
     from rasterio.transform import rowcol
     from pyproj import Transformer
@@ -868,6 +899,12 @@ def relocation_candidates(RG: RoutingGraph, wet, wet_tf, hand, hand_tf, bbox, dr
     w = sample(wet.astype(float), wet_tf, RG.nx_, RG.ny_)
     h = sample(hand, hand_tf, RG.nx_, RG.ny_)
     ok &= (w == 0) & np.isfinite(h) & (h >= HAND_MIN_M)
+    if built is not None:
+        ok &= sample(built.astype(float), hand_tf, RG.nx_, RG.ny_) == 0
+    sl = None
+    if slope_pct is not None:                       # same grid as hand.tif (checked by the caller)
+        sl = sample(slope_pct, hand_tf, RG.nx_, RG.ny_)
+        ok &= np.isfinite(sl) & (sl <= SLOPE_MAX_PCT)
     i = np.nonzero(ok)[0]
     if len(i) == 0:
         return []
@@ -881,10 +918,15 @@ def relocation_candidates(RG: RoutingGraph, wet, wet_tf, hand, hand_tf, bbox, dr
         svc_d = np.full(len(i), np.inf)
     s = {"hand": np.minimum(h[i] / HAND_FULL_M, 1.0), "road": (road_d <= ROAD_NEAR_M).astype(float),
          "service": (svc_d <= SERVICE_NEAR_M).astype(float), "time": 1.0 - mins[i] / RELOC_MAX_MIN}
-    score = sum(RELOC_WEIGHTS[k] * s[k] for k in RELOC_WEIGHTS)
+    weights = RELOC_WEIGHTS
+    if sl is not None:
+        s["slope"] = np.clip((SLOPE_MAX_PCT - sl[i]) / (SLOPE_MAX_PCT - SLOPE_IDEAL_PCT), 0.0, 1.0)
+        weights = RELOC_WEIGHTS_SLOPE
+    score = sum(weights[k] * s[k] for k in weights)
     order = np.lexsort((mins[i], -score))                          # ties: shorter walk first
     return [{"node": int(i[j]), "lon": float(RG.lon[i[j]]), "lat": float(RG.lat[i[j]]), "score": round(float(score[j]), 4),
-             "hand_m": round(float(h[i[j]]), 1), "road_m": round(float(road_d[j])), "service_m": (round(float(svc_d[j]))
+             "hand_m": round(float(h[i[j]]), 1),
+             "slope_pct": (round(float(sl[i[j]]), 1) if sl is not None else None), "road_m": round(float(road_d[j])), "service_m": (round(float(svc_d[j]))
              if np.isfinite(svc_d[j]) else None), "walk_min": round(float(mins[i[j]]), 1)} for j in order]
 
 
@@ -925,7 +967,8 @@ def _nearest_safe_shelter(W: RoutingGraph, o, shelters: list[dict], cut, flood=N
 
 
 def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,
-                 D: RoutingGraph, cut_w, cut_d, places: dict, reloc: dict | None, flood=None) -> tuple[list, list, list]:
+                 D: RoutingGraph, cut_w, cut_d, places: dict, reloc: dict | None, flood=None,
+                 flood_drive=None) -> tuple[list, list, list]:
     """-> (routes.json rows, extra high_ground shelters, check rows incl. unreachable). `reloc` (rural only):
     wet, wet_tf, hand, hand_tf. `places`: osm id -> (lon, lat) for commute destinations."""
     routes, extra, checks = [], [], []
@@ -937,7 +980,7 @@ def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list
         if kind == "commute":
             osm, name = COMMUTE[o["id"]]
             dest = places[osm]
-            base, safe = leg(D, op, dest, None), leg(D, op, dest, cut_d, flood)
+            base, safe = leg(D, op, dest, None), leg(D, op, dest, cut_d, flood_drive)
             chk.update(destination=name, osm=osm)
             if base is None or safe is None:
                 chk["unreachable"] = "no drive path" + (" even on the unflooded graph" if base is None else " avoiding flooded edges")
@@ -957,7 +1000,7 @@ def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list
                 cands = [] if so < 0 else relocation_candidates(
                     W, reloc["wet"], reloc["wet_tf"], reloc["hand"], reloc["hand_tf"], bbox, D,
                     [(s["lon"], s["lat"]) for s in shelters if s["safe"] and s["type"] in ("school", "hospital")],
-                    W.dijkstra(so, cut_w)[0], do_)
+                    W.dijkstra(so, cut_w)[0], do_, reloc.get("built"), reloc.get("slope_pct"))
                 chk["candidates_top5"] = cands[:5]
                 chk["n_candidates"] = len(cands)
                 if not cands:

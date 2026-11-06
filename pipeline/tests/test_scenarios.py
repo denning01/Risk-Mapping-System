@@ -365,3 +365,38 @@ def test_snapshot_refuses_a_changed_hand_tif(tmp_path):
     model, h = _handoff(tmp_path, mutate=rewrite)
     with pytest.raises(ValueError, match="hand.tif"):
         scen.snapshot(model, h, tmp_path / "snap")
+
+
+def _add_row(model, h, name, value):
+    import hashlib
+    f = model / name
+    prof = dict(driver="GTiff", width=10, height=10, count=1, dtype="float32", crs=CRS, transform=TF, nodata=np.nan)
+    with rasterio.open(f, "w", **prof) as ds:
+        ds.write(np.full((10, 10), value, dtype="float32"), 1)
+    b = f.read_bytes()
+    h.write_text(h.read_text() + f"| `{name}` | – | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()}` |\n")
+
+
+def test_snapshot_accepts_a_document_only_repost_that_adds_a_row(tmp_path):
+    model, h = _handoff(tmp_path)
+    d = scen.snapshot(model, h, tmp_path / "snap")
+    _add_row(model, h, "slope.tif", 2.0)                     # the 14:21 re-post: slope.tif row added, nothing else
+    d2 = scen.snapshot(model, h, tmp_path / "snap")
+    assert d2 == d and (d / "slope.tif").exists()
+    snap = json.loads((d / "snapshot.json").read_text())
+    assert "slope.tif" in snap["sha256"] and len(snap["sha256"]) == 12
+    assert "slope.tif" in (d / "handoff.md").read_text()
+
+
+def test_snapshot_refuses_a_repost_that_changes_an_existing_file(tmp_path):
+    model, h = _handoff(tmp_path)
+    scen.snapshot(model, h, tmp_path / "snap")
+    import hashlib
+    with rasterio.open(model / "hand.tif", "r+") as ds:          # hand.tif rewritten, table updated to match
+        ds.write(np.full((10, 10), 7.0, dtype="float32"), 1)
+    b = (model / "hand.tif").read_bytes()
+    lines = [l if "`hand.tif`" not in l else f"| `hand.tif` | – | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()}` |"
+             for l in h.read_text().splitlines()]
+    h.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="different contents"):
+        scen.snapshot(model, h, tmp_path / "snap")

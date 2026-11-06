@@ -339,8 +339,17 @@ def snapshot(model_dir: Path, handoff: Path, out_root: Path) -> Path:
         final = out_root / commit
         if final.exists():
             old = json.loads((final / "snapshot.json").read_text())["sha256"]
-            if old != shas:
-                raise ValueError(f"{final} exists with different contents")
+            changed = [r for r in old if shas.get(r) != old[r]]
+            if changed:                                   # a file already snapshotted may never change
+                raise ValueError(f"{final} exists with different contents: {changed}")
+            for r in shas:                                # a document-only re-post may ADD rows (e.g. slope.tif)
+                if r not in old:
+                    shutil.copy2(tmp / Path(r).name, final / Path(r).name)
+                    if _sha256(final / Path(r).name) != shas[r]:
+                        raise ValueError(f"{r}: sha256 of the copy in {final} differs")
+            if set(shas) != set(old):
+                shutil.copy2(tmp / "handoff.md", final / "handoff.md")
+                shutil.copy2(tmp / "snapshot.json", final / "snapshot.json")
             shutil.rmtree(tmp)
         else:
             tmp.rename(final)
@@ -407,9 +416,9 @@ def cmd_write(args) -> int:
     rt = W = D = None
     route_checks = {}
     if args.routes:
-        if area_meta["type"] == "rural" and not args.hand:
-            print("ERROR: --routes for a rural area needs --hand (model hand.tif, from a snapshot) for relocation",
-                  file=sys.stderr)
+        if area_meta["type"] == "rural" and not (args.hand and args.buildings):
+            print("ERROR: --routes for a rural area needs --hand (model hand.tif, from a snapshot) and --buildings "
+                  "(relocation sites avoid built cells) for relocation", file=sys.stderr)
             return 1
         rt = _routing_module()
         import osmnx as ox
@@ -428,17 +437,31 @@ def cmd_write(args) -> int:
                             rt.bridge_lines(osm_raw / f"{args.area}_drive.osm"))
         print(f"  bridges: samples exempt walk {int(W.on_bridge.sum()):,} of {len(W.on_bridge):,}, "
               f"drive {int(D.on_bridge.sum()):,} of {len(D.on_bridge):,}")
-        hand = hand_tf = None
+        hand = hand_tf = slope_pct = None
         if args.hand:
             with rasterio.open(args.hand) as hds:
                 if hds.crs != route_crs:
                     raise SystemExit(f"{args.hand} CRS {hds.crs} != depth CRS {route_crs}")
                 hand, hand_tf = rt.robust_hand(hds.read(1)), hds.transform   # robust local HAND (RULES in 06)
+            sp = Path(args.hand).parent / "slope.tif"
+            if sp.exists():                       # a snapshot holds it only when the hand-off table lists it (sha-verified)
+                snapj = json.loads((Path(args.hand).parent / "snapshot.json").read_text())
+                if "slope.tif" not in snapj["sha256"]:
+                    raise SystemExit(f"{sp} is not in {Path(args.hand).parent / 'snapshot.json'}: not sha-verified")
+                with rasterio.open(sp) as sds:
+                    if (str(sds.crs), sds.transform, sds.shape) != (str(route_crs), hand_tf, hand.shape):
+                        raise SystemExit(f"{sp} grid differs from {args.hand}")
+                    slope_pct = rt.robust_slope_pct(sds.read(1))
+            print(f"  relocation slope: {sp if slope_pct is not None else 'NONE (not in the snapshot)'}")
         print(f"routes: walk {W.n_edges:,} edges / drive {D.n_edges:,} edges; {len(osm_shelters)} OSM shelters in bbox "
               f"(current contract enum); hand {args.hand}")
     if args.buildings:
         bld = dict(np.load(pdir / "open_buildings_aoi.npz"))
         print(f"buildings: {len(bld['lon']):,} Open Buildings points in bbox, counted at {pop.OB_PRECISION} % precision")
+    built = None
+    if args.routes and hand is not None:
+        built = pop.built_cells(bld, hand.shape, hand_tf, route_crs)
+        print(f"  relocation: {int(built.sum()):,} HAND cells hold a building footprint (excluded as sites)")
     for key in scenario_keys():
         depth, tf, crs, tags = _read(depth_dir / f"{key}_depth.tif")
         if grid != (tf, str(crs), depth.shape):
@@ -494,10 +517,14 @@ def cmd_write(args) -> int:
         if args.routes:
             if str(crs) != str(route_crs):
                 raise SystemExit(f"{key}: depth CRS differs from the first raster's")
-            cut_w, cut_d = W.cut(wet, tf), D.cut(wet, tf)
-            reloc = {"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf} if hand is not None else None
+            wet_walk, wet_drive = rt.flood_masks(depth)                    # depth is NaN outside the AOI and when dry
+            if not np.array_equal(wet_walk, wet):
+                raise SystemExit(f"{key}: walk flood mask differs from the risk-class mask")
+            cut_w, cut_d = W.cut(wet, tf), D.cut(wet_drive, tf)
+            reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
+                     if hand is not None else None)
             routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
-                                                    places, reloc, flood=(wet, tf))
+                                                    places, reloc, flood=(wet, tf), flood_drive=(wet_drive, tf))
             shelters = shelters + extra
             exposure["roads_cut"], full_cut = rt.roads_cut(D, cut_d, bbox)
             route_checks[key] = {"walk_edges_cut": int(cut_w.sum()), "drive_edges_cut": int(cut_d.sum()),
@@ -538,9 +565,12 @@ def cmd_write(args) -> int:
     if args.routes:
         cp = pdir / f"routes_check_{depth_dir.name}.json"
         cp.write_text(json.dumps({"depth_dir": str(depth_dir), "rules": {
-            "sample_step_m": rt.SAMPLE_STEP_M, "walk_kph": rt.WALK_KPH, "hand_min_m": rt.HAND_MIN_M,
+            "sample_step_m": rt.SAMPLE_STEP_M, "walk_cut": "depth > 0", "drive_cut_m": rt.DRIVE_CUT_M,
+            "walk_kph": rt.WALK_KPH, "hand_min_m": rt.HAND_MIN_M,
             "hand_full_m": rt.HAND_FULL_M, "reloc_max_min": rt.RELOC_MAX_MIN, "road_near_m": rt.ROAD_NEAR_M,
-            "service_near_m": rt.SERVICE_NEAR_M, "weights": rt.RELOC_WEIGHTS, "commute": rt.COMMUTE},
+            "service_near_m": rt.SERVICE_NEAR_M, "weights": rt.RELOC_WEIGHTS,
+            "weights_with_slope": rt.RELOC_WEIGHTS_SLOPE, "slope_ideal_pct": rt.SLOPE_IDEAL_PCT,
+            "slope_max_pct": rt.SLOPE_MAX_PCT, "slope_used": slope_pct is not None, "commute": rt.COMMUTE},
             "scenarios": route_checks}, indent=1, ensure_ascii=False))
         print(f"route checks -> {cp}")
     print(f"\n{len(problems)} warning(s)")

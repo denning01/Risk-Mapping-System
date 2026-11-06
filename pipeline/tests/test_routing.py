@@ -570,3 +570,67 @@ def test_to_shelter_avoided_names_the_flooded_road_on_the_usual_path():
     r = rt.build_routes("t", {"type": "urban", "bbox": [-180, -90, 180, 90]}, [o], [s], W, D, W.cut(wet, tf),
                         D.cut(wet, tf), {}, None, flood=(wet, tf))[0][0]
     assert r["avoided"] == ["Juja Road"] and r["safe"]["minutes"] == 20
+
+
+def test_flood_masks_walk_any_depth_drive_from_0_3_m():
+    d = np.array([[np.nan, 0.0, 0.01, 0.29, 0.3, 1.5]])
+    walk, drive = rt.flood_masks(d)
+    assert walk.tolist() == [[False, False, True, True, True, True]]
+    assert drive.tolist() == [[False, False, False, False, True, True]]
+    assert rt.DRIVE_CUT_M == 0.3          # NWS "12 inches of rushing water" (0.305 m), operator ruling part 2
+
+
+def test_shallow_water_cuts_the_footpath_but_not_the_road():
+    names = {frozenset((1, 2)): "Thika Road"}
+    W = _lattice(3, names=names)
+    D = _lattice(3, kph=36, names=names, drive=True)
+    wet, tf = _wet([(_X0 + _SP + 150, _Y0)])
+    depth = np.where(wet, 0.2, np.nan)                       # 0.2 m: a closed-depression puddle on the road
+    ww, wd = rt.flood_masks(depth)
+    assert W.cut(ww, tf).sum() == 2 and D.cut(wd, tf).sum() == 0
+    depth = np.where(wet, 0.4, np.nan)
+    assert D.cut(rt.flood_masks(depth)[1], tf).sum() == 2
+
+
+def test_relocation_candidates_skip_built_cells():
+    """Operator ruling part 3: on a surface DEM a roof reads as high ground; a node in a cell with a footprint is no site."""
+    from rasterio.transform import rowcol
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    wet, tf = _wet([])
+    hand = np.full(wet.shape, 10.0)
+    built = np.zeros(wet.shape, bool)
+    r, c = rowcol(tf, _X0 + _SP, _Y0)
+    built[int(r), int(c)] = True                                       # node 1's cell holds a building
+    dist = np.full(len(W.nodes), 60.0)
+    all_ = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0)
+    off = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0, built)
+    assert len(all_) == 9 and len(off) == 8 and W.idx[1] not in {c["node"] for c in off}
+
+
+def test_robust_slope_pct_converts_degrees_and_takes_the_local_median():
+    deg = np.full((20, 20), np.degrees(np.arctan(0.03)))      # 3 % everywhere
+    deg[5, 5] = 40.0                                          # one noisy cell
+    deg[10:20, 10:20] = np.degrees(np.arctan(0.2))            # a 20 % hillside
+    p = rt.robust_slope_pct(deg)
+    assert p[5, 5] == pytest.approx(3.0, abs=1e-3) and p[15, 15] == pytest.approx(20.0, abs=1e-3)
+    assert rt.robust_slope_pct(np.full((5, 5), np.nan))[2, 2] > rt.SLOPE_MAX_PCT       # no data = not a site
+
+
+def test_relocation_candidates_drop_steep_sites_and_prefer_gentle_ones():
+    """UNHCR: ideally 2-4 %, not more than 10 %. Node 22 at 12 % is excluded; node 2 (3 %) beats node 20 (8 %) at equal
+    HAND, walk time and access."""
+    from rasterio.transform import rowcol
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    wet, tf = _wet([])
+    hand = np.full(wet.shape, 0.0)
+    slope = np.full(wet.shape, 3.0)
+    def at(node):
+        r, c = rowcol(tf, _X0 + (node % 10) * _SP, _Y0 - (node // 10) * _SP); return int(r), int(c)
+    for n, sl in ((2, 3.0), (20, 8.0), (22, 12.0)):
+        hand[at(n)] = 10.0; slope[at(n)] = sl
+    dist = np.full(len(W.nodes), 60.0)
+    c = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0, None, slope)
+    assert [W.nodes[x["node"]] for x in c] == [2, 20]
+    assert c[0]["slope_pct"] == 3.0 and c[0]["score"] > c[1]["score"]

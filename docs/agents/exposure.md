@@ -97,6 +97,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (E-05) A HAND flood raster marks the river cell under a bridge as wet, so every river crossing (even the
   elevated Nairobi Expressway) gets "cut". Exempt samples on OSM bridge WAYS (raw XML), not bridge-tagged graph EDGES:
   osmnx simplification merges approach roads into the bridge edge (Nyando: median 468 m, max 7 km).
-- 2026-11-06 (E-05) Copernicus GLO-30 is a surface model: roofs and trees make towns read as "high ground" in HAND (Ahero:
-  a 13 m spike between 4-6 m cells). A 150 m p25 filter removes single spikes, not a whole built-up block. Nairobi's
-  hand-off uses FABDEM (bare earth); Nyando's does not.
+- 2026-11-06 (E-05) Don't diagnose a DEM bias from one transect. I called Ahero's 12-14 m HAND "rooftops" from a spike
+  between 4-6 m cells; model measured GLO-30 vs bare-earth FABDEM on Ahero building pixels: only 0.8 m (p50) / 1.8 m
+  (p90). The surface-model bias is ~1-2 m (HAND overstated, depth understated on buildings); ask model for the
+  DSM-minus-DTM difference before writing a limitation. Nairobi uses FABDEM; Nyando GLO-30.

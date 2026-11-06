@@ -382,6 +382,23 @@ def read_buildings(paths_parent: list[tuple[Path, str]], bbox) -> dict:
     return {k: (np.concatenate(v) if v else np.empty(0)) for k, v in out.items()}
 
 
+def built_cells(b: dict, shape_hw, transform, crs, precision: str = OB_PRECISION) -> np.ndarray:
+    """bool grid: the cell holds >= 1 Open Buildings footprint CENTROID at the given precision (same rule as
+    buildings_in_wet). Used to keep relocation sites off built-up cells (operator ruling 2026-11-06, part 3)."""
+    from pyproj import Transformer
+    from rasterio.transform import rowcol
+    out = np.zeros(shape_hw, bool)
+    keep = b["conf"] >= b[f"thr{precision}"]
+    if not keep.any():
+        return out
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(b["lon"][keep], b["lat"][keep])
+    r, c = rowcol(transform, x, y, op=np.floor)
+    r, c = np.asarray(r).astype(np.int64), np.asarray(c).astype(np.int64)
+    ok = (r >= 0) & (r < shape_hw[0]) & (c >= 0) & (c < shape_hw[1])
+    out[r[ok], c[ok]] = True
+    return out
+
+
 def buildings_in_wet(b: dict, wet: np.ndarray, transform, crs, precision: str = OB_PRECISION) -> int:
     """Count buildings whose CENTROID falls in a wet cell (LIMITATION: a footprint that only overlaps a wet cell
     with its edge is not counted). Points outside the raster are not counted."""
