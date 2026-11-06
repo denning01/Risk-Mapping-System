@@ -103,11 +103,13 @@ def main(area: str):
     commit_depth = handoff.check_provenance("runoff_flood.json", rf)
     commit_terrain = handoff.check_provenance("terrain.json", tj)
     cal = rf["k_calibrated"]
-    if any(r["calibrated"] != str(cal).lower() for r in results):
-        sys.exit(f"REFUSED: raster calibrated tags {sorted({r['calibrated'] for r in results})} != runoff_flood.json {cal}")
+    # Only the depth rasters depend on k; hand.tif / channels.tif (02_terrain.py) are k-free and carry calibrated=false.
+    depth = [r for r in results if "flooded_km2_in_handoff_bbox" in r]
+    if any(r["calibrated"] != str(cal).lower() for r in depth):
+        sys.exit(f"REFUSED: depth calibrated tags {sorted({r['calibrated'] for r in depth})} != runoff_flood.json {cal}")
     first = (f"**k = {rf['k']} is PROVISIONAL and UNCALIBRATED (M-05 BLOCKED:ee-auth).** Every raster below is tagged "
              "calibrated=false; numbers built on them are provisional." if not cal else
-             f"**k = {rf['k']} is CALIBRATED (M-05)**: {rf['k_note']}. Every raster below is tagged calibrated=true. "
+             f"**k = {rf['k']} is CALIBRATED (M-05)**: {rf['k_note']}. The 10 depth rasters are tagged calibrated=true (hand.tif and channels.tif do not depend on k). "
              "Screening-level: the backtest score is modest and is reported as such.")
     lines = [
         first,
