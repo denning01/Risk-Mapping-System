@@ -174,3 +174,19 @@ def test_chirps_ratio_in_03_refuses_a_record_missing_its_first_years(tmp_path, m
         (tmp_path / "raw" / "nyando" / "chirps" / "monthly" / f"1991-{m:02d}.tif").unlink()
     with pytest.raises(ValueError, match=r"missing \[1991\]"):
         rf.chirps_ratio("nyando", box)
+
+
+def test_fill_nearest_takes_the_closest_finite_cell():
+    a = np.array([[10.0, np.nan, np.nan, 40.0]])
+    f, bad = runoff.fill_nearest(a)
+    np.testing.assert_array_equal(f, [[10.0, 10.0, 40.0, 40.0]])
+    np.testing.assert_array_equal(bad, [[False, True, True, False]])
+    g, _ = runoff.fill_nearest(np.array([1.0, 2.0]))
+    np.testing.assert_array_equal(g, [1.0, 2.0])
+
+
+def test_soil_gap_fill_is_on_for_nairobi_only():
+    """Nyando's posted rasters were built without the fill; switching it on there changes them (no-rewrite rule)."""
+    from pipeline.lib import config
+    assert config.load("nairobi").get("soil_gap_fill") == "nearest"
+    assert config.load("nyando").get("soil_gap_fill") is None

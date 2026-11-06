@@ -41,6 +41,18 @@ def hsg_from_texture(clay_pct, sand_pct) -> np.ndarray:
     return np.where(np.isfinite(clay) & np.isfinite(sand), g, -1).astype("int8")
 
 
+def fill_nearest(a) -> tuple[np.ndarray, np.ndarray]:
+    """Fill NaN cells with the value of the nearest finite cell (Euclidean, in pixels). Returns (filled, was_nan).
+    Used for SoilGrids texture under cities, where SoilGrids has no prediction (M-07: 55 % of the Nairobi AOI)."""
+    from scipy import ndimage
+    a = np.asarray(a, dtype="float64")
+    bad = ~np.isfinite(a)
+    if not bad.any() or bad.all():
+        return a.copy(), bad
+    idx = ndimage.distance_transform_edt(bad, return_distances=False, return_indices=True)
+    return a[tuple(idx)], bad
+
+
 def curve_number(landcover, hsg) -> np.ndarray:
     """CN per cell from WorldCover class and HSG index (0..3). NaN where either is unknown."""
     lc = np.asarray(landcover)

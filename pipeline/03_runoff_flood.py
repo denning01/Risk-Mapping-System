@@ -154,6 +154,13 @@ def main(area: str, k: float | None, alpha: float):
     lc, _ = to_utm(raw / "worldcover_2021.tif", epsg, Resampling.mode, like=grid)
     clay, _ = to_utm(raw / "soilgrids_clay_0-30cm.tif", epsg, Resampling.bilinear, like=grid)
     sand, _ = to_utm(raw / "soilgrids_sand_0-30cm.tif", epsg, Resampling.bilinear, like=grid)
+    soil_filled = None
+    if cfg.get("soil_gap_fill") == "nearest":
+        # M-07: SoilGrids has no texture under most of central Nairobi (55 % of the AOI had HSG unknown -> CN NaN ->
+        # no runoff). Take the nearest SoilGrids prediction. Off for Nyando (its posted rasters were built without it).
+        clay, gap = runoff.fill_nearest(clay)
+        sand, _ = runoff.fill_nearest(sand)
+        soil_filled = gap
     hsg = runoff.hsg_from_texture(clay, sand)
     cn = runoff.curve_number(lc, hsg)
     # Water never "floods": JRC occurrence >= 80 % (perm, from M-03) OR WorldCover 2021 permanent water (class 80).
@@ -177,6 +184,8 @@ def main(area: str, k: float | None, alpha: float):
     report["aoi_hsg_share"]["unknown"] = round(float((hsg[aoi] < 0).mean()), 4)
     report["aoi_water_km2"] = {"jrc_ge80": round(float((perm & aoi).sum()) * cell_km2, 2),
                                "worldcover80_not_jrc": round(float(((lc == 80) & ~perm & aoi).sum()) * cell_km2, 2)}
+    report["soil_gap_fill"] = ({"method": "nearest SoilGrids cell", "aoi_share_filled": round(float(soil_filled[aoi].mean()), 4)}
+                               if soil_filled is not None else None)
     report["aoi_cn"] = {"mean": round(float(np.nanmean(cn[aoi])), 2), "nan_share": round(float(np.isnan(cn[aoi]).mean()), 5)}
     report["elnino"] = chirps_ratio(area, cfg["bbox"])
     ratio = report["elnino"]["ratio"]
