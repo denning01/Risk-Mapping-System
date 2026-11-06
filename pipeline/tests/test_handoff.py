@@ -157,3 +157,25 @@ def test_untagged_slope_is_accepted_only_from_the_same_02_run(tmp_path):
     t = (tmp_path / "hand.tif").stat().st_mtime
     os.utime(tmp_path / "slope.tif", (t + 120, t + 120))
     assert any("not the same 02 run" in p for p in ho.slope_same_run(tmp_path / "slope.tif", a))
+
+
+def test_06_refuses_depth_tags_that_disagree_with_runoff_flood_json_and_ignores_k_free_rasters():
+    """F7.2: the depth-only calibrated-tag check, through the same function 06.main calls."""
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("ho2", Path(__file__).resolve().parents[1] / "06_handoff.py")
+    ho = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ho)
+    depth = lambda t: {"file": "scenarios/x_depth.tif", "calibrated": t, "flooded_km2_in_handoff_bbox": 1.0}
+    k_free = [{"file": f, "calibrated": "false"} for f in ("hand.tif", "channels.tif", "slope.tif")]
+    # calibrated run: all depth true passes even though hand/channels/slope are tagged false
+    assert ho.calibrated_tags_problem([depth("true")] * 10 + k_free, True) is None
+    # one depth raster left tagged false while runoff_flood.json says calibrated: refused
+    assert "!= runoff_flood.json True" in ho.calibrated_tags_problem([depth("true")] * 9 + [depth("false")] + k_free, True)
+    # uncalibrated run with a stale true depth raster: refused; all false: passes
+    assert ho.calibrated_tags_problem([depth("true")] + [depth("false")] * 9 + k_free, False)
+    assert ho.calibrated_tags_problem([depth("false")] * 10 + k_free, False) is None
+    # no depth rasters at all is not a pass
+    assert ho.calibrated_tags_problem(k_free, True)
+    # main calls it
+    assert "calibrated_tags_problem(results, cal)" in (Path(__file__).resolve().parents[1] / "06_handoff.py").read_text()

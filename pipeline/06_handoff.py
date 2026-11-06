@@ -59,6 +59,16 @@ def slope_same_run(path: Path, a) -> list:
     return out
 
 
+def calibrated_tags_problem(results: list, cal) -> str | None:
+    """Every depth raster's calibrated tag must equal runoff_flood.json's k_calibrated. Only the depth rasters depend on
+    k; hand.tif / channels.tif / slope.tif (02_terrain.py) are k-free and carry calibrated=false whatever k is."""
+    depth = [r for r in results if "flooded_km2_in_handoff_bbox" in r]
+    want = str(bool(cal)).lower()
+    if not depth or any(r["calibrated"] != want for r in depth):
+        return f"depth calibrated tags {sorted({r['calibrated'] for r in depth})} != runoff_flood.json {cal}"
+    return None
+
+
 def check(path: Path, cfg: dict, kind: str) -> dict:
     with rasterio.open(path) as ds:
         problems = []
@@ -123,10 +133,9 @@ def main(area: str):
     commit_depth = handoff.check_provenance("runoff_flood.json", rf)
     commit_terrain = handoff.check_provenance("terrain.json", tj)
     cal = rf["k_calibrated"]
-    # Only the depth rasters depend on k; hand.tif / channels.tif (02_terrain.py) are k-free and carry calibrated=false.
-    depth = [r for r in results if "flooded_km2_in_handoff_bbox" in r]
-    if any(r["calibrated"] != str(cal).lower() for r in depth):
-        sys.exit(f"REFUSED: depth calibrated tags {sorted({r['calibrated'] for r in depth})} != runoff_flood.json {cal}")
+    tag_problem = calibrated_tags_problem(results, cal)
+    if tag_problem:
+        sys.exit(f"REFUSED: {tag_problem}")
     first = (f"**k = {rf['k']} is NOT CALIBRATED for this area** ({rf['k_note']}). The depth rasters are tagged "
              "calibrated=false; numbers built on them are provisional." if not cal else
              f"**k = {rf['k']} is CALIBRATED (M-05)**: {rf['k_note']}. The 10 depth rasters are tagged calibrated=true (hand.tif and channels.tif do not depend on k). "
