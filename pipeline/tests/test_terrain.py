@@ -69,3 +69,70 @@ def test_unroutable_cells_become_sinks_not_nan_holes():
     routed = np.isin(fd, (64, 128, 1, 2, 4, 8, 16, 32))
     assert (routed | out["sinks"][1:-1, 1:-1]).all()
     assert np.isfinite(out["hand"][1:-1, 1:-1]).all()
+
+
+def test_hand_index_points_at_the_channel_cell_in_the_same_row():
+    dem = valley()
+    out = terrain.hydro(dem, Affine(DX, 0, 0, 0, -DX, 0), "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    r, c = np.unravel_index(out["hand_index"][20, 3], dem.shape)
+    assert c == 10 and r == 20                       # cross slope dominates: straight across to the channel
+    assert out["hand"][20, 3] == pytest.approx(dem[20, 3] - out["cond"][r, c], abs=1e-6)
+
+
+def test_upstream_mean_of_a_constant_is_the_constant_and_mixes_by_area():
+    dem = valley()
+    t = Affine(DX, 0, 0, 0, -DX, 0)
+    out = terrain.hydro(dem, t, "EPSG:32736", channel_km2=30 * DX * DX / 1e6)
+    m = terrain.upstream_mean(out["fdir"], t, "EPSG:32736", np.full(dem.shape, 7.0))
+    np.testing.assert_allclose(m[1:-1, 1:-1], 7.0)
+    half = np.where(np.arange(NX)[None, :] < 10, 0.0, 10.0) * np.ones((NY, 1))   # west 0, east (incl. channel) 10
+    m = terrain.upstream_mean(out["fdir"], t, "EPSG:32736", half)
+    outlet = m[NY - 2, 10]   # near the bottom of the channel: ~half the upstream cells are each side
+    assert 4.0 < outlet < 6.5
+
+
+def _bowl_with_hole():
+    """A bowl draining to its centre, with the centre cell missing (NaN): the 8 cells around the hole have no
+    D8 direction pysheds can resolve. Real-world analogue: the Kano-plain flats near the lake (M-03)."""
+    y, x = np.mgrid[0:21, 0:21]
+    dem = (100 + 0.5 * np.hypot(x - 10, y - 10)).astype(float)
+    dem[10, 10] = np.nan
+    return dem
+
+
+def test_sink_rule_is_what_gives_hand_around_an_unroutable_cell(monkeypatch):
+    """F3.7: fails without the sink rule. The ring around the hole is unroutable; with sinks as drainage its HAND is 0
+    and finite, without them it is NaN."""
+    dem = _bowl_with_hole()
+    t = Affine(DX, 0, 0, 0, -DX, 0)
+    out = terrain.hydro(dem, t, "EPSG:32736", channel_km2=100.0)
+    ring = out["sinks"].copy()
+    ring[[0, -1], :] = ring[:, [0, -1]] = False      # interior only (pysheds also leaves some edge cells unrouted)
+    assert ring.sum() == 8 and not ring[10, 10]
+    assert np.isfinite(out["hand"][ring]).all() and (out["hand"][ring] == 0).all()
+    real_isin = np.isin
+    monkeypatch.setattr(terrain.np, "isin", lambda a, b, **k: np.ones_like(np.asarray(a), bool)
+                        if tuple(b) == (64, 128, 1, 2, 4, 8, 16, 32) else real_isin(a, b, **k))
+    no_sinks = terrain.hydro(dem, t, "EPSG:32736", channel_km2=100.0)
+    assert not no_sinks["sinks"].any()
+    assert np.isnan(no_sinks["hand"][ring]).all()
+
+
+def test_cond_never_carries_the_minus_9999_sentinel():
+    """F3.5: NaN in the DEM must come out as NaN in cond, not -9999."""
+    dem = _bowl_with_hole()
+    dem[3:6, 15:18] = np.nan                           # a larger hole, flat-resolved by pysheds (nudged values)
+    out = terrain.hydro(dem, Affine(DX, 0, 0, 0, -DX, 0), "EPSG:32736", channel_km2=100.0)
+    assert np.nanmin(out["cond"]) > 0                  # no -9999 nor -9998.99... anywhere
+    np.testing.assert_array_equal(np.isnan(out["cond"]), ~np.isfinite(dem))
+
+
+def test_flowdir_on_disk_keeps_pysheds_codes_and_uses_a_free_nodata():
+    """F3.6: -1/-2/0 are pysheds codes; the file's nodata must be a value pysheds never emits."""
+    dem = _bowl_with_hole()
+    out = terrain.hydro(dem, Affine(DX, 0, 0, 0, -DX, 0), "EPSG:32736", channel_km2=100.0)
+    disk = terrain.fdir_for_disk(out["fdir"], dem)
+    assert disk.dtype == np.int16 and disk[10, 10] == terrain.FDIR_NODATA
+    assert terrain.FDIR_NODATA not in (64, 128, 1, 2, 4, 8, 16, 32, 0, -1, -2)
+    keep = np.isfinite(dem)
+    np.testing.assert_array_equal(disk[keep], out["fdir"][keep].astype(np.int16))

@@ -82,7 +82,16 @@ def osm_waterways(area: str, bbox, cache: Path) -> list:
     return json.loads(f.read_text())["elements"]
 
 
-def channel_vs_osm(acc_km2, thresholds, osm, aoi, tol_cells=2):
+DIAGONAL = (128, 2, 8, 32)   # NE, SE, SW, NW in pysheds' dirmap
+
+
+def channel_length_km(ch: np.ndarray, fdir: np.ndarray) -> float:
+    """F3.8: each channel cell contributes its D8 link length — RES, or RES*sqrt(2) when it drains diagonally."""
+    step = np.where(np.isin(fdir, DIAGONAL), RES * np.sqrt(2), RES)
+    return float(step[ch].sum()) / 1000
+
+
+def channel_vs_osm(acc_km2, thresholds, osm, aoi, fdir, tol_cells=2):
     rows = []
     osm_in = osm & aoi
     osm_near = ndimage.binary_dilation(osm, iterations=tol_cells)
@@ -91,7 +100,7 @@ def channel_vs_osm(acc_km2, thresholds, osm, aoi, tol_cells=2):
         ch_near = ndimage.binary_dilation(ch, iterations=tol_cells)
         p = float((ch & osm_near).sum() / max(ch.sum(), 1))
         r = float((osm_in & ch_near).sum() / max(osm_in.sum(), 1))
-        rows.append({"channel_km2": t, "channel_km": round(float(ch.sum()) * RES / 1000, 1),
+        rows.append({"channel_km2": t, "channel_km": round(channel_length_km(ch, fdir), 1),
                      "on_osm": round(p, 3), "osm_found": round(r, 3),
                      "f1": round(2 * p * r / (p + r), 3) if p + r else 0.0})
     return rows
@@ -129,19 +138,22 @@ def main(area: str, channel_km2: float, sweep: bool):
              for w in ways if len(w.get("geometry", [])) > 1]
     osm = rasterize([(ln, 1) for ln in lines], out_shape=dem.shape, transform=grid["transform"],
                     all_touched=True).astype(bool)
+    aoi_poly = ops.transform(to_utm_xy, box(*cfg["bbox"]).segmentize(0.001))
     report["osm"] = {"ways": len(lines), "cells_in_aoi": int((osm & aoi).sum()),
+                     "length_km_in_aoi": round(sum(ln.intersection(aoi_poly).length for ln in lines) / 1000, 1),
                      "source": "OpenStreetMap contributors (ODbL), Overpass waterway=river|stream"}
     acc_km2 = h["acc"] * h["cell_km2"]
     thresholds = (0.25, 1, 2, 5, 10, 25, 50, 100) if sweep else ()
-    report["sweep_vs_osm"] = channel_vs_osm(acc_km2, thresholds, osm, aoi)
-    report["chosen_vs_osm"] = channel_vs_osm(acc_km2, (channel_km2,), osm, aoi)[0]
+    report["sweep_vs_osm"] = channel_vs_osm(acc_km2, thresholds, osm, aoi, h["fdir"])
+    report["chosen_vs_osm"] = channel_vs_osm(acc_km2, (channel_km2,), osm, aoi, h["fdir"])[0]
     write(out / "dem_cond.tif", h["cond"], grid)
-    write(out / "flowdir.tif", h["fdir"], grid, "int16", -1)
+    write(out / "flowdir.tif", terrain.fdir_for_disk(h["fdir"], dem), grid, "int16", terrain.FDIR_NODATA)
     write(out / "acc.tif", h["acc"], grid)
     write(out / "channels.tif", h["channels"], grid, "uint8", 255)
     write(out / "drainage.tif", h["drainage"], grid, "uint8", 255)
     write(out / "perm_water.tif", perm, grid, "uint8", 255)
     write(out / "hand.tif", h["hand"], grid)
+    write(out / "hand_index.tif", h["hand_index"], grid, "int64", -1)
     write(out / "slope.tif", slope, grid)
     png(out / "terrain_hand.png", h["hand"], f"{cfg['name']} HAND (m), channels >= {channel_km2} km²",
         "viridis_r", 0, 30, "m")

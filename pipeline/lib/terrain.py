@@ -44,6 +44,36 @@ def hydro(dem: np.ndarray, transform: Affine, crs: str, channel_km2: float,
     drainage = channels | sinks
     if extra_drainage is not None:
         drainage |= extra_drainage
-    hand = g.compute_hand(fdir, cond, Raster(drainage, viewfinder=fdir.viewfinder))
-    return {"cond": np.asarray(cond), "fdir": np.asarray(fdir), "acc": np.asarray(acc),
-            "channels": channels, "drainage": drainage, "sinks": sinks, "hand": np.asarray(hand, dtype="float64"), "cell_km2": cell_km2}
+    dmask = Raster(drainage, viewfinder=fdir.viewfinder)
+    hand = g.compute_hand(fdir, cond, dmask)
+    # flat index of the drainage cell each cell's HAND is measured against (-1 where none)
+    hidx = np.asarray(g.compute_hand(fdir, cond, dmask, return_index=True, nodata_out=-1)).astype("int64")
+    cond_out = np.asarray(cond, dtype="float64").copy()
+    # F3.5: never let the -9999 sentinel reach a reader. Mask by the INPUT DEM's validity: resolve_flats nudges
+    # nodata cells by tiny increments, so an exact `== NODATA` test missed 6,694 of 8,317 cells on Nyando.
+    cond_out[~np.isfinite(dem) | (dem == NODATA) | (cond_out <= NODATA + 1)] = np.nan
+    return {"cond": cond_out, "fdir": np.asarray(fdir), "acc": np.asarray(acc),
+            "channels": channels, "drainage": drainage, "sinks": sinks, "hand_index": hidx, "hand": np.asarray(hand, dtype="float64"), "cell_km2": cell_km2}
+
+
+FDIR_NODATA = -32768   # F3.6: pysheds emits -1 (pit), -2 (flat), 0 (nodata) as real codes; never use them as the tag
+
+
+def fdir_for_disk(fdir: np.ndarray, dem: np.ndarray) -> np.ndarray:
+    """int16 flow directions for GeoTIFF: D8 codes and pysheds' -2/-1/0 kept, cells without DEM -> FDIR_NODATA."""
+    out = np.asarray(fdir).astype("int16")
+    out[~np.isfinite(dem) | (dem == NODATA)] = FDIR_NODATA
+    return out
+
+
+def upstream_mean(fdir: np.ndarray, transform: Affine, crs: str, values: np.ndarray) -> np.ndarray:
+    """Mean of `values` over each cell's upstream area (itself included), via D8 accumulation:
+    accumulation(weights=values) / accumulation(). NaN values count as 0 and are excluded from the count."""
+    vf = ViewFinder(affine=transform, shape=fdir.shape, crs=crs, nodata=0)
+    fd = Raster(fdir.astype("int64"), viewfinder=vf)
+    g = Grid.from_raster(fd)
+    ok = np.isfinite(values)
+    num = np.asarray(g.accumulation(fd, weights=Raster(np.where(ok, values, 0.0).astype("float64"), viewfinder=vf)))
+    den = np.asarray(g.accumulation(fd, weights=Raster(ok.astype("float64"), viewfinder=vf)))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 0, num / den, np.nan)

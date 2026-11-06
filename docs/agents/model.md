@@ -77,3 +77,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (M-03) GLO-30 is a DSM: forest canopy dams valleys, so depression filling reaches 75.8 m in
   0.01-0.2 km2 pits in the Nandi/Mau forests (outside the AOI; inside it, max 20.9 m, 6.98 km2 > 1 m).
   JRC water overlap cannot choose a channel threshold (3-6 % at every threshold); OSM river|stream can.
+- 2026-11-06 (F3.5) pysheds' resolve_flats nudges nodata cells off -9999 (e.g. -9998.99...), so masking
+  `cond == -9999` missed 6,694 of 8,317 cells. Mask outputs by the INPUT DEM's validity, and test with a
+  multi-cell NaN hole, not a single cell. Also: pysheds' flowdir uses -1/-2/0 as real codes — never as a
+  GeoTIFF nodata tag (now -32768).
