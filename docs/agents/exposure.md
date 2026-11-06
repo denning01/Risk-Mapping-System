@@ -90,3 +90,13 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   Measure the county shares before scaling. data.worldpop.org has no HTTP range support and drops long downloads:
   start the 300 MB national file early; the 1 km aggregate (3 MB) is enough for county-level sums.
 - 2026-11-06 Use `date` for ROUND timestamps; a guessed timestamp needed an erratum.
+- 2026-11-06 (E-05) Never "snap to the nearest node that still has an uncut edge": when the origin's own node is cut off,
+  that node can be 1-1.5 km away and the route draws a straight line through the water. Snap on the unflooded graph,
+  then refuse (report unreachable) if that node is cut off or the snap leg is wet. Found only by resampling the WRITTEN
+  LineStrings against the raster (a second method); every unit test was green.
+- 2026-11-06 (E-05) A HAND flood raster marks the river cell under a bridge as wet, so every river crossing (even the
+  elevated Nairobi Expressway) gets "cut". Exempt samples on OSM bridge WAYS (raw XML), not bridge-tagged graph EDGES:
+  osmnx simplification merges approach roads into the bridge edge (Nyando: median 468 m, max 7 km).
+- 2026-11-06 (E-05) Copernicus GLO-30 is a surface model: roofs and trees make towns read as "high ground" in HAND (Ahero:
+  a 13 m spike between 4-6 m cells). A 150 m p25 filter removes single spikes, not a whole built-up block. Nairobi's
+  hand-off uses FABDEM (bare earth); Nyando's does not.

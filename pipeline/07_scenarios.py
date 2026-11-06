@@ -14,9 +14,9 @@ Two subcommands:
              <area>/scenarios/<rain>_<enso>.exposure.json   flooded_area_km2 from the raster
              <area>/scenarios/<rain>_<enso>.shelters.json   `safe` recomputed from the raster
              <area>/scenarios/<rain>_<enso>.routes.json
-           Population / buildings / roads_cut / year and routes are not computed here yet (E-04, E-05):
-           they are CARRIED from the existing files in --data-dir, and the exposure `source` is "mock"
-           unless every input is real. `--source model` is refused if any input is MOCK.
+           With --population/--buildings (E-04) and --routes (E-05: OSM shelters, routes, roads_cut, rules in
+           06_routing.py) those are computed; without the flag each is CARRIED from the existing files in --data-dir.
+           The exposure `source` is "mock" unless every input is real. `--source model` is refused if any input is MOCK.
 
 Risk classes (contract): depth < 0.3 m = low, 0.3 <= depth <= 1.0 m = medium, depth > 1.0 m = high.
 """
@@ -179,6 +179,14 @@ def aoi_mask(shape_hw, transform, crs, bbox) -> np.ndarray:
     poly = reproject(box(*bbox).segmentize(0.001), "EPSG:4326", crs)
     return rasterize([(poly, 1)], out_shape=shape_hw, transform=transform, fill=0, dtype="uint8",
                      all_touched=False).astype(bool)
+
+
+def _routing_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("rt06", Path(__file__).resolve().parent / "06_routing.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
 
 
 def _population_module():
@@ -395,6 +403,39 @@ def cmd_write(args) -> int:
             wp_ids = cds.read(1)
         print(f"population: {pman['unit']} {pman['year']} projection {pman['projection']}; mode written: "
               f"{args.population_mode} ({pman['modes'][args.population_mode]})")
+    area_meta = _load_area(data_dir, args.area)
+    rt = W = D = None
+    route_checks = {}
+    if args.routes:
+        if area_meta["type"] == "rural" and not args.hand:
+            print("ERROR: --routes for a rural area needs --hand (model hand.tif, from a snapshot) for relocation",
+                  file=sys.stderr)
+            return 1
+        rt = _routing_module()
+        import osmnx as ox
+        origins = json.loads((data_dir / args.area / "origins.json").read_text())
+        prefix = origins[0]["id"].split("-")[0]
+        osm_shelters = rt.shelters_from_osm(prefix, json.loads((pdir / "shelter_candidates.geojson").read_text())["features"],
+                                            bbox)
+        places = {f["properties"]["osm"]: tuple(f["geometry"]["coordinates"])
+                  for f in json.loads((pdir / "osm_places.geojson").read_text())["features"]}
+        with rasterio.open(depth_dir / f"{scenario_keys()[0]}_depth.tif") as ds:
+            route_crs = ds.crs
+        osm_raw = rms_data() / "raw" / "osm"
+        W = rt.RoutingGraph(ox.load_graphml(pdir / "graph_walk.graphml"), route_crs,
+                            rt.bridge_lines(osm_raw / f"{args.area}_walk.osm"))
+        D = rt.RoutingGraph(ox.load_graphml(pdir / "graph_drive.graphml"), route_crs,
+                            rt.bridge_lines(osm_raw / f"{args.area}_drive.osm"))
+        print(f"  bridges: samples exempt walk {int(W.on_bridge.sum()):,} of {len(W.on_bridge):,}, "
+              f"drive {int(D.on_bridge.sum()):,} of {len(D.on_bridge):,}")
+        hand = hand_tf = None
+        if args.hand:
+            with rasterio.open(args.hand) as hds:
+                if hds.crs != route_crs:
+                    raise SystemExit(f"{args.hand} CRS {hds.crs} != depth CRS {route_crs}")
+                hand, hand_tf = rt.robust_hand(hds.read(1)), hds.transform   # robust local HAND (RULES in 06)
+        print(f"routes: walk {W.n_edges:,} edges / drive {D.n_edges:,} edges; {len(osm_shelters)} OSM shelters in bbox "
+              f"(current contract enum); hand {args.hand}")
     if args.buildings:
         bld = dict(np.load(pdir / "open_buildings_aoi.npz"))
         print(f"buildings: {len(bld['lon']):,} Open Buildings points in bbox, counted at {pop.OB_PRECISION} % precision")
@@ -445,16 +486,32 @@ def cmd_write(args) -> int:
             "flooded_area_km2": round(st["flooded_area_m2"] / 1e6, 2), "roads_cut": exp_old["roads_cut"],
             "source": args.source,
         }
-        shelters = shelters_safety(json.loads((scen_dir / f"{key}.shelters.json").read_text()), depth, tf, crs)
+        base_shelters = osm_shelters if args.routes else json.loads((scen_dir / f"{key}.shelters.json").read_text())
+        shelters = shelters_safety(base_shelters, depth, tf, crs)
         for s in shelters:
             if s.pop("_outside"):
                 problems.append(f"{key}: shelter {s['id']} is outside the depth raster (marked safe=false)")
+        if args.routes:
+            if str(crs) != str(route_crs):
+                raise SystemExit(f"{key}: depth CRS differs from the first raster's")
+            cut_w, cut_d = W.cut(wet, tf), D.cut(wet, tf)
+            reloc = {"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf} if hand is not None else None
+            routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
+                                                    places, reloc, flood=(wet, tf))
+            shelters = shelters + extra
+            exposure["roads_cut"], full_cut = rt.roads_cut(D, cut_d, bbox)
+            route_checks[key] = {"walk_edges_cut": int(cut_w.sum()), "drive_edges_cut": int(cut_d.sum()),
+                                 "roads_cut_all": full_cut, "routes": checks}
+            for c in checks:
+                if "unreachable" in c:
+                    problems.append(f"{key}: {c['origin_id']} ({c['kind']}) NO ROUTE: {c['unreachable']}")
+        else:
+            routes = json.loads((scen_dir / f"{key}.routes.json").read_text())
         safe_ids = {s["id"] for s in shelters if s["safe"]}
-        routes = json.loads((scen_dir / f"{key}.routes.json").read_text())
         for r in routes:
             if r["shelter_id"] is not None and r["shelter_id"] not in safe_ids:
-                problems.append(f"{key}: route {r['origin_id']} -> {r['shelter_id']} targets an UNSAFE shelter "
-                                "(carried mock route; E-05 recomputes)")
+                problems.append(f"{key}: route {r['origin_id']} -> {r['shelter_id']} targets an UNSAFE shelter"
+                                + ("" if args.routes else " (carried mock route; E-05 recomputes)"))
 
         kb = _dump(scen_dir / f"{key}.geojson", {"type": "FeatureCollection", "features": feats}) / 1024
         _dump(scen_dir / f"{key}.exposure.json", exposure)
@@ -471,9 +528,21 @@ def cmd_write(args) -> int:
                  f"  B {both['B']['low']:,}/{both['B']['medium']:,}/{both['B']['high']:,}"
                  + (f"  | W2 A {w2['A']['medium']:,} B {w2['B']['low']:,}/{w2['B']['medium']:,}/{w2['B']['high']:,}" if w2 else "")
                  + f"  [wrote {args.population_weight}/{args.population_mode}]" if both else "")
-              + (f"   buildings {buildings:,}" if bld is not None else ""))
+              + (f"   buildings {buildings:,}" if bld is not None else "")
+              + ("   routes " + "; ".join(f"{c['origin_id']} {c.get('safe_min', 'NONE')}"
+                                       + (f"(base {c['baseline_min']})" if 'baseline_min' in c else "")
+                                       + (f"->{c.get('shelter_id', c.get('destination'))}" if 'unreachable' not in c else "")
+                                       for c in route_checks[key]["routes"]) if args.routes else ""))
         if kb > args.max_kb:
             problems.append(f"{key}: geojson {kb:.0f} KiB exceeds --max-kb {args.max_kb}")
+    if args.routes:
+        cp = pdir / f"routes_check_{depth_dir.name}.json"
+        cp.write_text(json.dumps({"depth_dir": str(depth_dir), "rules": {
+            "sample_step_m": rt.SAMPLE_STEP_M, "walk_kph": rt.WALK_KPH, "hand_min_m": rt.HAND_MIN_M,
+            "hand_full_m": rt.HAND_FULL_M, "reloc_max_min": rt.RELOC_MAX_MIN, "road_near_m": rt.ROAD_NEAR_M,
+            "service_near_m": rt.SERVICE_NEAR_M, "weights": rt.RELOC_WEIGHTS, "commute": rt.COMMUTE},
+            "scenarios": route_checks}, indent=1, ensure_ascii=False))
+        print(f"route checks -> {cp}")
     print(f"\n{len(problems)} warning(s)")
     for p in problems:
         print("  WARN", p)
@@ -510,6 +579,9 @@ def main(argv=None) -> int:
                    help="dasymetric weight inside each county's part of the AOI (required with --population)")
     w.add_argument("--buildings", action="store_true",
                    help="buildings at risk from 05_population.py buildings output (else carried)")
+    w.add_argument("--routes", action="store_true",
+                   help="shelters from OSM + routes + roads_cut from the graphs (E-05; else carried)")
+    w.add_argument("--hand", default=None, help="hand.tif (model, from a snapshot): needed by --routes for a rural area")
     w.set_defaults(fn=cmd_write)
     args = p.parse_args(argv)
     return args.fn(args)

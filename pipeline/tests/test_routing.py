@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 spec = importlib.util.spec_from_file_location("rt", Path(__file__).resolve().parents[1] / "06_routing.py")
@@ -341,3 +342,231 @@ def test_contract_type_before_and_after_the_schema_change(props, now, nxt):
 def test_default_emits_only_the_current_enum():
     assert rt.SCHEMA_HAS_WORSHIP_POLICE is False     # flipped only after Person B's schema is on data
     assert rt.contract_type({"osm_tag": "amenity=police"}) is None
+
+
+# ---------------------------------------------------------------------------------------------
+# E-05 flood-aware routing, on a synthetic lattice in UTM 37S (EPSG:32736), 300 m spacing
+# ---------------------------------------------------------------------------------------------
+_X0, _Y0, _SP = 722600.0, 9977880.0, 300.0
+
+
+def _ll(x, y):
+    from pyproj import Transformer
+    return Transformer.from_crs(32736, 4326, always_xy=True).transform(x, y)
+
+
+def _lattice(n=4, kph=3.6, names=None, drive=False):
+    """n x n nodes, id r*10+c, at (X0 + c*SP, Y0 - r*SP); edges both ways between 4-neighbours."""
+    import networkx as nx
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    for r in range(n):
+        for c in range(n):
+            lon, lat = _ll(_X0 + c * _SP, _Y0 - r * _SP)
+            G.add_node(r * 10 + c, x=lon, y=lat)
+    for r in range(n):
+        for c in range(n):
+            for dr, dc in ((0, 1), (1, 0)):
+                if r + dr < n and c + dc < n:
+                    a, b = r * 10 + c, (r + dr) * 10 + c + dc
+                    nm = (names or {}).get(frozenset((a, b)))
+                    for u, v in ((a, b), (b, a)):
+                        G.add_edge(u, v, length=_SP, travel_time=_SP / (kph / 3.6), highway="residential",
+                                   **({"name": nm} if nm else {}))
+    return rt.RoutingGraph(G, "EPSG:32736")
+
+
+_TF = None
+
+
+def _wet(cells, shape=(40, 40)):
+    """30 m grid with origin at (X0 - 15*30, Y0 + 15*30) so lattice nodes fall mid-grid. cells: list of (x, y) UTM."""
+    from rasterio.transform import from_origin, rowcol
+    tf = from_origin(_X0 - 450, _Y0 + 450, 30, 30)
+    w = np.zeros(shape, bool)
+    for x, y in cells:
+        r, c = rowcol(tf, x, y)
+        w[int(r), int(c)] = True
+    return w, tf
+
+
+def test_cut_catches_a_flooded_cell_near_one_end_not_only_the_midpoint():
+    RG = _lattice(2)
+    wet, tf = _wet([(_X0 + 20, _Y0)])               # 20 m along edge 0-1 (300 m): its midpoint (150 m) is dry
+    cut = RG.cut(wet, tf)
+    hit = {(RG.nodes[RG.u[e]], RG.nodes[RG.v[e]]) for e in np.nonzero(cut)[0]}
+    assert hit == {(0, 1), (1, 0)}
+
+
+def test_cut_is_empty_on_a_dry_raster_and_ignores_samples_outside_it():
+    RG = _lattice(3)
+    wet, tf = _wet([], shape=(5, 5))                # covers only a corner; the rest has no information
+    assert not RG.cut(wet, tf).any()
+
+
+def test_leg_detours_around_a_cut_edge_and_reports_unreachable():
+    RG = _lattice(3)
+    o, d = _ll(_X0, _Y0), _ll(_X0 + 2 * _SP, _Y0)  # node 0 -> node 2 along the top row
+    free = rt.leg(RG, o, d, None)
+    assert free["minutes"] == 10                    # 600 m at 1 m/s
+    wet, tf = _wet([(_X0 + _SP + 150, _Y0)])        # edge 1-2 flooded
+    det = rt.leg(RG, o, d, RG.cut(wet, tf))
+    assert det["minutes"] == 20                     # 0-1-11-12-2: 1200 m
+    wet2, tf = _wet([(_X0 + 150, _Y0), (_X0, _Y0 - 150)])   # both edges out of node 0 flooded
+    cut2 = RG.cut(wet2, tf)
+    # the origin's node is cut off: NO route. (A former version snapped to the nearest live node 300 m away and drew a
+    # straight line through the water; caught by resampling the written lines against the raster.)
+    assert RG.endpoint(*o, cut2, (wet2, tf))[0] == -1
+    assert rt.leg(RG, o, d, cut2, (wet2, tf)) is None
+
+
+def test_a_flooded_snap_leg_makes_the_endpoint_unreachable():
+    RG = _lattice(3)
+    o = _ll(_X0 - 200, _Y0)                          # 200 m west of node 0, off the network
+    wet, tf = _wet([(_X0 - 100, _Y0)])              # water between the origin and node 0; no edge is wet
+    cut = RG.cut(wet, tf)
+    assert not cut.any()
+    node, dist, why = RG.endpoint(*o, cut, (wet, tf))
+    assert node == -1 and "flooded" in why
+    assert RG.endpoint(*o, cut, None)[0] == RG.idx[0]   # without flood information the leg is not checked
+
+
+def test_nearest_SAFE_shelter_skips_a_nearer_unsafe_one():
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    near = dict(zip(("lon", "lat"), _ll(_X0 + _SP, _Y0)))
+    far = dict(zip(("lon", "lat"), _ll(_X0 + 2 * _SP, _Y0 - 2 * _SP)))
+    sh = [{"id": "x-near", "name": "Near school", "type": "school", "capacity": None, "safe": False, **near},
+          {"id": "x-far", "name": "Far school", "type": "school", "capacity": None, "safe": True, **far}]
+    o = {"id": "x-o1", "name": "O", "user_type": "trader", **dict(zip(("lon", "lat"), _ll(_X0, _Y0)))}
+    no_cut = np.zeros(W.n_edges, bool)
+    routes, extra, checks = rt.build_routes("t", {"type": "urban", "bbox": [-180, -90, 180, 90]}, [o], sh, W, D,
+                                                 no_cut, np.zeros(D.n_edges, bool), {}, None)
+    assert routes[0]["shelter_id"] == "x-far" and routes[0]["kind"] == "to_shelter" and routes[0]["baseline"] is None
+    assert routes[0]["safe"]["minutes"] == 20 and extra == []
+    sh[1]["safe"] = False
+    routes, _, checks = rt.build_routes("t", {"type": "urban", "bbox": [-180, -90, 180, 90]}, [o], sh, W, D,
+                                             no_cut, np.zeros(D.n_edges, bool), {}, None)
+    assert routes == [] and "no safe shelter" in checks[0]["unreachable"]     # reported, not silently dropped
+
+
+def test_commute_baseline_equals_safe_when_clear_and_names_avoided_roads_when_cut(monkeypatch):
+    names = {frozenset((1, 2)): "Juja Road", frozenset((0, 1)): "Outer Ring Road"}
+    W = _lattice(3)
+    D = _lattice(3, kph=36, names=names, drive=True)
+    monkeypatch.setitem(rt.COMMUTE, "x-o3", ("n1", "Kasarani"))
+    o = {"id": "x-o3", "name": "W", "user_type": "commuter", **dict(zip(("lon", "lat"), _ll(_X0, _Y0)))}
+    places = {"n1": _ll(_X0 + 2 * _SP, _Y0)}
+    meta = {"type": "urban", "bbox": [-180, -90, 180, 90]}
+    clear = rt.build_routes("t", meta, [o], [], W, D, np.zeros(W.n_edges, bool), np.zeros(D.n_edges, bool),
+                                 places, None)[0][0]
+    assert clear["kind"] == "commute" and clear["shelter_id"] is None
+    assert clear["safe"] == clear["baseline"] and clear["avoided"] == []
+    wet, tf = _wet([(_X0 + _SP + 150, _Y0)])                           # Juja Road segment flooded
+    r = rt.build_routes("t", meta, [o], [], W, D, W.cut(wet, tf), D.cut(wet, tf), places, None)[0][0]
+    assert r["avoided"] == ["Juja Road"] and r["safe"]["minutes"] > r["baseline"]["minutes"]
+    assert r["safe"]["geometry"]["coordinates"] != r["baseline"]["geometry"]["coordinates"]
+
+
+def test_relocation_picks_dry_high_ground_and_reports_none():
+    from rasterio.transform import from_origin
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    wet, tf = _wet([])
+    hand = np.zeros_like(wet, float)
+    from rasterio.transform import rowcol
+    def put(x, y, v):
+        r, c = rowcol(tf, x, y); hand[int(r) - 2:int(r) + 3, int(c) - 2:int(c) + 3] = v
+    put(_X0 + 2 * _SP, _Y0 - 2 * _SP, 10.0)                 # node 22: high
+    put(_X0 + _SP, _Y0, 30.0)                               # node 1: higher, but we flood it
+    wet[tuple(int(v) for v in rowcol(tf, _X0 + _SP, _Y0))] = True
+    o = {"id": "x-o1", "name": "S", "user_type": "settler", **dict(zip(("lon", "lat"), _ll(_X0, _Y0)))}
+    meta = {"type": "rural", "bbox": [-180, -90, 180, 90]}
+    reloc = {"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": tf}
+    routes, extra, checks = rt.build_routes("t", meta, [o], [], W, D, W.cut(wet, tf), D.cut(wet, tf), {}, reloc)
+    assert routes[0]["kind"] == "relocation" and extra[0]["type"] == "high_ground" and extra[0]["safe"]
+    assert routes[0]["shelter_id"] == extra[0]["id"] == "x-hg-22"
+    assert "HAND 10 m" in extra[0]["name"]
+    reloc["hand"] = np.zeros_like(hand)
+    routes, extra, checks = rt.build_routes("t", meta, [o], [], W, D, W.cut(wet, tf), D.cut(wet, tf), {}, reloc)
+    assert routes == [] and extra == [] and "HAND" in checks[0]["unreachable"]
+
+
+def test_robust_hand_removes_a_one_cell_spike_but_keeps_a_plateau():
+    h = np.full((20, 20), 4.0)
+    h[5, 5] = 13.0                                          # one roof
+    h[10:20, 10:20] = 12.0                                  # a real 300 m x 300 m rise
+    h[0, 19] = np.nan
+    r = rt.robust_hand(h)
+    assert r[5, 5] == 4.0 and r[15, 15] == 12.0
+    assert r[0, 19] == 0.0           # NaN counts as 0 and, edge-replicated in the corner, drags p25 down: conservative
+
+
+def test_roads_cut_orders_main_classes_first_and_keeps_only_named_in_bbox():
+    names = {frozenset((0, 1)): "Small Lane", frozenset((10, 11)): "Small Lane", frozenset((1, 2)): "Big Highway"}
+    D = _lattice(3, names=names)                  # Small Lane has twice the cut length: class must still win
+    for e in range(D.n_edges):
+        if D.name[e] == ["Big Highway"]:
+            D.hwy[e] = "trunk"
+    cut = np.ones(D.n_edges, bool)
+    top, full = rt.roads_cut(D, cut, [-180, -90, 180, 90])
+    assert top == ["Big Highway", "Small Lane"]
+    assert rt.roads_cut(D, cut, [0, 0, 1, 1])[0] == []        # nothing in this bbox
+
+
+def test_shelters_from_osm_uses_the_current_enum_and_labels_unnamed():
+    feats = [{"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n1", "osm_tag": "amenity=school", "name": None}},
+             {"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n2", "osm_tag": "amenity=place_of_worship",
+                                                                       "name": "Masjid", "religion": "muslim"}},
+             {"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n3", "osm_tag": "amenity=police", "name": "Police"}},
+             {"geometry": {"coordinates": [36.0, -0.2]}, "properties": {"osm": "n4", "osm_tag": "amenity=school", "name": "Out"}}]
+    out = rt.shelters_from_osm("x", feats, [34.9, -0.3, 35.1, -0.1])
+    assert out == [{"id": "x-n1", "name": "School (unnamed in OpenStreetMap)", "type": "school", "lon": 35.0,
+                    "lat": -0.2, "capacity": None, "safe": True}]
+
+
+def test_a_bridge_way_is_not_cut_but_its_flooded_approach_on_the_same_edge_is(tmp_path):
+    """Edge 0-1 (300 m) as one graph edge; only its first 100 m is an OSM bridge way. Wet under the bridge: not cut.
+    Wet at 200 m (the approach, same graph edge): cut."""
+    lon0, lat0 = _ll(_X0, _Y0)
+    lon1, lat1 = _ll(_X0 + 100, _Y0)
+    xml = tmp_path / "t.osm"
+    rt.write_osm_xml(xml, {1: (lon0, lat0), 2: (lon1, lat1)}, [(9, [1, 2], {"highway": "primary", "bridge": "yes"})])
+    bl = rt.bridge_lines(xml)
+    assert len(bl) == 1 and np.allclose(bl[0], [(lon0, lat0), (lon1, lat1)], atol=1e-7)
+    G = _lattice(2).G
+    RG = rt.RoutingGraph(G, "EPSG:32736", rt.bridge_lines(xml))
+    wet, tf = _wet([(_X0 + 50, _Y0)])
+    assert not RG.cut(wet, tf).any()
+    wet, tf = _wet([(_X0 + 200, _Y0)])
+    assert RG.cut(wet, tf).sum() == 2                     # 0->1 and 1->0
+    xml2 = tmp_path / "n.osm"
+    rt.write_osm_xml(xml2, {1: (lon0, lat0), 2: (lon1, lat1)}, [(9, [1, 2], {"highway": "primary", "bridge": "no"})])
+    assert rt.bridge_lines(xml2) == []
+
+
+def test_relocation_candidates_exclude_a_wet_node_even_if_reachable():
+    """Reachability normally drops wet nodes (their edges are cut); a bridge can keep one reachable. Pass every node as
+    reachable and check the wet filter on its own."""
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    wet, tf = _wet([])
+    from rasterio.transform import rowcol
+    hand = np.full(wet.shape, 10.0)
+    r, c = rowcol(tf, _X0 + _SP, _Y0)
+    wet[int(r), int(c)] = True
+    hand[int(r) - 2:int(r) + 3, int(c) - 2:int(c) + 3] = 30.0          # the wet node is the highest: tempting
+    dist = np.full(len(W.nodes), 60.0)
+    cands = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0)
+    assert W.idx[1] not in {c["node"] for c in cands} and len(cands) == 8
+
+
+def test_to_shelter_avoided_names_the_flooded_road_on_the_usual_path():
+    W = _lattice(3, names={frozenset((1, 2)): "Juja Road"})
+    D = _lattice(3, kph=30, drive=True)
+    s = {"id": "x-s", "name": "School", "type": "school", "capacity": None, "safe": True,
+         **dict(zip(("lon", "lat"), _ll(_X0 + 2 * _SP, _Y0)))}
+    o = {"id": "x-o1", "name": "O", "user_type": "trader", **dict(zip(("lon", "lat"), _ll(_X0, _Y0)))}
+    wet, tf = _wet([(_X0 + _SP + 150, _Y0)])                           # Juja Road flooded
+    r = rt.build_routes("t", {"type": "urban", "bbox": [-180, -90, 180, 90]}, [o], [s], W, D, W.cut(wet, tf),
+                        D.cut(wet, tf), {}, None, flood=(wet, tf))[0][0]
+    assert r["avoided"] == ["Juja Road"] and r["safe"]["minutes"] == 20
