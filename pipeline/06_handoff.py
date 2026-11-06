@@ -107,7 +107,7 @@ def main(area: str):
     depth = [r for r in results if "flooded_km2_in_handoff_bbox" in r]
     if any(r["calibrated"] != str(cal).lower() for r in depth):
         sys.exit(f"REFUSED: depth calibrated tags {sorted({r['calibrated'] for r in depth})} != runoff_flood.json {cal}")
-    first = (f"**k = {rf['k']} is PROVISIONAL and UNCALIBRATED (M-05 BLOCKED:ee-auth).** Every raster below is tagged "
+    first = (f"**k = {rf['k']} is NOT CALIBRATED for this area** ({rf['k_note']}). The depth rasters are tagged "
              "calibrated=false; numbers built on them are provisional." if not cal else
              f"**k = {rf['k']} is CALIBRATED (M-05)**: {rf['k_note']}. The 10 depth rasters are tagged calibrated=true (hand.tif and channels.tif do not depend on k). "
              "Screening-level: the backtest score is modest and is reported as such.")
@@ -129,8 +129,8 @@ def main(area: str):
         f"{min(r['margin_px'] for r in results)} px. Tests: " + ", ".join(f"`{t}`" for t in COVERAGE_TESTS) + ".",
         (f"- **k = {rf['k']}, α = {rf['alpha']} — calibrated.** {rf['k_note']}. Backtest: "
          f"`$RMS_DATA/processed/{area}/model/backtest/` (backtest.json, backtest.png, observed.tif)." if cal else
-         f"- **k = {rf['k']}, α = {rf['alpha']} — NOT CALIBRATED.** {rf['k_note']}. The depth rasters WILL be "
-         "regenerated after M-05; exposure numbers built on these are provisional and must say so."),
+         f"- **k = {rf['k']}, α = {rf['alpha']} — NOT CALIBRATED.** {rf['k_note']}. Exposure numbers "
+         "built on these are provisional and must say so."),
         f"- **El Niño:** P × {rf['elnino']['ratio']} (CHIRPS OND {rf['elnino']['event'][-4:]} / OND "
         f"{rf['elnino']['clim_years'][0]}–{rf['elnino']['clim_years'][1]} mean over bbox {rf['elnino']['bbox']}). "
         + ("Computed over the ruled 34.80 AOI (bbox flipped, operator ruling): this is the slide number."

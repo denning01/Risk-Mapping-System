@@ -169,7 +169,8 @@ def main(area: str):
                                                                       "white")},
                           "model_km2": row["all"]["model_km2"]}), flush=True)
     grid_rows = curve[:-1]
-    best = max(grid_rows, key=lambda r: r["all"]["f1"])
+    best = dict(max(grid_rows, key=lambda r: r["all"]["f1"]))
+    best["on_grid_edge"] = best["k"] in (float(K_GRID[0]), float(K_GRID[-1]))
     bb = max(grid_rows, key=lambda r: r["black"]["f1"])
     bw = max(grid_rows, key=lambda r: r["white"]["f1"])
     holdout = {"tile_km": TILE_PX * 30 / 1000,
@@ -188,12 +189,13 @@ def main(area: str):
            "alpha": alpha, "k_provisional": _rf().K_PROVISIONAL, "provisional": curve[-1],
            "best": best, "f1_range_over_k_grid": [min(f1s), max(f1s)], "holdout": holdout, "curve": grid_rows}
     (out / "backtest.json").write_text(json.dumps(rep, indent=1))
-    figure(out / "backtest.png", obs["VH"], model_mask(best["k"]), dom, aoi, best)
+    figure(out / "backtest.png", obs["VH"], model_mask(best["k"]), dom, aoi, best,
+           f"{cfg['name']} backtest, S1 {dates[0]}..{dates[-1]}")
     print(json.dumps({"best_k": best["k"], "best": best["all"], "provisional_k": curve[-1]["all"],
                       "holdout": holdout}, indent=1))
 
 
-def figure(path, obs, mod, dom, aoi, best):
+def figure(path, obs, mod, dom, aoi, best, label):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -205,7 +207,7 @@ def figure(path, obs, mod, dom, aoi, best):
     fig, ax = plt.subplots(1, 3, figsize=(16, 5.6))
     from matplotlib.colors import ListedColormap
     ax[0].imshow(np.where(d, o, np.nan), cmap=ListedColormap(["#eeeeee", "#1f4e9c"]), interpolation="nearest")
-    ax[0].set_title("Observed: Sentinel-1 flood, Nov 2023 (UN-SPIDER method)")
+    ax[0].set_title("Observed: Sentinel-1 change detection (UN-SPIDER method)")
     ax[1].imshow(np.where(d, mm, np.nan), cmap=ListedColormap(["#eeeeee", "#c0392b"]), interpolation="nearest")
     ax[1].set_title(f"Model: HAND + SCS-CN, k = {best['k']}")
     ax[2].imshow(np.where(d, cmp_, np.nan), cmap=ListedColormap(["#eeeeee", "#2e7d32", "#e67e22", "#1f4e9c"]),
@@ -215,7 +217,8 @@ def figure(path, obs, mod, dom, aoi, best):
                     f"precision {s['precision']:.2f}  recall {s['recall']:.2f}")
     for a in ax:
         a.set_xticks([]), a.set_yticks([])
-    fig.suptitle("Nyando backtest, Nov 2023 — screening-level model vs satellite (grey = evaluated, water excluded)")
+    fig.suptitle(f"{label} — screening-level model vs satellite (grey = evaluated, water excluded)"
+                 + ("" if not best.get("on_grid_edge") else " — best k ON THE GRID EDGE: k not identified"))
     fig.tight_layout()
     fig.savefig(path, dpi=110)
 

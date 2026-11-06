@@ -82,3 +82,35 @@ def test_real_backtest_is_consistent_and_not_suspiciously_good():
     assert s["f1"] == pytest.approx(2 * p * r / (p + r), abs=1e-4)
     assert 0 < s["observed_km2"] < b["domain_km2"] * 0.2          # not empty, not everything
     assert len(b["event"]) >= 1 and all(a["date"].startswith("2023-11") for a in b["event"])
+
+
+def _bt(d, k, on_edge=None, commit="abc1234"):
+    d.mkdir(parents=True, exist_ok=True)
+    best = {"k": k, "all": {"f1": 0.1, "iou": 0.05, "precision": 0.1, "recall": 0.1}}
+    if on_edge is not None:
+        best["on_grid_edge"] = on_edge
+    (d / "backtest.json").write_text(json.dumps({"provenance": {"git_commit": commit}, "best": best,
+                                                 "curve": [{"k": 0.0005}, {"k": 0.0126}, {"k": 0.05}]}))
+
+
+def test_03_refuses_a_k_on_the_edge_of_the_grid(tmp_path, monkeypatch):
+    """M-07: Nairobi's best k was 0.05, the top of the grid — not an optimum, so not a calibration."""
+    rf = _load("03_runoff_flood.py")
+    monkeypatch.setenv("RMS_DATA", str(tmp_path))
+    d = tmp_path / "processed" / "nairobi" / "model" / "backtest"
+    _bt(d, 0.05, on_edge=True)
+    assert rf.calibrated_k("nairobi") is None
+    _bt(d, 0.05)                                     # older json without the flag: edge read from the curve
+    assert rf.calibrated_k("nairobi") is None
+    _bt(d, 0.0126)
+    assert rf.calibrated_k("nairobi")["k"] == 0.0126
+
+
+def test_real_nyando_backtest_k_is_inside_the_grid_and_nairobi_transfers_it():
+    from pipeline.lib import config
+    rf = _load("03_runoff_flood.py")
+    if not REAL.exists():
+        pytest.skip("no local backtest")
+    assert rf.calibrated_k("nyando")["k"] == json.loads(REAL.read_text())["best"]["k"]
+    assert config.load("nairobi")["k_transfer_from"] == "nyando"
+    assert config.load("nyando").get("k_transfer_from") is None

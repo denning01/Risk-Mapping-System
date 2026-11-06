@@ -58,6 +58,8 @@ def calibrated_k(area: str):
     if not f.exists():
         return None
     b = json.loads(f.read_text())
+    if b["best"].get("on_grid_edge", b["best"]["k"] in (b["curve"][0]["k"], b["curve"][-1]["k"])):
+        return None   # argmax on the edge of the k grid is not an optimum: k is not identified by this backtest
     return {"k": b["best"]["k"], "f1": b["best"]["all"]["f1"], "iou": b["best"]["all"]["iou"],
             "precision": b["best"]["all"]["precision"], "recall": b["best"]["all"]["recall"],
             "commit": b["provenance"]["git_commit"]}
@@ -131,8 +133,13 @@ def png(path, depth, aoi, title):
 def main(area: str, k: float | None, alpha: float):
     prov = provenance()   # at START (see 02_terrain.py)
     cal = calibrated_k(area) if k is None else None
+    transfer = None
+    if k is None and cal is None and cfg.get("k_transfer_from"):
+        transfer = calibrated_k(cfg["k_transfer_from"])
+        if transfer is None:
+            sys.exit(f"REFUSED: k_transfer_from {cfg['k_transfer_from']} has no valid calibration")
     if k is None:
-        k = cal["k"] if cal else K_PROVISIONAL
+        k = cal["k"] if cal else transfer["k"] if transfer else K_PROVISIONAL
     cfg = config.load(area)
     m, raw = model_dir(area), raw_dir(area)
     grid = grid_of(m / "hand.tif")
@@ -173,7 +180,10 @@ def main(area: str, k: float | None, alpha: float):
     report = {"provenance": prov, "area": area, "k": k, "alpha": alpha, "k_calibrated": cal is not None,
               "k_note": (f"calibrated in M-05 against the Sentinel-1 Nov 2023 flood mask (05_backtest.py at {cal['commit']}): "
                          f"best F1 {cal['f1']}, IoU {cal['iou']}, precision {cal['precision']}, recall {cal['recall']}"
-                         if cal else "provisional, NOT calibrated (anchor: outlet stage 3.05 m at 150 mm normal); "
+                         if cal else
+                         f"NOT calibrated here: this area's own backtest did not identify k (see backtest/backtest.json); "
+                         f"k transferred from the {cfg['k_transfer_from']} calibration (05_backtest.py at {transfer['commit']}, "
+                         f"F1 {transfer['f1']} there)" if transfer else "provisional, NOT calibrated (anchor: outlet stage 3.05 m at 150 mm normal); "
                          "M-05 calibrates k on a Sentinel-1 flood mask"),
               "stage_form": "h = k * V_up^alpha, V_up = upstream runoff volume (1000 m3); alpha 0.4 Leopold & Maddock 1953 USGS PP 252 p.16",
               "aoi_cells": int(aoi.sum()), "cell_km2": cell_km2, "max_slope_deg": 15.0,
