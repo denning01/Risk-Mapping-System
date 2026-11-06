@@ -126,7 +126,9 @@ def main(area: str):
         "regenerated after M-05; exposure numbers built on these are provisional and must say so.",
         f"- **El Niño:** P × {rf['elnino']['ratio']} (CHIRPS OND {rf['elnino']['event'][-4:]} / OND "
         f"{rf['elnino']['clim_years'][0]}–{rf['elnino']['clim_years'][1]} mean over bbox {rf['elnino']['bbox']}). "
-        "PROVISIONAL, not a slide number: the final ratio is computed over the ruled 34.80 AOI after the bbox flip.",
+        + ("Computed over the ruled 34.80 AOI (bbox flipped, operator ruling): this is the slide number."
+           if rf["elnino"]["bbox"][0] == 34.80 else
+           "PROVISIONAL, not a slide number: the final ratio is computed over the ruled 34.80 AOI after the bbox flip."),
         f"- **Produced by** (stamped by the producing run, clean tree): depth rasters — 03_runoff_flood.py at commit "
         f"{commit_depth}; hand.tif, channels.tif — 02_terrain.py at commit {commit_terrain}.",
         "- **Known limits:** screening-level HAND + SCS-CN, not a hydraulic model; closed depressions have HAND 0 and "
