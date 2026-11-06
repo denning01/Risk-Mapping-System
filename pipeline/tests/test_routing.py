@@ -313,3 +313,29 @@ def test_osm_points_fixture_equals_the_places_cache_when_present():
             checked += 1
     if not checked:
         pytest.skip("no osm_places cache under $RMS_DATA")
+
+
+# ---- shelter contract types: human decision (worship + police YES), gated on Person B's schema change ----
+@pytest.mark.parametrize("props,now,nxt", [
+    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "St Paul"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": "muslim", "name": "Jamia Mosque"}, None, "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": "hindu", "name": "Shree Temple"}, None, "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Masjid Noor"}, None, "place_of_worship"),
+    ({"osm_tag": "amenity=police", "name": "Ahero Police Station"}, None, "police"),
+    ({"osm_tag": "amenity=school", "name": "X"}, "school", "school"),
+    ({"osm_tag": "amenity=clinic", "name": "X"}, "hospital", "hospital"),
+    ({"osm_tag": "healthcare=hospital", "name": "X"}, "hospital", "hospital"),
+    ({"osm_tag": "amenity=community_centre", "name": "X"}, "community_hall", "community_hall"),
+    ({"osm_tag": "amenity=bar", "name": "X"}, None, None),
+])
+def test_contract_type_before_and_after_the_schema_change(props, now, nxt):
+    assert rt.contract_type(props, schema_next=False) == now
+    assert rt.contract_type(props, schema_next=True) == nxt
+    assert now is None or now in rt.CONTRACT_TYPES_NOW
+    assert nxt is None or nxt in rt.CONTRACT_TYPES_NEXT
+
+
+def test_default_emits_only_the_current_enum():
+    assert rt.SCHEMA_HAS_WORSHIP_POLICE is False     # flipped only after Person B's schema is on data
+    assert rt.contract_type({"osm_tag": "amenity=police"}) is None

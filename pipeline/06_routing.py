@@ -135,6 +135,44 @@ def shelter_type(tags: dict) -> str | None:
     return None
 
 
+# Contract shelter types (docs/DATA_CONTRACT.md, web/src/lib/schema.ts ShelterSchema.type).
+# HUMAN DECISION 2026-11-06 (via operator): place_of_worship = YES and police = YES as shelter types — a contract change
+# Person B makes in schema.ts. Until that schema is on `data`, only the current enum may be emitted (validate:data).
+# Flip SCHEMA_HAS_WORSHIP_POLICE to True in the commit that follows the schema landing.
+SCHEMA_HAS_WORSHIP_POLICE = False
+CONTRACT_TYPES_NOW = {"school", "church", "hospital", "community_hall", "high_ground"}
+CONTRACT_TYPES_NEXT = CONTRACT_TYPES_NOW | {"place_of_worship", "police"}
+_CHURCH_WORDS = ("church", "kanisa", "cathedral", "parish", "chapel", "sda", "adventist", "catholic", "anglican",
+                 "pentecostal", "gospel", "tabernacle", "ministr", "assembly of god", "fellowship")
+
+
+def is_christian(props: dict) -> bool:
+    """religion=christian, or (no religion tag and) a name that says church in English or Swahili ("kanisa")."""
+    if props.get("religion"):
+        return props["religion"] == "christian"
+    name = (props.get("name") or "").lower()
+    return any(w in name for w in _CHURCH_WORDS)
+
+
+def contract_type(props: dict, schema_next: bool | None = None) -> str | None:
+    """Contract shelter type for a cached shelter candidate (its osm_tag, religion and name), or None = not emitted.
+    Before the schema change: worship places are emitted as "church" ONLY if Christian (a mosque or temple is never
+    called a church); other worship places and police are held back. After it: every worship place is
+    "place_of_worship" (the real name is kept), police stations are "police"."""
+    nxt = SCHEMA_HAS_WORSHIP_POLICE if schema_next is None else schema_next
+    tag = props.get("osm_tag")
+    if tag == "amenity=place_of_worship":
+        if nxt:
+            return "place_of_worship"
+        return "church" if is_christian(props) else None
+    if tag == "amenity=police":
+        return "police" if nxt else None
+    t = {"amenity=school": "school", "amenity=community_centre": "community_hall"}.get(tag)
+    if t is None and tag in ("amenity=hospital", "amenity=clinic", "healthcare=hospital", "healthcare=clinic"):
+        t = "hospital"   # contract word; on slides: "health facilities (hospitals + clinics)"
+    return t
+
+
 # ---------------------------------------------------------------------------------------------
 # PBF -> per-area XML + shelter candidates (one pass for all areas)
 # ---------------------------------------------------------------------------------------------
