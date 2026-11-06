@@ -130,6 +130,17 @@ def png(path, depth, aoi, title):
     plt.close(fig)
 
 
+def soil_inputs(cfg: dict, clay, sand):
+    """The soil-gap gate. M-07: SoilGrids has no texture under most of central Nairobi (55 % of the AOI had HSG unknown
+    -> CN NaN -> no runoff), so with soil_gap_fill: nearest the gaps take the nearest SoilGrids prediction. Without the
+    key the inputs pass through UNCHANGED (Nyando: its posted, calibrated rasters were built without the fill)."""
+    if cfg.get("soil_gap_fill") == "nearest":
+        clay, gap = runoff.fill_nearest(clay)
+        sand, _ = runoff.fill_nearest(sand)
+        return clay, sand, gap
+    return clay, sand, None
+
+
 def choose_k(area: str, cfg: dict, k: float | None):
     """(k, own calibration or None, transferred calibration or None). An explicit k wins (uncalibrated); else this
     area's backtest; else the config's k_transfer_from area's backtest (tagged uncalibrated); else K_PROVISIONAL."""
@@ -170,13 +181,7 @@ def main(area: str, k: float | None, alpha: float):
     lc, _ = to_utm(raw / "worldcover_2021.tif", epsg, Resampling.mode, like=grid)
     clay, _ = to_utm(raw / "soilgrids_clay_0-30cm.tif", epsg, Resampling.bilinear, like=grid)
     sand, _ = to_utm(raw / "soilgrids_sand_0-30cm.tif", epsg, Resampling.bilinear, like=grid)
-    soil_filled = None
-    if cfg.get("soil_gap_fill") == "nearest":
-        # M-07: SoilGrids has no texture under most of central Nairobi (55 % of the AOI had HSG unknown -> CN NaN ->
-        # no runoff). Take the nearest SoilGrids prediction. Off for Nyando (its posted rasters were built without it).
-        clay, gap = runoff.fill_nearest(clay)
-        sand, _ = runoff.fill_nearest(sand)
-        soil_filled = gap
+    clay, sand, soil_filled = soil_inputs(cfg, clay, sand)
     hsg = runoff.hsg_from_texture(clay, sand)
     cn = runoff.curve_number(lc, hsg)
     # Water never "floods": JRC occurrence >= 80 % (perm, from M-03) OR WorldCover 2021 permanent water (class 80).

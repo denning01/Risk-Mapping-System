@@ -1,4 +1,6 @@
 """M-04: SCS-CN runoff, CN/HSG lookup, flood mask and risk classes against hand-calculated values."""
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -190,3 +192,32 @@ def test_soil_gap_fill_is_on_for_nairobi_only():
     from pipeline.lib import config
     assert config.load("nairobi").get("soil_gap_fill") == "nearest"
     assert config.load("nyando").get("soil_gap_fill") is None
+
+
+def test_03_soil_gate_fills_only_where_the_config_says_and_main_uses_it():
+    """F8.2: test the gate where it acts (03), not only the config keys."""
+    import importlib.util
+    from pathlib import Path
+    from pipeline.lib import config
+    spec = importlib.util.spec_from_file_location("rf_soil", Path(__file__).resolve().parents[1] / "03_runoff_flood.py")
+    rf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rf)
+    clay = np.array([[20.0, np.nan], [30.0, 40.0]])
+    sand = np.array([[50.0, np.nan], [40.0, 30.0]])
+    c, s, gap = rf.soil_inputs(config.load("nyando"), clay.copy(), sand.copy())
+    assert gap is None and np.isnan(c[0, 1]) and np.isnan(s[0, 1])               # Nyando: untouched
+    np.testing.assert_array_equal(np.isnan(c), np.isnan(clay))
+    c, s, gap = rf.soil_inputs(config.load("nairobi"), clay.copy(), sand.copy())
+    assert gap is not None and gap[0, 1] and gap.sum() == 1 and np.isfinite(c).all() and np.isfinite(s).all()
+    assert "soil_inputs(cfg, clay, sand)" in (Path(__file__).resolve().parents[1] / "03_runoff_flood.py").read_text()
+
+
+NY = Path("/Users/mac/IGAD/data/processed/nyando/model/runoff_flood.json")
+
+
+@pytest.mark.skipif(not NY.exists(), reason="no local Nyando model")
+def test_real_nyando_run_had_no_soil_fill_and_keeps_its_cn_gaps():
+    """F8.2 data side: the posted Nyando run recorded no fill and 1.82 % of its AOI without CN."""
+    import json
+    r = json.loads(NY.read_text())
+    assert r.get("soil_gap_fill") is None and r["aoi_cn"]["nan_share"] == pytest.approx(0.0182, abs=1e-4)
