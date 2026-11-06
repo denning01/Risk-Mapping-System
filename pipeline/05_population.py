@@ -1,18 +1,20 @@
 """05_population.py — census-scaled population and exposed people per scenario (E-04).
 
-Method (plan §4.7, dasymetric):
-  * Weights: WorldPop Kenya 2020 unconstrained, people per ~100 m pixel (ken_ppp_2020.tif, CC BY 4.0,
-    doi:10.5258/SOTON/WP00645), downloaded from
+Method (plan §4.7, dasymetric; operator rulings: mode B, weight W2):
+  * County totals: KNBS 2009 and 2019 census county figures (KNBS dict below; PDFs and sha256 in
+    $RMS_DATA/raw/knbs/), projected to the year with Person B's population.json method (low / medium / high growth).
+  * Per-county factor f_c,s = projection_c,s / (WorldPop 2020 sum over that county's polygon). Mode B (written) uses
+    each county's own factor; a county without KNBS figures falls back to the population.json unit's factor (mode A)
+    and is flagged "NO KNBS FIGURES" in prepare's printout. Mode A (one unit factor on every pixel) is kept for comparison only.
+    WorldPop Kenya 2020 unconstrained (ken_ppp_2020.tif, CC BY 4.0, doi:10.5258/SOTON/WP00645),
     https://data.worldpop.org/GIS/Population/Global_2000_2020/2020/KEN/ken_ppp_2020.tif
-  * Totals: Person B's web/public/data/<area>/population.json — one county unit, projected for the year
-    (low / medium / high growth). Scale factor f_s = projection_s / (WorldPop sum over the county polygon), so the
-    scaled pixels over the county sum to the projection exactly (printed both ways).
   * County polygons: OSM boundary=administrative admin_level=4 from the same md5-checked Geofabrik snapshot.
-  * Exposed people (s) = f_s * sum of WorldPop people in flooded cells. The WorldPop grid (EPSG:4326, ~100 m) is
-    carried onto the flood grid (UTM, 30 m) as a DENSITY (people per m², per-row pixel area on the WGS84 ellipsoid),
-    nearest-neighbour, then times the 30 m cell area; the total is checked against the native-grid total.
-  * LIMITATION: where the AOI extends beyond the county in population.json, the county's factor is applied to the
-    whole AOI (an assumption). The share of AOI people outside that county is printed and stored.
+  * Weight W2 (written): inside each county's part of the AOI, people = WorldPop(AOI and county) x f_c, placed in
+    proportion to Google Open Buildings v3 footprint area (conf >= the 85 % precision threshold of the tile's S2
+    parent). Exposed people = that total x (footprint area whose centroid is in a wet cell / footprint area in the
+    AOI part of the county). Weight W1 (WorldPop pixels as weights,
+    --population-weight worldpop) is an upper bound; the ruling writes W2.
+  * Wet = depth > 0, every risk class including LOW (< 0.3 m). Buildings = footprints with centroid in a wet cell.
 """
 from __future__ import annotations
 

@@ -134,7 +134,7 @@ def test_raster_covers_bbox_refuses_south_up_and_rotated():
         assert not ok and "north-up" in why
 
 
-def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None):
+def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None, old_year: int = 2026):
     data, depth = tmp / "data", tmp / "depth"
     sd = data / "nyando" / "scenarios"
     sd.mkdir(parents=True)
@@ -153,7 +153,7 @@ def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None
             ds.write(grid(), 1)
             if mock:
                 ds.update_tags(MOCK="1")
-        (sd / f"{k}.exposure.json").write_text(json.dumps({"year": 2026, "population": {"low": 1, "medium": 2, "high": 3},
+        (sd / f"{k}.exposure.json").write_text(json.dumps({"year": old_year, "population": {"low": 1, "medium": 2, "high": 3},
                                                            "buildings": 4, "flooded_area_km2": 99, "roads_cut": [], "source": carried_source}))
         (sd / f"{k}.shelters.json").write_text(json.dumps([{"id": "s1", "name": "x", "type": "school", "lon": wet[0],
                                                             "lat": wet[1], "capacity": None, "safe": True}]))
@@ -322,7 +322,7 @@ def test_write_flags_km2_that_disagree_with_the_handoff(tmp_path, capsys):
 
 
 # ---- E-04: write puts the RULED population number (W2 weight, option B factors) into exposure.json ----
-def _pop_inputs(rms: Path):
+def _pop_inputs(rms: Path, low_building: bool = False, county_factors: bool = True):
     from rasterio.transform import from_origin as fo
     ex = rms / "processed" / "nyando" / "exposure"
     ex.mkdir(parents=True)
@@ -335,13 +335,21 @@ def _pop_inputs(rms: Path):
         d.write(np.ones((4, 4), dtype="uint8"), 1)
     pts = [to_wgs(722600 + 4.5 * RES, 9977880 - 4.5 * RES),       # in the wet medium block, 30 m2
            to_wgs(722600 + 7.5 * RES, 9977880 - 2.5 * RES)]       # dry cell inside the AOI, 90 m2
+    areas = [30.0, 90.0]
+    if low_building:                                              # LOW cell (depth 0.1 m) inside the AOI, 60 m2
+        pts.append(to_wgs(722600 + 1.5 * RES, 9977880 - 1.5 * RES))
+        areas.append(60.0)
+    n = len(pts)
     np.savez(ex / "open_buildings_aoi.npz", lon=np.array([p[0] for p in pts]), lat=np.array([p[1] for p in pts]),
-             area_m2=np.array([30.0, 90.0]), conf=np.array([0.9, 0.9]), thr80=np.full(2, 0.7), thr85=np.full(2, 0.7),
-             thr90=np.full(2, 0.7))
+             area_m2=np.array(areas), conf=np.full(n, 0.9), thr80=np.full(n, 0.7), thr85=np.full(n, 0.7),
+             thr90=np.full(n, 0.7))
+    county = {"id": 1, "worldpop_aoi_2020": 1000.0}
+    if county_factors:
+        county["factors"] = {"low": 1.0, "medium": 2.0, "high": 4.0}
     (ex / "population_manifest.json").write_text(json.dumps({
         "unit": "t", "year": 2026, "projection": {}, "modes": {"A": "a", "B": "b"},
         "factors_A": {"low": 3.0, "medium": 3.0, "high": 3.0},
-        "counties": [{"id": 1, "worldpop_aoi_2020": 1000.0, "factors": {"low": 1.0, "medium": 2.0, "high": 4.0}}]}))
+        "counties": [county]}))
 
 
 def test_write_population_uses_the_ruled_weight_and_mode(tmp_path, monkeypatch):
@@ -412,3 +420,37 @@ def test_written_area_is_measured_after_simplification():
     _, st = scen.flood_features(d, TF, CRS, simplify_m=25)
     assert st0["written_area_m2"] == pytest.approx(99 * 900) == st["polygon_area_m2"]
     assert st["written_area_m2"] == pytest.approx(99 * 900 + 450)
+
+
+# ---- R5 audit F5.5 / F5.7 / F5.8 ----
+_POP_ARGS = ["--population", "--population-mode", "B", "--population-weight", "buildings", "--buildings"]
+
+
+def _run_pop(tmp_path, monkeypatch, **kw):
+    old_year = kw.pop("old_year", 2026)
+    data, depth = _write_inputs(tmp_path, mock=True, old_year=old_year)
+    _pop_inputs(tmp_path / "rms", **kw)
+    monkeypatch.setenv("RMS_DATA", str(tmp_path / "rms"))
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)] + _POP_ARGS) == 0
+    return json.loads((data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text())
+
+
+def test_exposed_includes_low_class_water(tmp_path, monkeypatch):
+    """F5.5: "exposed" = any depth > 0, LOW class (0.1 m) included. A building only in a 0.1 m cell is counted, and its
+    footprint carries people: wet share (30 + 60) / 180 = 0.5 -> medium 1000 x 2 x 0.5 = 1000. Counting only depth
+    > 0.3 m would give 1 building and 333 people."""
+    exp = _run_pop(tmp_path, monkeypatch, low_building=True)
+    assert exp["buildings"] == 2
+    assert exp["population"] == {"low": 500, "medium": 1000, "high": 2000}
+
+
+def test_written_year_comes_from_the_manifest_not_the_old_file(tmp_path, monkeypatch):
+    """F5.7: the carried file says 2020; the manifest's projection year (2026) must be written."""
+    exp = _run_pop(tmp_path, monkeypatch, old_year=2020)
+    assert exp["year"] == 2026
+
+
+def test_county_without_knbs_figures_uses_the_unit_factor_in_w2(tmp_path, monkeypatch):
+    """F5.8: a county with no KNBS figures falls back to A's factor (3.0) in mode B: 1000 x 3 x 30/120 = 750."""
+    exp = _run_pop(tmp_path, monkeypatch, county_factors=False)
+    assert exp["population"] == {"low": 750, "medium": 750, "high": 750}

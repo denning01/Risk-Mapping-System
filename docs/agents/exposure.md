@@ -111,3 +111,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   100–150 and 4 from 200, and the river names were never measured. Check every sentence against routes_check / the JSON,
   and match the tables to the files by script (all 20 rows), before committing. Reported impacts: IFRC GO PDFs
   (go-api.ifrc.org/api/DownloadFile/…) are fetchable primary sources when ReliefWeb/OCHA return 403.
+- 2026-11-06 (R5 audit) A fixture whose only wet buildings sit in the MEDIUM block cannot tell "depth > 0" from "depth > 0.3":
+  put a building in every class you claim to count. A fixture that already equals the right answer (old year = manifest
+  year) cannot catch carrying the wrong one; make them differ. "Downloaded this round" in EVIDENCE must mean a file under
+  $RMS_DATA with its sha256, not a scratchpad copy.
