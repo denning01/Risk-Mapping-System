@@ -92,3 +92,87 @@ def test_walk_graph_constant_speed_bidirectional(tmp_path):
     for _, _, d in G.edges(data=True):
         assert d["speed_kph"] == 3.6
         assert d["travel_time"] == pytest.approx(d["length"] / 1.0, rel=0.01)  # 1.0 m/s
+
+
+# ---- F3.7: extract() on a hand-written .osm (pyosmium reads XML) ----
+BBOX = [35.0, -0.21, 35.01, -0.20]
+
+
+def _osm_fixture(path: Path):
+    n = lambda i, lon, lat, tags="": f'<node id="{i}" version="1" lat="{lat}" lon="{lon}">{tags}</node>'
+    t = lambda k, v: f'<tag k="{k}" v="{v}"/>'
+    body = [
+        n(1, 35.002, -0.205, t("amenity", "school") + t("name", "In School")),        # node shelter inside bbox
+        n(2, 35.20, -0.205, t("amenity", "school") + t("name", "Out School")),        # node shelter outside bbox
+        n(3, 35.0065, -0.2065, t("amenity", "school") + t("name", "Dup School")),     # node inside the school area below
+        n(10, 35.006, -0.207), n(11, 35.007, -0.207), n(12, 35.007, -0.206), n(13, 35.006, -0.206),
+        n(20, 35.005, -0.205), n(21, 35.10, -0.205),                                  # road: one node in buffer, one far out
+        n(30, 35.30, -0.30), n(31, 35.31, -0.30),                                     # road entirely outside the buffer
+        '<way id="100" version="1">' + "".join(f'<nd ref="{r}"/>' for r in (10, 11, 12, 13, 10))
+        + t("amenity", "school") + t("name", "Area School") + "</way>",
+        '<way id="200" version="1"><nd ref="20"/><nd ref="21"/>' + t("highway", "primary") + "</way>",
+        '<way id="201" version="1"><nd ref="30"/><nd ref="31"/>' + t("highway", "primary") + "</way>",
+    ]
+    path.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n' + "\n".join(body) + "\n</osm>\n")
+
+
+def test_extract_on_handwritten_osm(tmp_path):
+    f = tmp_path / "t.osm"
+    _osm_fixture(f)
+    ex = rt.extract(f, {"nyando": BBOX})["nyando"]
+    got = sorted(s["osm"] for s in ex["shelters"])
+    assert got == ["n1", "n3", "w100"]                       # n2 outside bbox; w100 assembled as an area
+    keep, dropped = rt.dedupe_shelters(ex["shelters"])
+    assert dropped == 1 and sorted(s["osm"] for s in keep) == ["n1", "w100"]   # n3 is inside same-type w100
+    for nt in ("drive", "walk"):
+        nodes, ways = ex[nt]
+        assert [w[0] for w in ways] == [200]                 # partly-inside road kept whole, outside road dropped
+        assert set(nodes) == {20, 21}
+
+
+# ---- F3.8 ----
+def test_drive_graph_drops_oneway_dead_end_walk_keeps_it(tmp_path):
+    """C: a one-way spur (2 -> 4) cannot be left again, so it is outside the strongly connected drive graph."""
+    nodes = {1: (35.00, 0.0), 2: (35.01, 0.0), 3: (35.02, 0.0), 4: (35.01, 0.005)}
+    ways = [(10, [1, 2], {"highway": "primary"}), (11, [2, 3], {"highway": "primary"}),
+            (12, [2, 4], {"highway": "tertiary", "oneway": "yes"})]
+    xml = tmp_path / "o.osm"
+    rt.write_osm_xml(xml, nodes, ways)
+    bb = (34.99, -0.01, 35.03, 0.01)
+    assert 4 not in rt.build_graph(xml, "drive", bb, urban=False).nodes
+    assert 4 in rt.build_graph(xml, "walk", bb, urban=False).nodes
+
+
+def test_xml_escaping_roundtrips_awkward_names(tmp_path):
+    """F: quotes, ampersands and angle brackets in tag values survive write_osm_xml -> graph_from_xml."""
+    name = 'Mama "Ngina" & <Sons> Rd'
+    nodes = {1: (35.00, 0.0), 2: (35.01, 0.0), 3: (35.02, 0.0), 4: (35.01, 0.005)}
+    ways = [(10, [1, 2], {"highway": "primary", "name": name}), (11, [2, 3], {"highway": "primary"}),
+            (12, [2, 4], {"highway": "primary"})]
+    xml = tmp_path / "e.osm"
+    rt.write_osm_xml(xml, nodes, ways)
+    G = rt.build_graph(xml, "walk", (34.99, -0.01, 35.03, 0.01), urban=False)
+    assert name in {d.get("name") for _, _, d in G.edges(data=True)}
+
+
+def test_prepare_refuses_md5_mismatch(tmp_path):
+    """G: a PBF whose md5 does not match its .md5 sidecar is refused before anything is read."""
+    pbf = tmp_path / "x.osm.pbf"
+    pbf.write_bytes(b"not the real file")
+    (tmp_path / "x.osm.pbf.md5").write_text("0" * 32 + "  x.osm.pbf\n")
+    assert rt.main(["prepare", "--area", "nyando", "--pbf", str(pbf)]) == 1
+
+
+# ---- F3.9 ----
+def test_unparseable_maxspeed_labelled_as_such(tmp_path):
+    nodes = {1: (35.00, 0.0), 2: (35.01, 0.0), 3: (35.02, 0.0), 4: (35.01, 0.005)}
+    ways = [(10, [1, 2], {"highway": "trunk", "maxspeed": "80-110", "name": "Range Rd"}),
+            (11, [2, 3], {"highway": "trunk", "maxspeed": "80", "name": "Tagged Rd"}),
+            (12, [2, 4], {"highway": "trunk", "name": "Plain Rd"})]
+    xml = tmp_path / "m.osm"
+    rt.write_osm_xml(xml, nodes, ways)
+    G = rt.build_graph(xml, "drive", (34.99, -0.01, 35.03, 0.01), urban=True)
+    src = {d["name"]: (d["speed_src"], d["speed_kph"]) for _, _, d in G.edges(data=True)}
+    assert src["Range Rd"] == ("maxspeed_unparsed", 50.0)    # osmnx fell back to the (urban-capped) class value
+    assert src["Tagged Rd"] == ("maxspeed", 80.0)
+    assert src["Plain Rd"] == ("class", 50.0)

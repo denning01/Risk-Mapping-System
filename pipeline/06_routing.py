@@ -22,6 +22,11 @@ TRAVEL-TIME ASSUMPTIONS (stated, with sources):
     Urban areas (Nairobi) cap untagged edges at 50 km/h: Traffic Act Cap 403 s.42(3), no vehicle "at a speed
     exceeding fifty kilometres per hour" on "any road within the boundaries of any trading centre, township,
     municipality or city". https://www.sheriaplex.com/kenya-acts/3100-section-42-speed-of-motor-vehicles
+  * HWY_KPH (rural untagged) has NO source for free-flow speeds; the only sourced bounds are legal maxima
+    (single-carriage highway 100 km/h, dual 110 km/h, PSV/commercial 80 km/h; GRSP 2015 below), and every HWY_KPH value
+    is at or below them. LIMITATION: Cap 403 s.42(3) also limits roads "within ... any trading centre, township" to
+    50 km/h; the rural AOI does NOT apply that inside Ahero/Awasi etc., so rural drive minutes through towns are
+    optimistic. Recorded in osm_manifest.json "speed_limitations" for the limitations slide (E-08).
   * A tagged maxspeed above 110 km/h is a tagging error (e.g. OSM way 262775043, a residential street tagged
     "120 mph") and gets the class value instead. 110 km/h is the highest limit, for private vehicles on dual-
     carriage highways, per the Traffic Act and Traffic (Speed Limit) Rules as summarised by GRSP (2015, secondary):
@@ -37,6 +42,8 @@ import re
 import sys
 import time
 from pathlib import Path
+
+import numpy as np
 from xml.sax.saxutils import quoteattr
 
 REPO = Path(__file__).resolve().parents[1]
@@ -245,13 +252,25 @@ def add_travel_times(G, network_type: str, urban: bool):
         hwy = {k: (min(v, URBAN_CAP_KPH) if urban else v) for k, v in HWY_KPH.items()}
         G = ox.routing.add_edge_speeds(G, hwy_speeds=hwy, fallback=FALLBACK_KPH)
         for _, _, d in G.edges(data=True):
-            d["speed_src"] = "maxspeed" if d.get("maxspeed") else "class"
+            tag = d.get("maxspeed")
+            if parsed_maxspeed(tag) is not None:
+                d["speed_src"] = "maxspeed"
+            else:  # untagged, or a tag osmnx cannot parse (e.g. "80-110") -> osmnx used the class value
+                d["speed_src"] = "maxspeed_unparsed" if tag else "class"
             if d["speed_kph"] > MAX_TAGGED_KPH:  # only a tag can exceed it; class values are all lower
                 h = d.get("highway")
                 h = h[0] if isinstance(h, list) else h
                 d["speed_kph"] = float(hwy.get(h, FALLBACK_KPH))
                 d["speed_src"] = "tag_invalid"
     return ox.routing.add_edge_travel_times(G)
+
+
+def parsed_maxspeed(tag):
+    """The km/h value osmnx derives from a maxspeed tag (a list after simplification), or None."""
+    from osmnx import routing as r
+    if isinstance(tag, list):
+        return r._collapse_multiple_maxspeed_values(tag, np.mean)
+    return r._clean_maxspeed(tag) if isinstance(tag, str) else None
 
 
 def build_graph(xml: Path, network_type: str, bbox_buf, urban: bool):
@@ -304,7 +323,19 @@ def cmd_prepare(args) -> int:
         manifest = {"area": a, "bbox": b, "buffer_deg": BUFFER_DEG, "source": PBF_URL, "pbf_md5": digest,
                     "osm_copyright": "© OpenStreetMap contributors (ODbL)", "walk_kph": WALK_KPH,
                     "hwy_kph_untagged": {k: (min(v, URBAN_CAP_KPH) if urban else v) for k, v in HWY_KPH.items()},
-                    "urban_cap_kph": URBAN_CAP_KPH if urban else None, "graphs": {}}
+                    "urban_cap_kph": URBAN_CAP_KPH if urban else None,
+                    "max_tagged_kph": MAX_TAGGED_KPH,
+                    "speed_model": "free-flow, uncongested: drive minutes understate real travel time (no sourced congestion factor)",
+                    "speed_limitations": [
+                        "drive speeds are free-flow; real travel (trucks, matatus, market days, wet roads) is slower",
+                        "rural untagged class speeds (hwy_kph_untagged) are assumptions with no source beyond legal maxima",
+                        "Cap 403 s.42(3) 50 km/h in trading centres/townships is applied only to urban Nairobi, not to towns "
+                        "inside the rural AOI, so rural drive minutes through towns are optimistic",
+                    ] if not urban else [
+                        "drive speeds are free-flow; real Nairobi travel is slower",
+                        "untagged edges capped at 50 km/h (Cap 403 s.42(3)); tagged edges use OSM maxspeed",
+                    ],
+                    "graphs": {}}
         for nt in ("drive", "walk"):
             nodes, ways = ex[a][nt]
             xml = rms_data() / "raw" / "osm" / f"{a}_{nt}.osm"
@@ -326,11 +357,14 @@ def cmd_prepare(args) -> int:
         by_type = collections.Counter(f["properties"]["type"] for f in feats)
         named = collections.Counter(f["properties"]["type"] for f in feats if f["properties"]["name"])
         worship = collections.Counter(f["properties"]["religion"] for f in feats if f["properties"]["type"] == "church")
-        manifest["shelters"] = {"by_type": dict(by_type), "named_by_type": dict(named),
+        by_tag = collections.Counter(f["properties"]["osm_tag"] for f in feats)
+        manifest["shelters"] = {"by_type": dict(by_type), "named_by_type": dict(named), "by_osm_tag": dict(by_tag),
+                                "type_note": "contract type 'hospital' = health facilities: amenity=hospital + amenity=clinic + "
+                                             "healthcare=hospital|clinic; see by_osm_tag. Do not call the total 'hospitals'.",
                                 "place_of_worship_by_religion": dict(worship), "node_duplicates_dropped": dropped}
         (outd / "osm_manifest.json").write_text(json.dumps(manifest, indent=1))
         print(f"{a} shelters: {dict(by_type)}  named: {dict(named)}  worship religion: {dict(worship)}  "
-              f"node duplicates dropped: {dropped}")
+              f"node duplicates dropped: {dropped}  by OSM tag: {dict(by_tag)}")
     return 0
 
 
