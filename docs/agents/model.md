@@ -81,3 +81,15 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   `cond == -9999` missed 6,694 of 8,317 cells. Mask outputs by the INPUT DEM's validity, and test with a
   multi-cell NaN hole, not a single cell. Also: pysheds' flowdir uses -1/-2/0 as real codes — never as a
   GeoTIFF nodata tag (now -32768).
+- 2026-11-06 (F2.1, R2 REJECT) GLO-30 COG tiles are pixel-CENTRE registered on whole degrees (tile edge at
+  35.0 - 0.5 px). `rasterio.merge(bounds=...)` anchors the output at the given bounds, so clipping at 34.70
+  shifted every DEM value half a pixel (~15 m W, ~15 m N) and M-03 inherited it. WorldPop (origin
+  33.909583) likewise. Clip only on the source's native pixel edges (fetch.snap_bounds) and check
+  grid_phase_px == integers; never assume a box edge is a pixel edge — read the native transform.
+- 2026-11-06 (F3.21) After the DEM moved onto its native grid the upper Nyando (1,592 km²) dead-ended at
+  one cell near Muhoroni: pysheds `fill_pits/fill_depressions` + `resolve_flats` left 265→137 unroutable
+  cells, and resolve_flats lifted a filled flat 0.12 m ABOVE its own outlet cell, recreating the pit. Fix:
+  priority-free fill by morphological reconstruction (skimage, seeds = edge/perm water), no resolve_flats,
+  then BFS routing of flats toward cells whose path terminates at an edge/outlet/nodata. Check routing by
+  WALKING the main stem to the mouth and comparing upstream area to a published basin area — a pretty
+  HAND map does not prove connectivity.

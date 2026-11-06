@@ -5,6 +5,7 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import math
 import os
 import shutil
 import time
@@ -57,12 +58,27 @@ def gunzip(src: Path, dest: Path) -> Path:
     return dest
 
 
+def snap_bounds(bbox, transform) -> tuple:
+    """Grow bbox [w,s,e,n] outward to the native pixel EDGES of a north-up grid (F2.1). GLO-30 is pixel-centre
+    registered on whole degrees (tile edge at 35.0 - 0.5 px), so 34.70 is a pixel CENTRE there; clipping at it
+    shifted the DEM half a pixel. Tolerance 1e-6 px so float noise does not add a column."""
+    a, e_, x0, y0 = transform.a, transform.e, transform.c, transform.f
+    eps = 1e-6
+    col_w = math.floor((bbox[0] - x0) / a + eps)
+    col_e = math.ceil((bbox[2] - x0) / a - eps)
+    row_n = math.floor((bbox[3] - y0) / e_ + eps)      # e_ < 0
+    row_s = math.ceil((bbox[1] - y0) / e_ - eps)
+    return (x0 + col_w * a, y0 + row_s * e_, x0 + col_e * a, y0 + row_n * e_)
+
+
 def clip(sources: list[str], bbox, dest: Path) -> Path:
-    """Mosaic + clip `sources` (local paths or /vsicurl/ URLs) to bbox [w,s,e,n] in the sources' CRS."""
+    """Mosaic + clip `sources` (local paths or /vsicurl/ URLs, same native grid) to bbox [w,s,e,n], with the bounds
+    first snapped outward to the sources' native pixel edges so no value is shifted or resampled (F2.1/F2.2)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     dss = [rasterio.open(s) for s in sources]
     try:
-        arr, transform = merge(dss, bounds=tuple(bbox))
+        bounds = snap_bounds(bbox, dss[0].transform)
+        arr, transform = merge(dss, bounds=bounds, res=(dss[0].res[0], dss[0].res[1]))
         prof = dss[0].profile.copy()
         prof.update(driver="GTiff", height=arr.shape[1], width=arr.shape[2], transform=transform,
                     count=arr.shape[0], compress="deflate", tiled=True, blockxsize=256, blockysize=256,
@@ -74,6 +90,11 @@ def clip(sources: list[str], bbox, dest: Path) -> Path:
         for d in dss:
             d.close()
     return dest
+
+
+def grid_phase_px(transform, native) -> tuple:
+    """Offset of `transform`'s origin from `native`'s origin, in native pixels (integers when on-grid)."""
+    return ((transform.c - native.c) / native.a, (transform.f - native.f) / native.e)
 
 
 def stats(path: Path, bbox) -> dict:

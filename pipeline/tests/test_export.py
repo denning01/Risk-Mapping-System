@@ -83,3 +83,37 @@ def test_clip_mosaics_two_tiles(tmp_path):
     with rasterio.open(tmp_path / "c.tif") as ds:
         a = ds.read(1)
     assert a.shape == (10, 10) and (a[:, :5] == 1).all() and (a[:, 5:] == 2).all()
+
+
+# --- F2.1 / F2.2: a clip must lie on its source's native pixel grid --------------------------------------
+def _pc_tile(path, origin_lon, origin_lat, res, n=40):
+    """A tile like GLO-30: pixel-centre registered on whole degrees, i.e. its EDGE is half a pixel off the degree."""
+    arr = (np.arange(n * n, dtype="float32").reshape(n, n))
+    with rasterio.open(path, "w", driver="GTiff", height=n, width=n, count=1, dtype="float32", crs="EPSG:4326",
+                       transform=from_origin(origin_lon - res / 2, origin_lat + res / 2, res, res)) as ds:
+        ds.write(arr, 1)
+    return arr
+
+
+def test_clip_stays_on_the_native_grid_of_a_pixel_centre_registered_tile(tmp_path):
+    res = 0.01
+    arr = _pc_tile(tmp_path / "t.tif", 35.0, 0.0, res)
+    bbox = [35.10, -0.20, 35.20, -0.10]                 # whole-degree-ish box: lands on pixel CENTRES of this tile
+    fetch.clip([str(tmp_path / "t.tif")], bbox, tmp_path / "c.tif")
+    with rasterio.open(tmp_path / "t.tif") as src, rasterio.open(tmp_path / "c.tif") as c:
+        dx, dy = fetch.grid_phase_px(c.transform, src.transform)
+        assert dx == pytest.approx(round(dx), abs=1e-6) and dy == pytest.approx(round(dy), abs=1e-6)
+        b = c.bounds
+        assert b.left <= bbox[0] and b.bottom <= bbox[1] and b.right >= bbox[2] and b.top >= bbox[3]
+        clipped = c.read(1)
+        r0, c0 = int(round(dy)), int(round(dx))
+        np.testing.assert_array_equal(clipped, arr[r0:r0 + clipped.shape[0], c0:c0 + clipped.shape[1]])
+
+
+def test_snap_bounds_grows_outward_to_pixel_edges():
+    t = from_origin(34.9995, 0.0005, 0.001, 0.001)      # edges at x.xxx5
+    w, s, e, n = fetch.snap_bounds([35.0, -0.1, 35.1, 0.0], t)
+    assert (w, e) == (pytest.approx(34.9995), pytest.approx(35.1005))
+    assert (s, n) == (pytest.approx(-0.1005), pytest.approx(0.0005))
+    # already on edges: unchanged
+    assert fetch.snap_bounds([34.9995, -0.0995, 35.0995, 0.0005], t) == pytest.approx((34.9995, -0.0995, 35.0995, 0.0005))

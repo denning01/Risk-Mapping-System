@@ -96,7 +96,10 @@ def run(area: str, use_ee: bool, only: set[str] | None):
     singles = [
         ("dem", "dem_glo30.tif", glo30_urls(box), "Copernicus DEM GLO-30 (DSM)", "1 arcsec (~30 m)",
          "Copernicus DEM (c) DLR e.V. 2010-2014 and (c) Airbus 2014-2018, provided under COPERNICUS by the "
-         "European Union and ESA; free licence", None),
+         "European Union and ESA; free licence",
+         # F2.4: "Data were acquired by the TanDEM-X mission between 2011 and 2015." (pre-2011 = gap fill)
+         # https://dataspace.copernicus.eu/explore-data/data-collections/copernicus-contributing-missions/collections-description/COP-DEM
+         ["2011-01-01", "2015-12-31"]),
         ("worldcover", "worldcover_2021.tif", worldcover_urls(box), "ESA WorldCover 10 m 2021 v200", "10 m",
          "(c) ESA WorldCover project 2021 / Contains modified Copernicus Sentinel data (2021); CC BY 4.0",
          ["2021-01-01", "2021-12-31"]),
@@ -118,8 +121,7 @@ def run(area: str, use_ee: bool, only: set[str] | None):
             print(f"[{key}] windowed read failed ({err}); downloading whole file(s) then clipping", flush=True)
             local = [fetch.download(u, out / "_cache" / u.rsplit("/", 1)[1]) for u in urls]
             fetch.clip([str(p) for p in local], box, dest)
-            for p in local:
-                p.unlink()
+            # kept in _cache (outside git): worldpop.org cannot resume, so a re-clip must not need a re-download
         report[key] = fetch.sidecar(dest, product=product, sources=urls, bbox=box, date_range=dr,
                                     native_scale=scale, licence=lic)
         print(json.dumps({k: report[key][k] for k in ("shape", "covers_bbox", "min", "max", "nodata_share")}),

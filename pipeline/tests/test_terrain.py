@@ -108,7 +108,9 @@ def test_sink_rule_is_what_gives_hand_around_an_unroutable_cell(monkeypatch):
     out = terrain.hydro(dem, t, "EPSG:32736", channel_km2=100.0)
     ring = out["sinks"].copy()
     ring[[0, -1], :] = ring[:, [0, -1]] = False      # interior only (pysheds also leaves some edge cells unrouted)
-    assert ring.sum() == 8 and not ring[10, 10]
+    # cells around the hole that nothing can route (count depends on pysheds' flat handling: 4 or 8)
+    assert ring.sum() >= 4 and not ring[10, 10]
+    assert all(abs(r - 10) <= 1 and abs(c - 10) <= 1 for r, c in np.argwhere(ring))
     assert np.isfinite(out["hand"][ring]).all() and (out["hand"][ring] == 0).all()
     real_isin = np.isin
     monkeypatch.setattr(terrain.np, "isin", lambda a, b, **k: np.ones_like(np.asarray(a), bool)
@@ -149,3 +151,51 @@ def test_upstream_mean_excludes_nan_cells_from_the_count():
     m = terrain.upstream_mean(out["fdir"], t, "EPSG:32736", vals)
     np.testing.assert_allclose(m[1:-1, 10], 7.0)            # channel: mixes NaN-west and 7-east upstream areas
     assert np.isnan(m[5, 3])                                 # a west cell whose whole upstream area is NaN
+
+
+def test_route_leftover_flats_joins_an_unrouted_flat_to_its_routed_outlet():
+    """A 1x4 flat (fd -2) between higher ground and a routed lower cell must be routed cell by cell to that outlet;
+    a true pit (all neighbours higher) must stay unrouted."""
+    cond = np.full((5, 8), 10.0)
+    cond[2, 1:5] = 5.0                     # the flat
+    cond[2, 5] = 4.0                       # routed outlet, lower
+    cond[4, 6] = 1.0                       # a true pit, in a corner of higher ground
+    fd = np.full(cond.shape, 4, dtype=np.int64)    # everything else drains south (routed)
+    fd[2, 1:5] = -2
+    fd[4, 6] = -1
+    fd[2, 5] = 1                           # outlet drains east
+    out, n = terrain.route_leftover_flats(fd, cond)
+    assert n == 4
+    assert (out[2, 1:5] == 1).all()        # each flat cell points east, chaining to the outlet
+    assert out[4, 6] == -1                 # edge-row pit untouched
+
+
+def test_stranded_pit_spills_to_its_lowest_neighbour_that_reaches_an_outlet_without_cycles():
+    """An interior cell lower than all neighbours (what resolve_flats left near Muhoroni) whose neighbours drain INTO
+    it: it must be routed to the lowest neighbour that reaches the edge, never to one that drains back into it."""
+    cond = np.full((7, 7), 10.0)
+    cond[3, 3] = 4.0                        # stranded pit
+    cond[3, 4] = 5.0                        # lowest neighbour, but it drains INTO the pit (would make a cycle)
+    cond[2, 3] = 6.0                        # next lowest; drains north to the edge
+    fd = np.full(cond.shape, 64, dtype=np.int64)  # everything drains north to row 0
+    fd[3, 3] = -1
+    fd[3, 4] = 16                           # west, into the pit
+    fd[4, 3] = 64; fd[4, 4] = 32            # south side also drains into the pit
+    out, n = terrain.route_leftover_flats(fd, cond)
+    assert n == 1
+    assert out[3, 3] == 64                  # to (2,3): lowest neighbour whose path reaches the edge
+    term = terrain._terminals(out)
+    assert term[3, 3] == term[0, 3] and term[3, 4] == term[0, 3]   # pit and its inflow now reach the edge
+
+
+def test_fill_depressions_fills_to_the_spill_level_and_leaves_outlets_alone():
+    """A 2 m deep pit in a plane tilted to the west edge: filled exactly to its lowest rim cell; nothing else moves."""
+    y, x = np.mgrid[0:9, 0:9]
+    dem = (100 + 1.0 * x).astype(float)           # drains west, to column 0 (grid edge)
+    dem[4, 5] = 103.0                              # pit: rim lowest neighbour is (4,4)/(3,4)/(5,4) at 104
+    out = terrain.fill_depressions(dem)
+    assert out[4, 5] == pytest.approx(104.0)
+    mask = np.ones_like(dem, bool); mask[4, 5] = False
+    np.testing.assert_allclose(out[mask], dem[mask])
+    lake = np.zeros_like(dem, bool); lake[4, 5] = True
+    np.testing.assert_allclose(terrain.fill_depressions(dem, outlet=lake), dem)   # an outlet is never raised

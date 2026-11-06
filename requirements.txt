@@ -18,3 +18,4 @@ matplotlib
 pytest
 pyproj
 requests
+scikit-image

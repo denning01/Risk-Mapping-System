@@ -116,7 +116,7 @@ def main(area: str, channel_km2: float, sweep: bool):
     perm = jrc >= PERM_WATER_PCT
     h = terrain.hydro(dem, grid["transform"], grid["crs"], channel_km2, extra_drainage=perm)
     slope = terrain.slope_deg(dem, RES, RES)
-    report = {"sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
+    report = {"flats_routed": h["flats_routed"], "sink_cells": int(h["sinks"].sum()), "perm_water_pct": PERM_WATER_PCT, "perm_water_cells": int(perm.sum()), "area": area, "utm_epsg": cfg["utm_epsg"], "res_m": RES, "shape": [grid["height"], grid["width"]],
               "channel_km2": channel_km2, "channel_cells": int(h["channels"].sum()),
               "hand_m": {q: float(np.nanpercentile(h["hand"], p)) for q, p in
                          (("p01", 1), ("p50", 50), ("p99", 99))},
