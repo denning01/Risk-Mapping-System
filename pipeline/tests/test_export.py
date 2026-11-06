@@ -148,3 +148,14 @@ def test_chirps_daily_days_cover_each_backtest_window():
     assert len(ny) == 92 and ny[0] == "2023-10-01" and ny[-1] == "2023-12-31"
     nb = ex.daily_days(config.load("nairobi"))
     assert nb[0] == "2024-04-05" and nb[-1] == "2024-05-10" and len(nb) == 36 and len(set(nb)) == 36
+
+
+def test_forecast_maps_the_wettest_day_to_the_nearest_slider_value():
+    """M-11 mapping rule: nearest of 50..250 mm/24 h; under 25 mm maps to no scenario."""
+    spec = importlib.util.spec_from_file_location("fc", Path(__file__).resolve().parents[1] / "08_forecast.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    assert fc.map_rain(24.9) is None and fc.map_rain(25.0) == 50 and fc.map_rain(74.0) == 50
+    assert fc.map_rain(76.0) == 100 and fc.map_rain(180.0) == 200 and fc.map_rain(400.0) == 250
+    assert fc.OUTLOOK["enso_established"] is True
+    assert fc.OUTLOOK["above_normal_pct_band"] == {"nyando": [70, 80], "nairobi": [80, 90]}
