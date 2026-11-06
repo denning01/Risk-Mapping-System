@@ -117,3 +117,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   downloaded): 5th of 31 vs the true 6th of 33. runoff.season_rank refuses a record with a missing year. A guard
   in a script (water mask, provenance check) needs a test that reaches the script's path, or a check on the
   real outputs — a unit test of a helper the script could bypass is not enough.
+- 2026-11-06 (M-05): a spatial hold-out must hold out OBSERVED positives. A west/east split of Nyando put 0.06 km² of
+  the 26 km² Sentinel-1 flood in the east, so east F1 was 0 for every k and meaningless. A 5 km checkerboard split
+  shares the floodplain between the folds. Also: ee getDownloadURL is not a batch task and returns no
+  batchEecuUsageSeconds; record it as null with that reason, do not invent a figure. The F1-vs-k curve is flat
+  (0.11–0.19), because channel and HAND-0 cells flood at any k. Say "k is weakly identified" rather than presenting
+  the argmax as sharp.
