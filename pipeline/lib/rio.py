@@ -37,9 +37,11 @@ def read(path: Path) -> np.ndarray:
         return a
 
 
-def write(path: Path, arr, grid, dtype="float32", nodata=np.nan):
+def write(path: Path, arr, grid, dtype="float32", nodata=np.nan, tags: dict | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(path, "w", driver="GTiff", height=grid["height"], width=grid["width"], count=1,
                        dtype=dtype, crs=grid["crs"], transform=grid["transform"], nodata=nodata,
                        compress="deflate", tiled=True, blockxsize=256, blockysize=256) as ds:
         ds.write(arr.astype(dtype), 1)
+        if tags:
+            ds.update_tags(**{k: str(v) for k, v in tags.items()})

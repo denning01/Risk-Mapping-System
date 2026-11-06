@@ -98,3 +98,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   elevation of the drainage cell (via hand_index), floored at 0; hand_filled.tif kept for comparison.
   Also: audit:findings ignores any `Fx.y CLOSED` line containing "routed"/"routing" (anti-hand-off rule) —
   say "flow path" in a CLOSED line about flow routing.
+- 2026-11-06 (M-06) "Which commit produced this raster" is NOT `git log -1 -- script.py`: a later refactor of the
+  script claims rasters it never made, and a run from a dirty tree matches no commit. Outputs now carry
+  provenance {git_commit, dirty} stamped by the producing run; 06_handoff.py refuses a missing or dirty stamp.
+  Commit FIRST, then run, and do not edit pipeline/ while a stamped run is going.

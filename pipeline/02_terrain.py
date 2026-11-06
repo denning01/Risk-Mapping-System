@@ -124,13 +124,17 @@ def main(area: str, channel_km2: float, sweep: bool):
     thresholds = (0.25, 1, 2, 5, 10, 25, 50, 100) if sweep else ()
     report["sweep_vs_osm"] = channel_vs_osm(acc_km2, thresholds, osm, aoi, h["fdir"])
     report["chosen_vs_osm"] = channel_vs_osm(acc_km2, (channel_km2,), osm, aoi, h["fdir"])[0]
+    # Hand-off rasters (AGENTS.md model -> exposure) carry their provenance; calibrated=false until M-05 (operator ruling
+    # 2026-11-06): HAND/channels are not calibrated themselves, but every hand-off raster says where calibration stands.
+    handoff_tags = {"calibrated": "false", "git_commit": report["provenance"]["git_commit"],
+                    "dirty": report["provenance"]["dirty"], "producer": "pipeline/02_terrain.py"}
     write(out / "dem_cond.tif", h["cond"], grid)
     write(out / "flowdir.tif", terrain.fdir_for_disk(h["fdir"], dem), grid, "int16", terrain.FDIR_NODATA)
     write(out / "acc.tif", h["acc"], grid)
-    write(out / "channels.tif", h["channels"], grid, "uint8", 255)
+    write(out / "channels.tif", h["channels"], grid, "uint8", 255, tags=handoff_tags)
     write(out / "drainage.tif", h["drainage"], grid, "uint8", 255)
     write(out / "perm_water.tif", perm, grid, "uint8", 255)
-    write(out / "hand.tif", h["hand"], grid)
+    write(out / "hand.tif", h["hand"], grid, tags=handoff_tags)
     write(out / "hand_filled.tif", h["hand_filled"], grid)  # F2.10: pysheds HAND on the filled DEM, for comparison
     write(out / "hand_index.tif", h["hand_index"], grid, "int64", -1)
     write(out / "slope.tif", slope, grid)

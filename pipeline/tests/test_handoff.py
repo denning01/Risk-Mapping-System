@@ -32,3 +32,23 @@ def test_handoff_bbox_is_the_ruled_nyando_box_and_inside_the_export_box():
     hb, eb = cfg["handoff_bbox"], cfg["export_bbox"]
     assert eb[0] <= hb[0] and eb[1] <= hb[1] and eb[2] >= hb[2] and eb[3] >= hb[3]
     assert config.load("nairobi")["handoff_bbox"] == config.load("nairobi")["bbox"]
+
+
+RULED_NYANDO = [34.80, -0.45, 35.30, 0.00]   # operator ruling 2026-11-06: hand-off covers 34.80 even while bbox is 34.85
+
+
+def test_every_nyando_handoff_raster_on_disk_covers_the_ruled_box():
+    """Runs over the REAL hand-off rasters (skips only if the model has not been run on this machine)."""
+    import pytest
+    import rasterio
+    from pipeline.lib.paths import model_dir
+    m = model_dir("nyando")
+    files = [m / "scenarios" / f"{r}_{e}_depth.tif" for e in ("normal", "elnino") for r in (50, 100, 150, 200, 250)]
+    files += [m / "hand.tif", m / "channels.tif"]
+    if not all(f.exists() for f in files):
+        pytest.skip(f"Nyando hand-off rasters not on this machine ({m})")
+    for f in files:
+        with rasterio.open(f) as ds:
+            assert ds.crs.to_epsg() == 32736, f
+            assert handoff.margin_px(ds.transform, ds.width, ds.height, ds.crs, RULED_NYANDO) >= 1.0, f
+            assert ds.tags().get("calibrated") in ("false", "true"), f

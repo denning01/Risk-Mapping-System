@@ -50,6 +50,9 @@ def check(path: Path, cfg: dict, kind: str) -> dict:
             problems.append(f"CRS {ds.crs} != EPSG:{cfg['utm_epsg']}")
         if ds.transform.b or ds.transform.d or abs(ds.transform.a - 30) > 1e-6 or abs(ds.transform.e + 30) > 1e-6:
             problems.append(f"not a north-up 30 m grid: {tuple(ds.transform)[:6]}")
+        tags = ds.tags()
+        if tags.get("calibrated") not in ("false", "true"):
+            problems.append(f"no calibrated tag (tags {sorted(tags)})")
         m = handoff.margin_px(ds.transform, ds.width, ds.height, ds.crs, cfg["handoff_bbox"])
         if m < handoff.MIN_MARGIN_PX:
             problems.append(f"covers handoff_bbox by {m:.2f} px < {handoff.MIN_MARGIN_PX}")
@@ -61,7 +64,7 @@ def check(path: Path, cfg: dict, kind: str) -> dict:
                 problems.append(f"negative depth {np.nanmin(a)}")
         out = {"file": str(path.relative_to(model_dir(cfg["id"]))), "crs": f"EPSG:{ds.crs.to_epsg()}",
                "shape": [ds.height, ds.width], "dtype": ds.dtypes[0], "nodata": str(ds.nodata),
-               "margin_px": round(m, 1), "sha256": sha256(path), "bytes": path.stat().st_size, "problems": problems}
+               "margin_px": round(m, 1), "calibrated": tags.get("calibrated"), "sha256": sha256(path), "bytes": path.stat().st_size, "problems": problems}
         if kind == "depth":
             # flooded area inside handoff_bbox, for exposure to cross-check its own count
             from pyproj import Transformer
@@ -99,7 +102,15 @@ def main(area: str):
         if not pv or pv.get("dirty") is not False:
             sys.exit(f"REFUSED: {name} provenance {pv}: re-run its script from a clean committed tree")
     commit_depth, commit_terrain = rf["provenance"]["git_commit"], tj["provenance"]["git_commit"]
+    cal = rf["k_calibrated"]
+    if any(r["calibrated"] != str(cal).lower() for r in results):
+        sys.exit(f"REFUSED: raster calibrated tags {sorted({r['calibrated'] for r in results})} != runoff_flood.json {cal}")
+    first = (f"**k = {rf['k']} is PROVISIONAL and UNCALIBRATED (M-05 BLOCKED:ee-auth).** Every raster below is tagged "
+             "calibrated=false; numbers built on them are provisional." if not cal else
+             f"k = {rf['k']} calibrated in M-05 (see ROUND).")
     lines = [
+        first,
+        "",
         f"# Hand-off: flood rasters, {cfg['name']} (model → exposure)",
         "",
         f"Written {datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%MZ')} by pipeline/06_handoff.py at commit {git('rev-parse', '--short', 'HEAD')}.",
@@ -114,7 +125,8 @@ def main(area: str):
         f"- **k = {rf['k']}, α = {rf['alpha']} — NOT CALIBRATED.** {rf['k_note']}. The depth rasters WILL be "
         "regenerated after M-05; exposure numbers built on these are provisional and must say so.",
         f"- **El Niño:** P × {rf['elnino']['ratio']} (CHIRPS OND {rf['elnino']['event'][-4:]} / OND "
-        f"{rf['elnino']['clim_years'][0]}–{rf['elnino']['clim_years'][1]} mean over bbox {rf['elnino']['bbox']}).",
+        f"{rf['elnino']['clim_years'][0]}–{rf['elnino']['clim_years'][1]} mean over bbox {rf['elnino']['bbox']}). "
+        "PROVISIONAL, not a slide number: the final ratio is computed over the ruled 34.80 AOI after the bbox flip.",
         f"- **Produced by** (stamped by the producing run, clean tree): depth rasters — 03_runoff_flood.py at commit "
         f"{commit_depth}; hand.tif, channels.tif — 02_terrain.py at commit {commit_terrain}.",
         "- **Known limits:** screening-level HAND + SCS-CN, not a hydraulic model; closed depressions have HAND 0 and "

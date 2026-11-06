@@ -153,7 +153,11 @@ def main(area: str, k: float, alpha: float):
             h = np.full(hand.shape, np.nan)
             h[ok] = h_drain.ravel()[hidx[ok]]
             depth = runoff.flood_depth(hand, h, slope, channels | perm, perm)
-            write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid)
+            write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid,
+                  tags={"calibrated": "false", "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
+                        "elnino_ratio": ratio, "git_commit": report["provenance"]["git_commit"],
+                        "dirty": report["provenance"]["dirty"], "producer": "pipeline/03_runoff_flood.py",
+                        "units": "m", "nodata": "NaN = dry"})
             r = runoff.risk_class(depth[aoi])
             report["scenarios"][f"{rain}_{enso}"] = {
                 "rain_mm": rain, "p_mm": round(p, 1), "aoi_q_mean_mm": round(float(np.nanmean(q[aoi])), 2),
