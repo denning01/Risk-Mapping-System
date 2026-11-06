@@ -274,7 +274,11 @@ def _handoff(tmp: Path, mutate=None, commit="abc1234"):
             ds.update_tags(git_commit=commit)
         b = f.read_bytes()
         rows.append(f"| `scenarios/{k}_depth.tif` | 0.01 | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()[:16]}…` |")
-    rows.append("| `hand.tif` | – | 3.0 | 1,234 | `0123456789abcdef…` |")
+    hand = md.parent / "hand.tif"
+    with rasterio.open(hand, "w", **prof) as ds:
+        ds.write(grid(), 1)
+    hb = hand.read_bytes()
+    rows.append(f"| `hand.tif` | – | 3.0 | {len(hb):,} | `{hashlib.sha256(hb).hexdigest()}` |")   # full 64-hex form
     h = tmp / "flood-nyando.md"
     h.write_text("# Hand-off\n\n| file | flooded km² | margin px | bytes | sha256 |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
     if mutate:
@@ -293,6 +297,7 @@ def test_snapshot_copies_and_names_by_commit(tmp_path):
     model, h = _handoff(tmp_path)
     d = scen.snapshot(model, h, tmp_path / "snap")
     assert d.name == "abc1234" and len(list(d.glob("*_depth.tif"))) == 10     # 5 rain x 2 enso
+    assert (d / "hand.tif").exists() and "hand.tif" in json.loads((d / "snapshot.json").read_text())["sha256"]
     assert json.loads((d / "snapshot.json").read_text())["git_commit"] == "abc1234"
 
 
@@ -351,3 +356,12 @@ def test_write_population_uses_the_ruled_weight_and_mode(tmp_path, monkeypatch):
     assert exp["population"] == {"low": 250, "medium": 500, "high": 1000} and exp["buildings"] == 1
     assert exp["year"] == 2026 and exp["source"] == "mock"
     assert scen.main(args[:7] + ["--population", "--buildings"]) == 1       # no mode/weight -> refused
+
+
+def test_snapshot_refuses_a_changed_hand_tif(tmp_path):
+    def rewrite(md):
+        with rasterio.open(md.parent / "hand.tif", "r+") as ds:
+            ds.write(np.full((10, 10), 9.0, dtype="float32"), 1)
+    model, h = _handoff(tmp_path, mutate=rewrite)
+    with pytest.raises(ValueError, match="hand.tif"):
+        scen.snapshot(model, h, tmp_path / "snap")

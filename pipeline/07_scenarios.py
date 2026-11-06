@@ -304,11 +304,12 @@ def snapshot(model_dir: Path, handoff: Path, out_root: Path) -> Path:
     missing = [w for w in want if w not in table]
     if missing:
         raise ValueError(f"hand-off table lacks {missing}")
+    extra = [r for r in table if r not in want]          # hand.tif, channels.tif ...: copied and verified too
     out_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=".snap-", dir=out_root))
     try:
         commits, shas = set(), {}
-        for rel in want:
+        for rel in want + extra:
             dst = tmp / Path(rel).name
             shutil.copyfile(model_dir / rel, dst)
             sha, size = _sha256(dst), dst.stat().st_size
@@ -316,8 +317,9 @@ def snapshot(model_dir: Path, handoff: Path, out_root: Path) -> Path:
             if size != exp["bytes"] or not sha.startswith(exp["sha_prefix"]):
                 raise ValueError(f"{rel}: copy is {size} B sha256 {sha[:16]}, hand-off says {exp['bytes']} B "
                                  f"{exp['sha_prefix']} — the model directory changed; nothing kept")
-            with rasterio.open(dst) as ds:
-                commits.add(ds.tags().get("git_commit"))
+            if rel in want:                                   # the snapshot is named by the DEPTH rasters' commit
+                with rasterio.open(dst) as ds:
+                    commits.add(ds.tags().get("git_commit"))
             shas[rel] = sha
         if len(commits) != 1 or None in commits:
             raise ValueError(f"depth rasters carry git_commit tags {commits}; expected exactly one")
@@ -347,7 +349,8 @@ def cmd_snapshot(args) -> int:
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
-    print(f"snapshot {d}  (all 10 depth rasters: size + sha256 match the hand-off table on the copies)")
+    n = len(json.loads((d / "snapshot.json").read_text())["sha256"])
+    print(f"snapshot {d}  ({n} files: size + sha256 match the hand-off table on the copies)")
     return 0
 
 
