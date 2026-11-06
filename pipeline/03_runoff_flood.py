@@ -15,7 +15,8 @@ Method (plan §4.2-4.5):
   h       = k * V_up^alpha at the drainage cell each cell drains to (hand_index); alpha 0.4 = downstream depth-
             discharge exponent (Leopold & Maddock 1953), so stage grows with catchment size (F4.2; the plan's mean-
             depth form gave every channel the same stage).
-  flooded = HAND < h, slope < 15 deg, 8-connected to a channel or permanent water, permanent water itself excluded.
+  flooded = HAND < h, slope < 15 deg, 8-connected to a channel or water, water itself excluded (water = JRC >= 80 %
+            OR WorldCover 2021 class 80).
   depth   = h - HAND; risk per docs/DATA_CONTRACT.md (< 0.3 low, 0.3-1 medium, > 1 high).
 HAND is raw-DEM height above the FILLED level of the drainage cell (F2.10/F2.13); closed depressions have HAND 0
 and flood in every scenario with depth = h, not pond depth (F2.14). k is UNCALIBRATED until M-05 (Sentinel-1 2023).
@@ -134,6 +135,10 @@ def main(area: str, k: float, alpha: float):
     sand, _ = to_utm(raw / "soilgrids_sand_0-30cm.tif", epsg, Resampling.bilinear, like=grid)
     hsg = runoff.hsg_from_texture(clay, sand)
     cn = runoff.curve_number(lc, hsg)
+    # Water never "floods": JRC occurrence >= 80 % (perm, from M-03) OR WorldCover 2021 permanent water (class 80).
+    # The JRC rule alone let 5.22 km2 of Lake Victoria margin near (34.826, -0.314) — DEM flattened at 1133.00 m,
+    # WorldCover 80, JRC occurrence 69 % — show as "flooded" in every scenario (found in the M-06 map).
+    water = perm | (lc == 80)
     write(m / "cn.tif", cn, grid)
     write(m / "hsg.tif", np.where(hsg < 0, 255, hsg.astype("int16")), grid, "uint8", 255)
 
@@ -146,6 +151,8 @@ def main(area: str, k: float, alpha: float):
     report["aoi_landcover_share"] = {str(int(c)): round(float((lcv == c).mean()), 4) for c in np.unique(lcv[np.isfinite(lcv)])}
     report["aoi_hsg_share"] = {runoff.HSG[i]: round(float((hsg[aoi] == i).mean()), 4) for i in range(4)}
     report["aoi_hsg_share"]["unknown"] = round(float((hsg[aoi] < 0).mean()), 4)
+    report["aoi_water_km2"] = {"jrc_ge80": round(float((perm & aoi).sum()) * cell_km2, 2),
+                               "worldcover80_not_jrc": round(float(((lc == 80) & ~perm & aoi).sum()) * cell_km2, 2)}
     report["aoi_cn"] = {"mean": round(float(np.nanmean(cn[aoi])), 2), "nan_share": round(float(np.isnan(cn[aoi]).mean()), 5)}
     report["elnino"] = chirps_ratio(area, cfg["bbox"])
     ratio = report["elnino"]["ratio"]
@@ -155,7 +162,7 @@ def main(area: str, k: float, alpha: float):
         for rain in RAINS:
             p = rain * (ratio if enso == "elnino" else 1.0)
             depth, h, q = runoff.scenario_depth(p, cn, fd, grid["transform"], grid["crs"], hand, hidx, slope,
-                                                channels | perm, perm, k, alpha, cell_km2)
+                                                channels | water, water, k, alpha, cell_km2)
             write(m / "scenarios" / f"{rain}_{enso}_depth.tif", depth, grid,
                   tags={"calibrated": "false", "k": k, "alpha": alpha, "rain_mm": rain, "enso": enso, "p_mm": round(p, 1),
                         "elnino_ratio": ratio, "git_commit": report["provenance"]["git_commit"],

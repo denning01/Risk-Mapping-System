@@ -106,3 +106,6 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   Q): a 10 km² stream flooded like the 3,422 km² main stem. Stage must scale with a discharge proxy (upstream
   runoff VOLUME), α 0.4 (Leopold & Maddock 1953). Check a stage model by tabulating stage vs upstream area.
   Also: stamp provenance at the START of a run — a stamp taken after 13 min of compute saw my later edits.
+- 2026-11-06 (M-06) JRC occurrence >= 80 % misses lake margins: 5.22 km² of Lake Victoria (WorldCover 80, GLO-30
+  flattened at 1133.00 m, JRC 69 %) showed as "flooded" in every scenario. Water = JRC >= 80 OR WorldCover 80.
+  A flood patch with straight edges and one DEM value is a water body, not a floodplain — look at the map.
