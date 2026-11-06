@@ -94,7 +94,8 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     """Polygonise a depth raster into contract features, one per (risk, arrival bin).
 
     Returns (features, stats). stats: flooded_cells, pixel_area_m2, flooded_area_m2,
-    polygon_area_m2 (dissolved, before simplification, in the raster CRS).
+    polygon_area_m2 (dissolved, before simplification, in the raster CRS), written_area_m2 (after simplification,
+    raster CRS: the area of what is actually drawn; Douglas-Peucker can grow or shrink it).
     """
     crs = CRS.from_user_input(crs)
     if not crs.is_projected or crs.axis_info[0].unit_name not in ("metre", "meter"):
@@ -119,13 +120,14 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     for geom, val in shapes(label, mask=flooded, transform=transform, connectivity=4):
         parts.setdefault(int(val), []).append(shape(geom))
 
-    feats, poly_area = [], 0.0
+    feats, poly_area, written_area = [], 0.0, 0.0
     for i, (r, b) in enumerate(uniq, start=1):
         geom = unary_union(parts[i])
         poly_area += geom.area
         sel = label == i
         if simplify_m > 0:
             geom = geom.simplify(simplify_m, preserve_topology=True)
+        written_area += geom.area
         geom = shapely.make_valid(reproject(geom, crs, "EPSG:4326"))
         geom = shapely.set_precision(geom, 10 ** -COORD_DP)
         polys = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type in ("Polygon", "MultiPolygon")]
@@ -146,7 +148,7 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     feats.sort(key=lambda f: (order[f["properties"]["risk"]], f["properties"]["arrival_h"] or -1))
     n = int(flooded.sum())
     stats = {"flooded_cells": n, "pixel_area_m2": px_area, "flooded_area_m2": n * px_area,
-             "polygon_area_m2": poly_area,
+             "polygon_area_m2": poly_area, "written_area_m2": written_area,
              "cells_by_risk": {RISK_NAMES[k]: int((risk == k).sum()) for k in (1, 2, 3)}}
     return feats, stats
 
@@ -379,7 +381,7 @@ def cmd_write(args) -> int:
         print(f"ERROR: {len(missing)} depth raster(s) missing in {depth_dir}: {missing}", file=sys.stderr)
         return 1
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
-    print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}"
+    print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
     # pre-pass: every raster must cover the area's bbox, checked BEFORE anything is overwritten
     bbox = _load_area(data_dir, args.area)["bbox"]
@@ -549,7 +551,7 @@ def cmd_write(args) -> int:
         if hk is not None and abs(st["flooded_area_m2"] / 1e6 - hk) > 0.01:
             problems.append(f"{key}: flooded {st['flooded_area_m2'] / 1e6:.2f} km2 != hand-off table {hk} km2")
         print(f"{key:<12}{len(feats):>5}{c['low']:>8}/{c['medium']}/{c['high']:<7}"
-              f"{st['flooded_area_m2']/1e6:>9.2f}{st['polygon_area_m2']/1e6:>9.2f}"
+              f"{st['flooded_area_m2']/1e6:>9.2f}{st['polygon_area_m2']/1e6:>9.2f}{st['written_area_m2']/1e6:>10.3f}"
               f"{len(safe_ids):>5}/{len(shelters):<4}{kb:>12.1f}"
               + (f"   people A {both['A']['low']:,}/{both['A']['medium']:,}/{both['A']['high']:,}"
                  f"  B {both['B']['low']:,}/{both['B']['medium']:,}/{both['B']['high']:,}"

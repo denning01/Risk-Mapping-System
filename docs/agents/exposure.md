@@ -101,3 +101,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   between 4-6 m cells; model measured GLO-30 vs bare-earth FABDEM on Ahero building pixels: only 0.8 m (p50) / 1.8 m
   (p90). The surface-model bias is ~1-2 m (HAND overstated, depth understated on buildings); ask model for the
   DSM-minus-DTM difference before writing a limitation. Nairobi uses FABDEM; Nyando GLO-30.
+- 2026-11-06 (E-06) "polygon km2 = pixel km2" was measured BEFORE simplification, so it could not see what
+  simplification did: at 20 m the DRAWN Nyando polygons were +0.12 % (Douglas-Peucker cuts staircase corners once the
+  tolerance passes ~19 m); at 18 m +0.004 %. The writer now prints the drawn area. A symmetric test shape hides it (the
+  errors cancel); use an asymmetric notch. Don't promise a number you read from the wrong column.
+- 2026-11-06 A zsh helper with "${3:+--flag $3}" passes "--flag value" as ONE word (no word splitting), argparse rejects
+  it, and an `echo exit=$?` after a redirect can still print 0. Write landing commands out in full.

@@ -400,3 +400,15 @@ def test_snapshot_refuses_a_repost_that_changes_an_existing_file(tmp_path):
     h.write_text("\n".join(lines) + "\n")
     with pytest.raises(ValueError, match="different contents"):
         scen.snapshot(model, h, tmp_path / "snap")
+
+
+def test_written_area_is_measured_after_simplification():
+    """A 10x10-cell block missing one corner cell: simplifying at 25 m cuts the notch's corner (30/sqrt(2) = 21 m off the
+    chord), so the DRAWN area grows by half a cell. written_area_m2 must report the drawn polygon, not the
+    pre-simplification one (the pre-simplification number hid a +0.12 % change on Nyando at 20 m)."""
+    d = np.full((10, 10), 0.5, dtype="float32")
+    d[0, 9] = np.nan
+    _, st0 = scen.flood_features(d, TF, CRS, simplify_m=0)
+    _, st = scen.flood_features(d, TF, CRS, simplify_m=25)
+    assert st0["written_area_m2"] == pytest.approx(99 * 900) == st["polygon_area_m2"]
+    assert st["written_area_m2"] == pytest.approx(99 * 900 + 450)
