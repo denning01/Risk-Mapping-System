@@ -123,7 +123,7 @@ def test_raster_covers_bbox_each_edge(edge, dw, ds, de, dn):
 
 def test_raster_covers_bbox_refuses_south_up_and_rotated():
     """F1.10: a south-up grid (e > 0) or a rotated one is refused, not mis-measured."""
-    from affine import Affine
+    from rasterio.transform import Affine  # F1.12: same class (affine.Affine), via a declared dependency
     to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
     w, n = to_wgs(722600 + 1 * RES, 9977880 - 1 * RES)
     e, s_ = to_wgs(722600 + 9 * RES, 9977880 - 9 * RES)
