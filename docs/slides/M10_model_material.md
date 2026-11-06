@@ -13,7 +13,7 @@ Withdrawn numbers. **Never reuse** "5th of 31" or 1.414; the correct values are 
 |---|---|---|
 | `methods_chain.png` | How the screening model works: terrain (HAND), SCS-CN runoff and a stage rule h = k·V^0.4, with k calibrated against Sentinel-1. Not a hydraulic model; the scenarios are not forecasts. | drawn for M-10 from the parameters in `runoff_flood.json` (k 0.012559, α 0.4) and the ROUND 6 backtest |
 | `backtest_nyando.png` | Nyando, November 2023: model (k = 0.0126) against the Sentinel-1 flood mask (UN-SPIDER change detection, VH). F1 0.19, IoU 0.10, precision 0.12, recall 0.46. A terrain-only map (HAND < 1 m, no rainfall) scores F1 0.18. Screening-level. Contains modified Copernicus Sentinel data 2023. | `$RMS_DATA/processed/nyando/model/backtest/backtest.png` (05_backtest.py at 255aab5), sha256 5684830e…; ROUND 6 ACCEPT |
-| `backtest_nairobi.png` | Nairobi, April–May 2024: in the city, radar change shows scattered urban patches, not river floods, so the backtest **cannot calibrate k** (the best k sits on the edge of the search grid; F1 0.07). Nairobi uses Nyando's k and is labelled uncalibrated. | `processed/nairobi/model/backtest/backtest.png` (at 1726a52), sha256 c00b1c65…; ROUND 8 (awaiting auditor) |
+| `backtest_nairobi.png` | Nairobi, April–May 2024: in the city, radar change shows scattered urban patches, not river floods, so the backtest **cannot calibrate k** (the best k sits on the edge of the search grid; F1 0.07). Nairobi uses Nyando's k and is labelled uncalibrated. | `processed/nairobi/model/backtest/backtest.png` (at 1726a52), sha256 c00b1c65…; ROUND 8 ACCEPT |
 | `methods_aoi_*.png`, `methods_terrain_*_nyando.png` | (existing, M-01 and M-03) areas of interest; Nyando HAND, channels and slope | ROUNDS 1 and 3 |
 
 ## Backtest score: never cut (Nyando, k calibrated)
@@ -26,7 +26,7 @@ Withdrawn numbers. **Never reuse** "5th of 31" or 1.414; the correct values are 
 | terrain-only baseline | F1 0.177 (HAND < 1 m, no rainfall) | same domain and observed mask | baseline.json, 69e066d; ROUND 6 re-audit ACCEPT |
 | skill from rainfall + calibration | +0.011 F1 over that baseline | 0.188 − 0.177 | same |
 | hold-out (5 km checkerboard, 2 folds) | F1 0.231 and 0.136 on the held-out tiles | k fitted on one fold, scored on the other | backtest.json |
-| Nairobi | not calibrated: best F1 0.068 at the top of the k grid | urban SAR change is not a flood signal | ROUND 8 (pending) |
+| Nairobi | not calibrated: best F1 0.068 at the top of the k grid (F1 rises monotonically to it; 0.051 at Nyando's k) | urban SAR change is too weak a flood signal | ROUND 8 ACCEPT (F8.3) |
 
 Slide wording (the lead's; the auditor confirmed the underlying statement, terrain-only F1 0.18 with the rainfall chain adding +0.01, in F6.6): *"Backtest F1 0.19 / IoU 0.10 against Sentinel-1 (Nov 2023). A terrain-only map
 already scores F1 0.18, so the rainfall model adds a modest +0.01: this is screening-level, not a precise forecast."*
@@ -87,7 +87,15 @@ checked against the provider's page today. Rows marked † are NOT verified.
 ## Limitations (numbers for the limitations slide: never cut)
 
 1. **Screening-level, modest skill.** F1 0.19 / IoU 0.10. A terrain-only map scores F1 0.18, so rainfall plus calibration adds +0.01 (above).
-2. **Nairobi is uncalibrated.** Urban radar does not show the flood (backtest F1 0.07, k on the grid edge), so Nairobi uses Nyando's k.
+2. **Nairobi is uncalibrated, and the transferred k likely UNDER-states its flood extent.** Urban radar does not show the
+   flood well enough to calibrate (best F1 0.068), so Nairobi uses Nyando's rural k = 0.0126. Nairobi's own backtest,
+   weak as it is, points the other way: F1 rises steadily up to the TOP of the k grid (0.05, about 4× Nyando's k), and
+   both hold-out folds pick 0.05. At 0.05 the model floods 12.98 km² of the evaluated area, against 6.94 km² at the
+   transferred k. Say "k transferred from a rural calibration; Nairobi's own weak evidence suggests more flooding than
+   shown". The grid was not extended, so where (if anywhere) F1 peaks is unknown. (Auditor F8.3, ROUND 8.)
+   About 44 % of Nairobi's flooded area at 150 mm is the channels themselves (2.62 of 5.98 km²), and extent moves only
+   from 4.76 to 6.63 km² between 50 and 250 mm. It is a river-corridor map, not a city-wide pluvial map: there is no
+   drainage model (F8.4).
 3. **Surface DEM in Nyando.** GLO-30 is a surface model. On Ahero's buildings it reads 0.8–1.8 m above bare earth (FABDEM; median–90th percentile over 441 building cells), so HAND there is overstated, and flood depth understated, by about 1–2 m. Nairobi uses bare-earth FABDEM.
    - Do NOT say "rooftops read as 12–14 m HAND": building cells have median HAND 8.0 m, and that height is mostly above the nearest drainage, not the roofs.
 4. **No river hydraulics.** The stage rule is h = k·V^0.4. Closed depressions have HAND 0 and flood in every scenario, with depth h, not pond depth.
@@ -97,4 +105,4 @@ checked against the provider's page today. Rows marked † are NOT verified.
 8. **Data dates.** WorldCover 2021, WorldPop 2020 and JRC GSW to 2021 do not show change since then.
 
 NOT VERIFIED here: the GloFAS and ICPAC reuse terms; how complete OSM buildings are around Ahero; FABDEM's own vertical
-error. The M-07 (ROUND 8) and M-11 (ROUND 9) numbers are awaiting the auditor.
+error. The M-11 (ROUND 9) numbers are awaiting the auditor.
