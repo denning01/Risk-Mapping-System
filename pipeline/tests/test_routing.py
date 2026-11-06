@@ -108,8 +108,11 @@ def _osm_fixture(path: Path):
         n(10, 35.006, -0.207), n(11, 35.007, -0.207), n(12, 35.007, -0.206), n(13, 35.006, -0.206),
         n(20, 35.005, -0.205), n(21, 35.10, -0.205),                                  # road: one node in buffer, one far out
         n(30, 35.30, -0.30), n(31, 35.31, -0.30),                                     # road entirely outside the buffer
+        n(40, 35.20, -0.207), n(41, 35.201, -0.207), n(42, 35.201, -0.206), n(43, 35.20, -0.206),  # F3.14: area outside
         '<way id="100" version="1">' + "".join(f'<nd ref="{r}"/>' for r in (10, 11, 12, 13, 10))
         + t("amenity", "school") + t("name", "Area School") + "</way>",
+        '<way id="101" version="1">' + "".join(f'<nd ref="{r}"/>' for r in (40, 41, 42, 43, 40))
+        + t("amenity", "school") + t("name", "Far Area School") + "</way>",
         '<way id="200" version="1"><nd ref="20"/><nd ref="21"/>' + t("highway", "primary") + "</way>",
         '<way id="201" version="1"><nd ref="30"/><nd ref="31"/>' + t("highway", "primary") + "</way>",
     ]
@@ -121,7 +124,7 @@ def test_extract_on_handwritten_osm(tmp_path):
     _osm_fixture(f)
     ex = rt.extract(f, {"nyando": BBOX})["nyando"]
     got = sorted(s["osm"] for s in ex["shelters"])
-    assert got == ["n1", "n3", "w100"]                       # n2 outside bbox; w100 assembled as an area
+    assert got == ["n1", "n3", "w100"]                       # n2 and area w101 outside bbox; w100 assembled as an area
     keep, dropped = rt.dedupe_shelters(ex["shelters"])
     assert dropped == 1 and sorted(s["osm"] for s in keep) == ["n1", "w100"]   # n3 is inside same-type w100
     for nt in ("drive", "walk"):
@@ -176,3 +179,26 @@ def test_unparseable_maxspeed_labelled_as_such(tmp_path):
     assert src["Range Rd"] == ("maxspeed_unparsed", 50.0)    # osmnx fell back to the (urban-capped) class value
     assert src["Tagged Rd"] == ("maxspeed", 80.0)
     assert src["Plain Rd"] == ("class", 50.0)
+
+
+# ---- F3.13: a merged two-class edge is timed by a defined rule, independent of list order ----
+def test_merged_two_class_edge_uses_slowest_class(tmp_path):
+    nodes = {1: (35.00, 0.0), 2: (35.01, 0.0), 3: (35.02, 0.0)}   # node 2 is not an intersection -> one merged edge
+    ways = [(10, [1, 2], {"highway": "primary"}), (11, [2, 3], {"highway": "residential"})]
+    xml = tmp_path / "mg.osm"
+    rt.write_osm_xml(xml, nodes, ways)
+    bb = (34.99, -0.01, 35.03, 0.01)
+    G = rt.build_graph(xml, "drive", bb, urban=False)
+    for _, _, d in G.edges(data=True):
+        assert d["highway"] == "residential" and d["highway_merged"] == "primary;residential"
+        assert d["speed_kph"] == rt.HWY_KPH["residential"]
+    # the list order osmnx hands over must not matter (it comes from a set)
+    import osmnx as ox
+    for order in (["primary", "residential"], ["residential", "primary"]):
+        H = ox.graph_from_xml(xml, bidirectional=False, simplify=True, retain_all=True)
+        for _, _, d in H.edges(data=True):
+            assert isinstance(d["highway"], list)
+            d["highway"] = list(order)
+        H = rt.add_travel_times(H, "drive", urban=False)
+        assert {d["speed_kph"] for _, _, d in H.edges(data=True)} == {rt.HWY_KPH["residential"]}
+    assert rt.slowest_class(["motorway", "made_up_class"]) == "made_up_class"   # unknown -> FALLBACK_KPH (25) < 80

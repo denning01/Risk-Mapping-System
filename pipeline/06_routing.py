@@ -27,6 +27,9 @@ TRAVEL-TIME ASSUMPTIONS (stated, with sources):
     is at or below them. LIMITATION: Cap 403 s.42(3) also limits roads "within ... any trading centre, township" to
     50 km/h; the rural AOI does NOT apply that inside Ahero/Awasi etc., so rural drive minutes through towns are
     optimistic. Recorded in osm_manifest.json "speed_limitations" for the limitations slide (E-08).
+  * Graph simplification merges consecutive ways into one edge; when their classes differ osmnx returns
+    `highway` as a list in set order (changes with PYTHONHASHSEED). Such an edge is timed as its SLOWEST class
+    (slowest_class; CHOICE, conservative), the full set kept in `highway_merged`, so builds are reproducible (F3.13).
   * A tagged maxspeed above 110 km/h is a tagging error (e.g. OSM way 262775043, a residential street tagged
     "120 mph") and gets the class value instead. 110 km/h is the highest limit, for private vehicles on dual-
     carriage highways, per the Traffic Act and Traffic (Speed Limit) Rules as summarised by GRSP (2015, secondary):
@@ -250,6 +253,10 @@ def add_travel_times(G, network_type: str, urban: bool):
             d["speed_src"] = "walk"
     else:
         hwy = {k: (min(v, URBAN_CAP_KPH) if urban else v) for k, v in HWY_KPH.items()}
+        for _, _, d in G.edges(data=True):
+            if isinstance(d.get("highway"), list):  # F3.13: merged ways come back in set order; fix the class first
+                d["highway_merged"] = ";".join(sorted(set(d["highway"])))
+                d["highway"] = slowest_class(d["highway"])
         G = ox.routing.add_edge_speeds(G, hwy_speeds=hwy, fallback=FALLBACK_KPH)
         for _, _, d in G.edges(data=True):
             tag = d.get("maxspeed")
@@ -263,6 +270,13 @@ def add_travel_times(G, network_type: str, urban: bool):
                 d["speed_kph"] = float(hwy.get(h, FALLBACK_KPH))
                 d["speed_src"] = "tag_invalid"
     return ox.routing.add_edge_travel_times(G)
+
+
+def slowest_class(classes) -> str:
+    """The one class a merged (list-valued) edge is timed as: the slowest by HWY_KPH, unknown classes at
+    FALLBACK_KPH, ties by name. Conservative and independent of list order (osmnx builds the list from a set,
+    so its order changes with PYTHONHASHSEED and element [0] made travel times non-reproducible, F3.13)."""
+    return min(set(classes), key=lambda k: (HWY_KPH.get(k, FALLBACK_KPH), k))
 
 
 def parsed_maxspeed(tag):

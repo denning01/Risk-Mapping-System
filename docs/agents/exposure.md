@@ -73,3 +73,6 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   ways tagged only healthcare=* in `lines`, not `multipolygons`, so it undercounts clinics by design.
 - 2026-11-06 (E-02) Rural Nyando is thinly mapped in OSM (60 schools, 15 health facilities in ~2,500 km2) — confirmed by
   two readers, so it is the map, not the code. Relocation in E-05 must not rely on OSM shelters alone.
+- 2026-11-06 (E-02) osmnx simplification returns list-valued attributes (`highway`, `name`, ...) in SET order, which
+  changes with PYTHONHASHSEED; anything that takes element [0] (osmnx add_edge_speeds does) is non-reproducible.
+  Same counts across runs does not mean same graph: compare sum(travel_time) under two seeds. Fixed by slowest_class.
