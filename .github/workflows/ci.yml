@@ -1,0 +1,97 @@
+name: CI
+
+# Nothing reaches main without passing the checks below first.
+on:
+  push:
+    branches: [main, app]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch supersedes the run in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The app lives in web/; the repo root also holds Person A's pipeline.
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  check:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Next 16 needs Node >= 20.9. Pinned to 22 so CI does not drift.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      # Cheapest signal first: a typo should fail in seconds, not minutes.
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      # Guards the contract with Person A: every scenario file must exist and
+      # match the shapes in docs/DATA_CONTRACT.md. This is the check that
+      # catches a bad pipeline export before it reaches the demo.
+      - name: Data contract
+        run: npm run validate:data
+
+      - name: Build
+        run: npm run build
+
+  deploy:
+    name: Deploy
+    needs: check # nothing ships unless every check above passed
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Inert until the three secrets exist, so the workflow never fails red
+      # just because deployment has not been wired up yet.
+      #
+      # Alternative: leave this job alone and let Vercel's own Git integration
+      # deploy. That needs no secrets and gives a preview URL per branch, but
+      # it deploys whether or not the checks passed.
+      #
+      # If you do set the secrets, the Vercel project's Root Directory must be
+      # left at the repo root, because the CLI already runs inside web/.
+      - name: Deploy to Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then
+            {
+              echo "### Deploy skipped"
+              echo ""
+              echo "No \`VERCEL_TOKEN\` secret is set, so there is nowhere to deploy to."
+              echo "Add \`VERCEL_TOKEN\`, \`VERCEL_ORG_ID\` and \`VERCEL_PROJECT_ID\` under"
+              echo "Settings -> Secrets and variables -> Actions, or let Vercel's Git"
+              echo "integration handle deploys instead."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"

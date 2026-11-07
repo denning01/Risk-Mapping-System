@@ -36,14 +36,15 @@ npm run dev         # http://localhost:3000
 2. Set `"mock": false` in `meta.json` and `"source": "model"` in the exposure files.
 3. Run `npm run validate:data`, then `npm run dev` and click through both areas.
 
-Replace the placeholder census figures in `web/data-inputs/census.csv` with verified KNBS 2009/2019 numbers, then run `npm run population`.
+Replace the placeholder census figures in `web/data-inputs/census.csv` with verified KNBS 2009/2019 numbers, then run `npm run population`. **Nyando spans six counties** (Kisumu 47%, Kericho 40%, Homa Bay 6%, Nandi 5%, Nyamira 1.4%, Bomet 0.6% by WorldPop share), so all six need rows, not Kisumu alone.
 
 ## What's in the app
 
+- Official-outlook banner (ICPAC seasonal, 16-day short range) with a button that jumps the slider to a matching scenario
 - Map with a Nairobi / Nyando switcher, flood risk layer (low / medium / high by water depth) and legend
 - Rainfall slider (50–250 mm in 24 h), El Niño toggle, and an **Animate** button showing the pace of impact
 - People and buildings at risk, with a low–high range and projection year
-- Safe places (green = safe, grey = flooded), nearest-safe-place routes, and a commuter reroute with extra minutes
+- Safe places (green = safe, grey = flooded), nearest-safe-place routes, a commuter reroute with extra minutes, and a no-route message (Kenya Red Cross 1199) when the start point is inside the flood
 - Relocation to high ground and a farmer advisory for Nyando
 - User types (commuter, resident, settler, farmer, trader) that change which panel is emphasised
 - Tier 2: arrival-time layer, SMS alert preview in English and Kiswahili, optional Africa's Talking sandbox and Claude API advisories, mock blocked-road reports, drought roadmap tab
@@ -80,14 +81,17 @@ Without those keys the app still works and uses fixed templates. Never commit `.
 
 ## Data sources and licences
 
-OpenStreetMap (ODbL), Copernicus DEM GLO-30 and FABDEM, CHIRPS, ESA WorldCover (CC BY 4.0), WorldPop (CC BY 4.0), Google Open Buildings (CC BY 4.0 / ODbL), Sentinel-1 (Copernicus), JRC Global Surface Water, KNBS census, NOAA ONI, FAO EcoCrop, KALRO. Basemap: OpenFreeMap, © OpenStreetMap contributors. Verify each licence before submission.
+OpenStreetMap (ODbL, Geofabrik extract of 2026-11-04), **FABDEM V1-2 (CC BY-NC-SA 4.0, © University of Bristol / Fathom)** for Nairobi, Copernicus DEM GLO-30 for Nyando, CHIRPS, ESA WorldCover (CC BY 4.0), WorldPop (CC BY 4.0), Google Open Buildings v3 (CC BY 4.0 / ODbL), Sentinel-1 (Copernicus), JRC Global Surface Water, KNBS census, NOAA ONI, FAO EcoCrop, KALRO. Basemap: OpenFreeMap, © OpenStreetMap contributors.
+
+> **FABDEM V1-2 is CC BY-NC-SA 4.0: non-commercial and ShareAlike.** The Nairobi flood layers are derived from it and inherit that licence. This line must appear on the sources slide.
 
 ## Limitations
 
 - Free elevation data (~30 m) is not accurate to the last metre. The model uses HAND and the output is a **screening-level** risk map.
-- Flood extent is a calibrated approximation, not a hydraulic simulation.
+- Flood extent is a screening-level approximation (terrain + rainfall-runoff, not a hydraulic model), calibrated against Sentinel-1 observations of the Nov 2023 Nyando flood. Nairobi uses Nyando's calibration.
+- Nyando terrain is GLO-30, a surface model: on buildings it sits about 1-2 m above bare earth, so flood depth there may be understated. Nairobi uses bare-earth FABDEM.
 - Population after 2019 is a projection with low / medium / high scenarios; informal settlements are likely undercounted.
-- The rainfall slider is a **scenario tool, not a forecast**.
+- The rainfall slider is a **scenario tool, not a forecast**. The banner at the top of the panel is an *official* outlook (ICPAC, Open-Meteo / GloFAS), never ours.
 - Crop advice is rule-based and needs validation by local extension officers. Swahili text needs review by a native speaker.
 - Mock data uses approximate, hand-entered coordinates.
 
