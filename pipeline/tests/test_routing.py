@@ -280,7 +280,8 @@ def test_committed_origins_cover_every_user_type():
     import json
     areas = {a["id"]: a for a in json.loads((Path(__file__).resolve().parents[2] / "web/public/data/areas.json").read_text())}
     for a, spec in rt.ORIGINS.items():
-        assert {s[3] for s in spec} == set(areas[a]["user_types"]) and 3 <= len(spec) <= 6
+        # E-09 (tasks/exposure.md): 8-10 named, OSM-verified starting points per area (E-03 had 3-6)
+        assert {s[3] for s in spec} == set(areas[a]["user_types"]) and 8 <= len(spec) <= 10, (a, len(spec))
 
 
 # ---- F4.6: the COMMITTED origins.json files are exactly what ORIGINS + the OSM points give ----

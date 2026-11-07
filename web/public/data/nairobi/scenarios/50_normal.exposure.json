@@ -1,1 +1,1 @@
-{"year":2026,"population":{"low":49431,"medium":53014,"high":55525},"buildings":6602,"flooded_area_km2":4.76,"roads_cut":["Uhuru Highway","Globe Roundabout","Outer Ring Road","Ring Road","First Avenue Eastleigh","Racecourse Road","Koma Rock Road","Kasario Road"],"source":"mock"}
+{"year":2026,"population":{"low":49431,"medium":53014,"high":55525},"buildings":6602,"flooded_area_km2":4.76,"roads_cut":["Uhuru Highway","Globe Roundabout","Outer Ring Road","Ring Road","First Avenue Eastleigh","Racecourse Road","Koma Rock Road","Kasario Road"],"source":"model"}

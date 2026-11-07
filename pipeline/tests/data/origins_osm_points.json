@@ -31,6 +31,54 @@
     36.841473,
     -1.286343
    ]
+  },
+  "n289911998": {
+   "name": "Korogocho",
+   "kind": "place=neighbourhood",
+   "lonlat": [
+    36.890309,
+    -1.25175
+   ]
+  },
+  "n10271125000": {
+   "name": "Mukuru Kwa Ruben",
+   "kind": "place=neighbourhood",
+   "lonlat": [
+    36.882599,
+    -1.316751
+   ]
+  },
+  "n11431675440": {
+   "name": "Kiamaiko",
+   "kind": "place=quarter",
+   "lonlat": [
+    36.876082,
+    -1.256439
+   ]
+  },
+  "n8213846284": {
+   "name": "Muthurwa Market",
+   "kind": "amenity=marketplace",
+   "lonlat": [
+    36.832995,
+    -1.285588
+   ]
+  },
+  "n30031480": {
+   "name": "South C",
+   "kind": "place=suburb",
+   "lonlat": [
+    36.827822,
+    -1.318837
+   ]
+  },
+  "n6346946572": {
+   "name": "Babadogo",
+   "kind": "place=suburb",
+   "lonlat": [
+    36.88265,
+    -1.246163
+   ]
   }
  },
  "nyando": {
@@ -56,6 +104,54 @@
    "lonlat": [
     34.926312,
     -0.149614
+   ]
+  },
+  "n44927549": {
+   "name": "Muhoroni",
+   "kind": "place=town",
+   "lonlat": [
+    35.187494,
+    -0.156525
+   ]
+  },
+  "n6976663147": {
+   "name": "Sondu Agricultural Market",
+   "kind": "amenity=marketplace",
+   "lonlat": [
+    35.012512,
+    -0.389685
+   ]
+  },
+  "n10651322618": {
+   "name": "Kibigori",
+   "kind": "place=town",
+   "lonlat": [
+    35.050291,
+    -0.071334
+   ]
+  },
+  "n1180528044": {
+   "name": "Pap Onditi",
+   "kind": "place=town",
+   "lonlat": [
+    34.935359,
+    -0.311023
+   ]
+  },
+  "n9852990449": {
+   "name": "KANYIBANA KATITO 'C'I",
+   "kind": "place=village",
+   "lonlat": [
+    34.973524,
+    -0.26856
+   ]
+  },
+  "n10280508666": {
+   "name": "Chiga",
+   "kind": "place=village",
+   "lonlat": [
+    34.845903,
+    -0.098236
    ]
   }
  }
