@@ -101,6 +101,17 @@ def clim(times: list, values: list, peak: float) -> dict:
             "peak_percentile": round(float((q < peak).mean() * 100), 1)}
 
 
+def rain_summary(pr, days: list) -> dict:
+    """pr: points x days. The wettest day is by AOI mean; the point max ON that day and the 16-day single-point max are
+    reported separately (F9.2: they can fall on different days)."""
+    m = np.nanmean(pr, axis=0)
+    i = int(np.nanargmax(m))
+    jp, j = np.unravel_index(int(np.nanargmax(pr)), pr.shape)
+    return {"wettest_day": days[i], "wettest_day_mm": round(float(m[i]), 1),
+            "wettest_day_point_max_mm": round(float(np.nanmax(pr[:, i])), 1),
+            "max_single_point_day": days[j], "max_single_point_day_mm": round(float(pr[jp, j]), 1)}
+
+
 def map_rain(max_day_mm: float):
     if max_day_mm < MIN_MAPPED_MM:
         return None
@@ -146,8 +157,7 @@ def main(area: str, stamp: str | None = None):
                           "points": len(fc), "grid_cell_points": [[loc["longitude"], loc["latitude"]] for loc in fc],
                           "days": days, "aoi_mean_mm": [round(float(v), 1) for v in aoi_mean],
                           "total_16d_mm": round(float(np.nansum(aoi_mean)), 1),
-                          "wettest_day": days[i], "wettest_day_mm": round(float(aoi_mean[i]), 1),
-                          "wettest_point_day_mm": round(float(np.nanmax(pr)), 1)},
+                          **rain_summary(pr, days)},
         "river": {"source": "GloFAS v4 via Open-Meteo flood API (Copernicus EMS), CC BY 4.0", "url": fl_url,
                   "model_outlet": {"lon": lon, "lat": lat, "upstream_km2": up_km2},
                   "glofas_cell": [fl["longitude"], fl["latitude"]],
@@ -175,7 +185,8 @@ def main(area: str, stamp: str | None = None):
     (out / "forecast.json").write_text(json.dumps(rep, indent=1, ensure_ascii=False))
     print(json.dumps({"area": area, "snapshot": stamp, "outlook_above_normal": rep["official_outlook"]["above_normal_pct_band"],
                       "precip": {k: rep["precipitation"][k] for k in ("total_16d_mm", "wettest_day", "wettest_day_mm",
-                                                                       "wettest_point_day_mm")},
+                                                                       "wettest_day_point_max_mm", "max_single_point_day",
+                                                                       "max_single_point_day_mm")},
                       "river": {k: rep["river"][k] for k in ("model_outlet", "glofas_cell", "peak_ensemble_mean_m3s",
                                                              "peak_day", "peak_percentile_of_clim_days")}
                       | {"clim": rep["river"]["clim"]},

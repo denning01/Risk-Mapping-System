@@ -170,3 +170,15 @@ def test_forecast_climatology_drops_null_days_and_reports_the_real_period():
                 [None, None, 1.0, 2.0, 3.0, 4.0], peak=3.5)
     assert c["period"] == "1997-01-01..1997-01-04" and c["days"] == 4 and c["missing_days_in_request"] == 2
     assert c["p50_m3s"] == 2.5 and c["max_m3s"] == 4.0 and c["peak_percentile"] == 75.0   # 3 of 4 finite days below 3.5
+
+
+def test_forecast_reports_the_point_max_on_the_wettest_day_separately_from_the_16_day_point_max():
+    """F9.2: Nyando's 34.5 mm single-point max was on 11-12, not on the wettest AOI-mean day 11-13 (27.8 mm there)."""
+    spec = importlib.util.spec_from_file_location("fc3", Path(__file__).resolve().parents[1] / "08_forecast.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    pr = np.array([[34.5, 27.8], [0.0, 20.0], [0.0, 10.4]])           # 3 points x 2 days
+    r = fc.rain_summary(pr, ["d1", "d2"])
+    assert r["wettest_day"] == "d2" and r["wettest_day_mm"] == 19.4 and r["wettest_day_point_max_mm"] == 27.8
+    assert r["max_single_point_day"] == "d1" and r["max_single_point_day_mm"] == 34.5
+    assert "**rain_summary(pr, days)" in (Path(__file__).resolve().parents[1] / "08_forecast.py").read_text()
