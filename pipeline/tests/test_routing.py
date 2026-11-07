@@ -634,3 +634,83 @@ def test_relocation_candidates_drop_steep_sites_and_prefer_gentle_ones():
     c = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0, None, slope)
     assert [W.nodes[x["node"]] for x in c] == [2, 20]
     assert c[0]["slope_pct"] == 3.0 and c[0]["score"] > c[1]["score"]
+
+
+# ---- R6 audit F6.3 / F6.4 / F6.6: the slide-facing minutes and the relocation ranking are pinned ----
+def test_minutes_round_up_with_float_noise_guard():
+    """F6.3 (X2): minutes are rounded UP: 570 s -> 10, 601 s -> 11, 540 s + 30 m snap at 1 m/s -> 10; but 600.0000001 s
+    is 10 (float noise), not 11."""
+    assert rt._minutes(570.0) == 10 and rt._minutes(601.0) == 11
+    assert rt._minutes(540.0, 30.0) == 10
+    assert rt._minutes(600.0000001) == 10 and rt._minutes(600.0) == 10
+
+
+def test_dijkstra_uses_the_fastest_of_parallel_edges():
+    """F6.3 (X4): two u->v edges, 100 s and 400 s (inserted SLOW FIRST). The time to v is 100 s and the path uses the fast one."""
+    import networkx as nx
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    for n, x in ((1, _X0), (2, _X0 + _SP)):
+        lon, lat = _ll(x, _Y0); G.add_node(n, x=lon, y=lat)
+    G.add_edge(1, 2, length=_SP, travel_time=400.0, highway="track", name="Slow")
+    G.add_edge(1, 2, length=_SP, travel_time=100.0, highway="primary", name="Fast")
+    RG = rt.RoutingGraph(G, "EPSG:32736")
+    dist, pred, used = RG.dijkstra(RG.idx[1])
+    assert dist[RG.idx[2]] == pytest.approx(100.0, abs=1e-6)
+    e = RG.path_edges(pred, used, RG.idx[2])
+    assert len(e) == 1 and RG.w[e[0]] == 100.0
+
+
+def _reloc_inputs():
+    W = _lattice(3)
+    D = _lattice(3, kph=30, drive=True)
+    wet, tf = _wet([])
+    hand = np.full(wet.shape, 10.0)                       # every node is high ground (>= 5 m), equal HAND
+    return W, D, wet, tf, hand
+
+
+def test_relocation_prefers_the_shorter_walk_when_all_else_is_equal():
+    """F6.4 (X8): two candidates identical except walk time (10 vs 30 min); the 10-min one ranks first, by score, not
+    only by the tie-break."""
+    W, D, wet, tf, hand = _reloc_inputs()
+    dist = np.full(len(W.nodes), np.inf)
+    dist[W.idx[2]], dist[W.idx[20]] = 1800.0, 600.0       # node 20: 10 min, node 2: 30 min
+    c = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0)
+    assert [x["node"] for x in c] == [W.idx[20], W.idx[2]]
+    assert c[0]["score"] > c[1]["score"]
+
+
+def test_relocation_drops_sites_beyond_the_walk_limit():
+    """F6.4 (X9): RELOC_MAX_MIN = 120. A site at 121 min is no candidate; one at 119 min is."""
+    W, D, wet, tf, hand = _reloc_inputs()
+    dist = np.full(len(W.nodes), np.inf)
+    dist[W.idx[2]], dist[W.idx[20]] = 121 * 60.0, 119 * 60.0
+    c = rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0)
+    assert [x["node"] for x in c] == [W.idx[20]]
+    dist[W.idx[20]] = 121 * 60.0
+    assert rt.relocation_candidates(W, wet, tf, hand, tf, [-180, -90, 180, 90], D, [], dist, 0.0) == []
+
+
+def test_relocation_drops_sites_outside_the_area_bbox():
+    """F6.4 (X6): only nodes inside the AOI bbox are candidates. The bbox here holds column 0 only (nodes 0, 10, 20)."""
+    W, D, wet, tf, hand = _reloc_inputs()
+    dist = np.full(len(W.nodes), 600.0)
+    w, s = _ll(_X0 - 50, _Y0 - 2 * _SP - 50)
+    e, n = _ll(_X0 + 50, _Y0 + 50)
+    c = rt.relocation_candidates(W, wet, tf, hand, tf, [w, s, e, n], D, [], dist, 0.0)
+    assert sorted(x["node"] for x in c) == sorted(W.idx[k] for k in (0, 10, 20))
+
+
+def test_shelter_further_than_the_snap_limit_from_any_path_is_not_chosen():
+    """F6.6 (X3): MAX_DEST_SNAP_M = 500. A shelter 700 m off the graph (700 s straight 'walk') would beat the in-graph
+    shelter at node 22 (1,200 s); it must not be chosen. Alone, it gives no route."""
+    W = _lattice(3)
+    o = _ll(_X0, _Y0)                                     # node 0
+    far = {"id": "far", "name": "Far", "type": "school", "safe": True}
+    far["lon"], far["lat"] = _ll(_X0 - 700, _Y0)
+    near = {"id": "n22", "name": "Node 22", "type": "school", "safe": True}
+    near["lon"], near["lat"] = _ll(_X0 + 2 * _SP, _Y0 - 2 * _SP)
+    cut = np.zeros(W.n_edges, bool)
+    s, leg = rt._nearest_safe_shelter(W, o, [far, near], cut)
+    assert s["id"] == "n22" and leg["minutes"] == 20
+    s, why = rt._nearest_safe_shelter(W, o, [far], cut)
+    assert s is None and "no safe shelter reachable" in why
