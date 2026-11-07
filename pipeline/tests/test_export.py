@@ -182,3 +182,32 @@ def test_forecast_reports_the_point_max_on_the_wettest_day_separately_from_the_1
     assert r["wettest_day"] == "d2" and r["wettest_day_mm"] == 19.4 and r["wettest_day_point_max_mm"] == 27.8
     assert r["max_single_point_day"] == "d1" and r["max_single_point_day_mm"] == 34.5
     assert "**rain_summary(pr, days)" in (Path(__file__).resolve().parents[1] / "08_forecast.py").read_text()
+
+
+def test_forecast_mean_counts_each_snapped_model_cell_once_and_glofas_is_not_labelled_cc_by():
+    """F9.6: Nairobi's 9 requested points snap to 6 Open-Meteo cells; a duplicate must not be weighted twice."""
+    spec = importlib.util.spec_from_file_location("fc4", Path(__file__).resolve().parents[1] / "08_forecast.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    loc = lambda lon, lat, v: {"longitude": lon, "latitude": lat, "daily": {"precipitation_sum": [v]}}
+    pts = [loc(36.80, -1.30, 10.0), loc(36.80, -1.30, 10.0), loc(36.85, -1.25, 1.0)]   # first cell snapped twice
+    cells = fc.distinct_cells(pts)
+    assert len(cells) == 2 and [c["latitude"] for c in cells] == [-1.30, -1.25]
+    assert np.mean([c["daily"]["precipitation_sum"][0] for c in cells]) == 5.5        # not 7.0 (duplicate counted)
+    src = (Path(__file__).resolve().parents[1] / "08_forecast.py").read_text()
+    assert "cells = distinct_cells(fc)" in src and "for loc in cells]" in src
+    assert "CC BY" not in fc.GLOFAS_SOURCE and "CEMS-FLOODS" in fc.GLOFAS_SOURCE
+
+
+REAL_FC = Path("/Users/mac/IGAD/data/raw/nairobi/forecast/2026-11-06T1102Z/open_meteo_forecast.json")
+
+
+@pytest.mark.skipif(not REAL_FC.exists(), reason="no cached Nairobi snapshot")
+def test_real_nairobi_snapshot_has_6_distinct_cells():
+    import json
+    spec = importlib.util.spec_from_file_location("fc5", Path(__file__).resolve().parents[1] / "08_forecast.py")
+    fc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fc)
+    cells = fc.distinct_cells(json.loads(REAL_FC.read_text()))
+    pr = np.array([c["daily"]["precipitation_sum"] for c in cells], float).mean(0)
+    assert len(cells) == 6 and round(float(pr.max()), 1) == 11.9 and round(float(pr.sum()), 1) == 93.7

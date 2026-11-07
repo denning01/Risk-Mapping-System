@@ -36,6 +36,12 @@ from pipeline.lib.rio import grid_of, read  # noqa: E402
 
 RAINS = (50, 100, 150, 200, 250)
 MIN_MAPPED_MM = 25.0
+# Open-Meteo's licence page (open-meteo.com/en/licence) lists GloFAS under its OWN licence, linked to ECMWF's
+# cems-floods_428a6e10....pdf, titled "CEMS-FLOODS datasets licence (rev. 1)". It is NOT the CC BY 4.0 that covers Open-Meteo's
+# own API data (the earlier label was wrong). The licence text could not be read: ECMWF hosts refused connections 2026-11-07.
+GLOFAS_SOURCE = ("GloFAS v4 (Copernicus Emergency Management Service) via the Open-Meteo flood API; licence: CEMS-FLOODS "
+                 "datasets licence (rev. 1), as linked from open-meteo.com/en/licence; terms NOT read (ECMWF hosts "
+                 "unreachable 2026-11-07); attribute as Copernicus Emergency Management Service information")
 
 OUTLOOK = {
     "source": "ICPAC, Technical Statement from the 74th Greater Horn of Africa Climate Outlook Forum (GHACOF74), "
@@ -112,6 +118,18 @@ def rain_summary(pr, days: list) -> dict:
             "max_single_point_day": days[j], "max_single_point_day_mm": round(float(pr[jp, j]), 1)}
 
 
+def distinct_cells(fc: list) -> list:
+    """F9.6: the 3x3 requested points snap to Open-Meteo model grid cells, and several can snap to the same cell (Nairobi:
+    9 points -> 6 cells). Keep each cell once (first occurrence) so no cell is weighted twice in the mean."""
+    seen, out = set(), []
+    for loc in fc:
+        key = (round(loc["longitude"], 5), round(loc["latitude"], 5))
+        if key not in seen:
+            seen.add(key)
+            out.append(loc)
+    return out
+
+
 def map_rain(max_day_mm: float):
     if max_day_mm < MIN_MAPPED_MM:
         return None
@@ -132,7 +150,9 @@ def main(area: str, stamp: str | None = None):
               + ",".join(map(str, lons)) + "&daily=precipitation_sum&forecast_days=16&timezone=Africa%2FNairobi")
     fc = get(fc_url, cache, "open_meteo_forecast")
     days = fc[0]["daily"]["time"]
-    pr = np.array([loc["daily"]["precipitation_sum"] for loc in fc], dtype=float)   # 9 x 16
+    cells = distinct_cells(fc)
+    pr = np.array([loc["daily"]["precipitation_sum"] for loc in cells], dtype=float)   # distinct cells x 16
+    inside = [c for c in cells if w <= c["longitude"] <= e and s <= c["latitude"] <= n]
     aoi_mean = np.nanmean(pr, axis=0)
     i = int(np.nanargmax(aoi_mean))
     lon, lat, up_km2 = outlet(area)
@@ -154,11 +174,15 @@ def main(area: str, stamp: str | None = None):
                             | {"above_normal_pct_band": OUTLOOK["above_normal_pct_band"][area],
                                "pixels": OUTLOOK["pixels"][area]},
         "precipitation": {"source": "Open-Meteo forecast API (best_match models), CC BY 4.0", "url": fc_url,
-                          "points": len(fc), "grid_cell_points": [[loc["longitude"], loc["latitude"]] for loc in fc],
+                          "requested_points": len(fc), "distinct_model_cells": len(cells),
+                          "distinct_cells_inside_bbox": len(inside),
+                          "averaging": "mean over the DISTINCT Open-Meteo model grid cells the 3x3 requested points snap "
+                                       "to (cells near the AOI, some outside its bbox), not points inside the AOI",
+                          "grid_cell_points": [[loc["longitude"], loc["latitude"]] for loc in cells],
                           "days": days, "aoi_mean_mm": [round(float(v), 1) for v in aoi_mean],
                           "total_16d_mm": round(float(np.nansum(aoi_mean)), 1),
                           **rain_summary(pr, days)},
-        "river": {"source": "GloFAS v4 via Open-Meteo flood API (Copernicus EMS), CC BY 4.0", "url": fl_url,
+        "river": {"source": GLOFAS_SOURCE, "url": fl_url,
                   "model_outlet": {"lon": lon, "lat": lat, "upstream_km2": up_km2},
                   "glofas_cell": [fl["longitude"], fl["latitude"]],
                   "days": fl["daily"]["time"],
@@ -170,7 +194,7 @@ def main(area: str, stamp: str | None = None):
                           | {k: v for k, v in cl.items() if k != "peak_percentile"},
                   "peak_percentile_of_clim_days": cl["peak_percentile"],
                   "note": "context only; discharge does not select a slider scenario"},
-        "mapping": {"rule": f"rain_mm = slider value nearest to the wettest forecast day (AOI mean of {len(fc)} points); "
+        "mapping": {"rule": f"rain_mm = slider value nearest to the wettest forecast day (mean of {len(cells)} distinct Open-Meteo model cells near the AOI); "
                             f"< {MIN_MAPPED_MM:g} mm maps to none. enso = elnino when the official statement says El "
                             "Niño conditions are established.",
                     "rain_mm": rain, "enso": enso,
