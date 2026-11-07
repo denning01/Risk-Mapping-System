@@ -156,3 +156,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   including the walk-to-network snap legs) from the exported file alone: this catches unit and rounding bugs (seconds
   vs deciseconds) that a self-consistent test misses. A refusal test must pin the refusal's MESSAGE (capsys), or a
   fixture KeyError passes it vacuously.
+- 2026-11-07 (E-13) Before a new derived count goes anywhere, compare it with the number it should be bounded by. "People
+  who lose clinic access" came out 24x the people in the flood (Nyando 114,286 vs 4,720 at 50 mm): decomposed by reason
+  (snap node cut, wet snap leg, network split) and by pocket (connected component), it was snapping, pockets running
+  to the graph's edge, rain-independent channel crossings and OSM's 15 clinics, not the flood. Take that to the
+  operator with the numbers; do not tune it quietly. Held metrics leave NO code path and no files behind: the
+  first run's outputs under $RMS_DATA were deleted, and the code was taken out, not just switched off.

@@ -387,6 +387,37 @@ def buildings_points_geojson(lon, lat, depth_m) -> dict:
         for x, y, v, k in zip(lon, lat, d, cls)]}
 
 
+RIPPLE_TYPES = {"school": "school", "health": "hospital", "police": "police"}   # ripple name -> contract shelter type
+
+
+def ripple_effects(key, exposure, shelters, markets, full_cut, wet, tf, crs) -> dict:
+    """E-13 per scenario (pending Person B's schema). shelters: the scenario's OSM shelters in the bbox after
+    shelters_safety (in flood = not safe = its 30 m cell is wet); markets: osm_places marketplace features in the bbox
+    (in flood = its point's cell is wet); full_cut: roads_cut()'s full list (named drive roads with a cut edge in the
+    bbox). People losing access to health care is HELD (operator ruling 2026-11-07): not computed, not written."""
+    from pyproj import Transformer
+    from rasterio.transform import rowcol
+    out = {}
+    for name, t in RIPPLE_TYPES.items():
+        sel = [s for s in shelters if s["type"] == t]
+        hit = sorted(s["name"] for s in sel if not s["safe"])
+        out[name] = {"in_flood": len(hit), "total": len(sel), "names": hit}
+    if markets:
+        x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(
+            *np.array([f["geometry"]["coordinates"] for f in markets], float).T)
+        r, c = rowcol(tf, x, y, op=np.floor)
+        r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
+        ok = (r >= 0) & (r < wet.shape[0]) & (c >= 0) & (c < wet.shape[1])
+        mw = np.zeros(len(markets), bool)
+        mw[ok] = wet[r[ok], c[ok]]
+    else:
+        mw = np.zeros(0, bool)
+    hit = sorted(f["properties"]["name"] or "Market (unnamed in OpenStreetMap)" for f, w in zip(markets, mw) if w)
+    out["market"] = {"in_flood": len(hit), "total": len(markets), "names": hit}
+    return {"scenario": key, "source": exposure["source"], "facilities_in_flood": out,
+            "roads_cut": {"named": len(full_cut), "names": [a["name"] for a in full_cut]}}
+
+
 def _inside(path: Path, parent: Path) -> bool:
     try:
         path.resolve().relative_to(parent.resolve())
@@ -423,6 +454,18 @@ def cmd_write(args) -> int:
             print(f"ERROR: --graph-out {graph_out} is inside web/ or --data-dir; graph.json waits for Person B's schema "
                   "(write it under $RMS_DATA)", file=sys.stderr)
             return 1
+    ripple_dir = Path(args.ripple_dir) if args.ripple_dir else None
+    if ripple_dir is not None:
+        if not args.routes:
+            print("ERROR: --ripple-dir needs --routes (facility safety and roads cut come from the routing step)",
+                  file=sys.stderr)
+            return 1
+        # E-13: ripple effects have no contract yet (Person B). Until they do they may not reach the app's data.
+        if _inside(ripple_dir, REPO / "web") or _inside(ripple_dir, data_dir):
+            print(f"ERROR: --ripple-dir {ripple_dir} is inside web/ or --data-dir; ripple effects wait for Person B's "
+                  "schema (write them under $RMS_DATA)", file=sys.stderr)
+            return 1
+        ripple_dir.mkdir(parents=True, exist_ok=True)
     graph_cuts = {}
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
@@ -476,6 +519,10 @@ def cmd_write(args) -> int:
                   for f in json.loads((pdir / "osm_places.geojson").read_text())["features"]}
         with rasterio.open(depth_dir / f"{scenario_keys()[0]}_depth.tif") as ds:
             route_crs = ds.crs
+        markets = [f for f in json.loads((pdir / "osm_places.geojson").read_text())["features"]
+                   if f["properties"]["kind"] == "amenity=marketplace"
+                   and bbox[0] <= f["geometry"]["coordinates"][0] <= bbox[2]
+                   and bbox[1] <= f["geometry"]["coordinates"][1] <= bbox[3]]
         osm_raw = rms_data() / "raw" / "osm"
         W = rt.RoutingGraph(ox.load_graphml(pdir / "graph_walk.graphml"), route_crs,
                             rt.bridge_lines(osm_raw / f"{args.area}_walk.osm"))
@@ -583,6 +630,14 @@ def cmd_write(args) -> int:
                                                     places, reloc, flood=(wet, tf), flood_drive=(wet_drive, tf))
             shelters = shelters + extra
             exposure["roads_cut"], full_cut = rt.roads_cut(D, cut_d, bbox)
+            if ripple_dir is not None:
+                ripple = ripple_effects(key, exposure, shelters, markets, full_cut, wet, tf, crs)
+                (ripple_dir / f"{key}.ripple.json").write_text(json.dumps(ripple, indent=1, ensure_ascii=False))
+                fi = ripple["facilities_in_flood"]
+                print(f"  {key}: ripple in flood school {fi['school']['in_flood']}/{fi['school']['total']} health "
+                      f"{fi['health']['in_flood']}/{fi['health']['total']} market {fi['market']['in_flood']}/"
+                      f"{fi['market']['total']} police {fi['police']['in_flood']}/{fi['police']['total']}; roads cut "
+                      f"{ripple['roads_cut']['named']}")
             route_checks[key] = {"walk_edges_cut": int(cut_w.sum()), "drive_edges_cut": int(cut_d.sum()),
                                  "roads_cut_all": full_cut, "routes": checks}
             for c in checks:
@@ -678,6 +733,9 @@ def main(argv=None) -> int:
     w.add_argument("--graph-out", default=None,
                    help="E-12: also write graph.json (walk + drive graph, per-scenario flooded bitmask) to this FILE; needs "
                         "--routes; refused inside web/ until Person B agrees the schema")
+    w.add_argument("--ripple-dir", default=None,
+                   help="E-13: also write <key>.ripple.json (schools/health/markets/police in flood, roads cut) to this dir; "
+                        "needs --routes; refused inside web/ until Person B agrees the schema")
     w.add_argument("--routes", action="store_true",
                    help="shelters from OSM + routes + roads_cut from the graphs (E-05; else carried)")
     w.add_argument("--hand", default=None, help="hand.tif (model, from a snapshot): needed by --routes for a rural area")

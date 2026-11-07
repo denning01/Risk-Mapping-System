@@ -536,3 +536,49 @@ def test_write_graph_out_refused_inside_web_or_data_dir_and_without_routes(tmp_p
         assert msg in capsys.readouterr().err
     assert not web_file.exists() and not (data / "nyando" / "graph.json").exists() and not (tmp_path / "ok").exists()
     assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before   # nothing written
+
+
+def test_ripple_effects_counts_and_names_facilities_in_flood_and_roads_cut():
+    """E-13: a facility is in flood when its shelter is not safe (its cell is wet); a market when its point's cell is
+    wet (outside the raster = not in flood); only school/hospital/police shelters count (as school/health/police);
+    roads_cut is roads_cut()'s FULL list, not the app's top-N; no people-access field is written (HELD)."""
+    crs = "EPSG:32737"
+    tf = from_origin(250_000, 9_860_000, 30, 30)
+    wet = np.zeros((3, 3), bool); wet[1, 1] = True
+    ll = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform
+    at = lambda x, y: list(ll(x, y))
+    mk = lambda name, x, y: {"type": "Feature", "geometry": {"type": "Point", "coordinates": at(x, y)},
+                             "properties": {"kind": "amenity=marketplace", "name": name}}
+    markets = [mk("Wet market", 250_045, 9_859_955), mk("Dry market", 250_015, 9_859_985), mk(None, 250_045, 9_859_955),
+               mk("Off-grid market", 250_500, 9_859_500)]
+    sh = lambda n, t, safe: {"id": n, "name": n, "type": t, "safe": safe}
+    shelters = [sh("S1", "school", False), sh("S2", "school", True), sh("H1", "hospital", False), sh("P1", "police", True),
+                sh("C1", "church", False), sh("Hill", "high_ground", True)]
+    full_cut = [{"name": f"Road {i}", "rank": 0, "cut_m": 1.0} for i in range(12)]
+    r = scen.ripple_effects("50_normal", {"source": "model", "year": 2026}, shelters, markets, full_cut, wet, tf, crs)
+    f = r["facilities_in_flood"]
+    assert f["school"] == {"in_flood": 1, "total": 2, "names": ["S1"]}
+    assert f["health"] == {"in_flood": 1, "total": 1, "names": ["H1"]}
+    assert f["police"] == {"in_flood": 0, "total": 1, "names": []}
+    assert f["market"] == {"in_flood": 2, "total": 4, "names": ["Market (unnamed in OpenStreetMap)", "Wet market"]}
+    assert set(f) == {"school", "health", "police", "market"}
+    assert r["roads_cut"] == {"named": 12, "names": [f"Road {i}" for i in range(12)]}
+    assert set(r) == {"scenario", "source", "facilities_in_flood", "roads_cut"} and r["source"] == "model"
+
+
+def test_write_ripple_dir_refused_inside_web_or_data_dir_and_without_routes(tmp_path, monkeypatch, capsys):
+    """E-13: ripple files may not reach the app's data until Person B agrees the fields; they need --routes. Each
+    refusal is pinned by its message (a later crash of this unroutable fixture must not count)."""
+    monkeypatch.setenv("RMS_DATA", str(tmp_path / "rms"))
+    monkeypatch.setattr(scen, "REPO", tmp_path / "repo")
+    data, depth = _write_inputs(tmp_path, mock=True)
+    before = (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text()
+    base = ["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]
+    web_dir = scen.REPO / "web" / "public" / "data" / "nyando" / "ripple"
+    for extra, msg in ((["--routes", "--ripple-dir", str(web_dir)], "wait for Person B's schema"),
+                       (["--routes", "--ripple-dir", str(data / "nyando" / "ripple")], "wait for Person B's schema"),
+                       (["--ripple-dir", str(tmp_path / "ok")], "--ripple-dir needs --routes")):
+        assert scen.main(base + extra) == 1
+        assert msg in capsys.readouterr().err
+    assert not web_dir.exists() and not (data / "nyando" / "ripple").exists() and not (tmp_path / "ok").exists()
+    assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before
