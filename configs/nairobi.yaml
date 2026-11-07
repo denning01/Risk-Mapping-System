@@ -1,0 +1,29 @@
+# Nairobi (urban pilot), Nairobi River corridor. Plan §3. Read by pipeline/lib/config.py.
+# utm_epsg is NOT typed here: config.load() derives it from the bbox centre (charter M-01).
+id: nairobi
+name: Nairobi (urban)
+type: urban
+bbox: [36.78, -1.33, 36.92, -1.22]      # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+# HUMAN DECISION 2026-11-06 (via operator): FABDEM STAYS — bare-earth DEM for flow and depth; buildings are handled by
+# the exposure footprint overlay. CC BY-NC-SA 4.0 accepted for the MVP. Do NOT switch to GLO-30. Licence on the M-10
+# data-sources slide.
+dem: projects/sat-io/open-datasets/FABDEM   # EE community catalog id; no-EE route (M-07): FABDEM V1-2 tiles read
+                                            # from the University of Bristol zips (01_ee_export.fabdem_urls). CC BY-NC-SA 4.0.
+dem_fallback: COPERNICUS/DEM/GLO30
+k_transfer_from: nyando                 # M-07: Nairobi's S1 backtest did not identify k (urban SAR; best k on the grid edge,
+                                        # F1 0.07) -> 03 uses Nyando's calibrated k, tagged calibrated=false
+soil_gap_fill: nearest                  # SoilGrids has no texture under the city (55 % of the AOI); 03 takes the nearest
+                                        # SoilGrids cell. Not set for Nyando (its posted rasters are built without it).
+backtest_event:                         # Apr-May 2024 long-rains floods
+  start: "2024-04-20"
+  end: "2024-05-10"
+  verified: false                       # partly: a UNOSAT product "Flood impact analysis in Nairobi Kenya as of 1 May 2024"
+                                        # (Pleiades, 1 May 2024) lies inside the window — seen only as a catalogue title,
+                                        # https://geo.btaa.org/catalog/70148c8d-4d8a-4e70-8c03-c9bb8370cfb7 (HDX blocked, 403)
+before_period:
+  start: "2024-03-01"
+  end: "2024-04-10"
+user_types: [commuter, informal_settlement_resident, trader]
+# Download box (M-07): wide enough that no catchment draining INTO the AOI is cut by the box edge (Nairobi, Ngong and
+# Mathare rivers rise west/north-west of the city). Checked by computation after the terrain run (ROUND 6).
+export_bbox: [36.50, -1.50, 37.10, -0.95]

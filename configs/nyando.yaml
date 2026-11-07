@@ -1,0 +1,27 @@
+# Nyando, Kisumu (rural pilot). Plan §3. Read by pipeline/lib/config.py.
+# utm_epsg is NOT typed here: config.load() derives it from the bbox centre (charter M-01).
+id: nyando
+name: Nyando, Kisumu (rural)
+type: rural
+bbox: [34.80, -0.45, 35.30, 0.00]       # [west, south, east, north] WGS84; must equal web/public/data/areas.json
+                                        # (west edge 34.85 -> 34.80: operator ruling 2026-11-05, flipped after data e472d23)
+dem: COPERNICUS/DEM/GLO30               # EE id (verify in M-02 with ee.data.getAsset)
+dem_fallback: USGS/SRTMGL1_003
+backtest_event:                         # Nov 2023 short-rains / El Nino floods
+  start: "2023-11-01"
+  end: "2023-11-30"
+  verified: false                       # dates from the plan; no primary source names Nyando flooding in Nov 2023 that
+                                        # we could reach (ReliefWeb/HDX 403, no EMS activation; M-05 2026-11-06). The
+                                        # backtest's evidence is the satellite itself: S1 acquisitions 2023-11-08 and
+                                        # 2023-11-20 (raw/nyando/s1/s1.json) show 26 km2 of new water (VH)
+before_period:
+  start: "2023-09-01"
+  end: "2023-10-10"
+user_types: [settler, farmer, trader]
+# Download box (M-02): wider than the AOI so flow accumulation (M-03) sees the upstream Nyando catchment
+# (OSM river ways reach 35.59 E) and so it contains the operator-ruled west edge 34.80 (2026-11-05).
+# Rasters are clipped to `bbox` only on export to the app.
+export_bbox: [34.70, -0.65, 35.90, 0.15]
+# Model -> exposure hand-off rasters must cover this box (exposure 07_scenarios.py refuses less, to half a pixel).
+# Operator ruling 2026-11-05: Nyando west edge 34.80; exposure's areas.json uses it once it lands on data.
+handoff_bbox: [34.80, -0.45, 35.30, 0.00]

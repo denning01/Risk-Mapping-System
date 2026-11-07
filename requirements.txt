@@ -18,3 +18,6 @@ uvicorn
 pyyaml
 matplotlib
 pytest
+pyproj
+requests
+scikit-image
