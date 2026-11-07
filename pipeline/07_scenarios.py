@@ -81,6 +81,25 @@ def classify_risk(depth: np.ndarray) -> np.ndarray:
     return out
 
 
+# E-11 (operator 2026-11-07): depth BANDS for click-anywhere depth. Edges follow the contract's risk thresholds
+# exactly (low < 0.3, medium 0.3..1.0 inclusive, high > 1.0), so every band lies inside one risk class.
+DEPTH_BANDS = ("0-0.1", "0.1-0.3", "0.3-0.5", "0.5-1.0", "1.0-2.0", ">2.0")
+
+
+def classify_band(depth: np.ndarray) -> np.ndarray:
+    """uint8: 0 dry; 1 (0, 0.1), 2 [0.1, 0.3), 3 [0.3, 0.5), 4 [0.5, 1.0], 5 (1.0, 2.0], 6 > 2.0 m."""
+    d = np.where(np.isfinite(depth), depth, 0.0)
+    out = np.zeros(d.shape, dtype=np.uint8)
+    wet = d > 0
+    out[wet & (d < 0.1)] = 1
+    out[wet & (d >= 0.1) & (d < LOW_MAX_M)] = 2
+    out[wet & (d >= LOW_MAX_M) & (d < 0.5)] = 3
+    out[wet & (d >= 0.5) & (d <= MED_MAX_M)] = 4
+    out[wet & (d > MED_MAX_M) & (d <= 2.0)] = 5
+    out[wet & (d > 2.0)] = 6
+    return out
+
+
 def _round_coords(obj, dp=COORD_DP):
     if isinstance(obj, (list, tuple)):
         if obj and isinstance(obj[0], (int, float)):
@@ -91,7 +110,8 @@ def _round_coords(obj, dp=COORD_DP):
 
 def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None = None,
                    arrival_bin_h: float = 1.0, simplify_m: float = 15.0) -> tuple[list[dict], dict]:
-    """Polygonise a depth raster into contract features, one per (risk, arrival bin).
+    """Polygonise a depth raster into contract features, one per (depth band, arrival bin) (E-11; each band lies in
+    one risk class, and depth_m is the band's mean depth).
 
     Returns (features, stats). stats: flooded_cells, pixel_area_m2, flooded_area_m2,
     polygon_area_m2 (dissolved, before simplification, in the raster CRS), written_area_m2 (after simplification,
@@ -101,14 +121,17 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     if not crs.is_projected or crs.axis_info[0].unit_name not in ("metre", "meter"):
         raise ValueError(f"depth raster must be in a projected CRS in metres, got {crs.to_string()}")
     risk = classify_risk(depth)
+    band = classify_band(depth)
     flooded = risk > 0
+    if not np.array_equal(flooded, band > 0):
+        raise AssertionError("band and risk masks differ")
     if arrival is not None:
         abin = np.where(np.isfinite(arrival), np.round(arrival / arrival_bin_h), -1).astype(np.int64)
     else:
         abin = np.full(depth.shape, -1, dtype=np.int64)
     abin = np.where(abin < -1, -1, abin)  # negative hours make no sense; treat as unknown
-    # one integer label per (risk, arrival bin) among flooded cells; 0 = dry
-    keys = np.stack([risk[flooded].astype(np.int64), abin[flooded]], axis=1)
+    # one integer label per (depth band, arrival bin) among flooded cells; 0 = dry
+    keys = np.stack([band[flooded].astype(np.int64), abin[flooded]], axis=1)
     label = np.zeros(depth.shape, dtype=np.int32)
     uniq = np.empty((0, 2), dtype=np.int64)
     if keys.size:
@@ -121,10 +144,14 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
         parts.setdefault(int(val), []).append(shape(geom))
 
     feats, poly_area, written_area = [], 0.0, 0.0
-    for i, (r, b) in enumerate(uniq, start=1):
+    for i, (bd, b) in enumerate(uniq, start=1):
         geom = unary_union(parts[i])
         poly_area += geom.area
         sel = label == i
+        rs = np.unique(risk[sel])
+        if len(rs) != 1:
+            raise AssertionError(f"band {DEPTH_BANDS[bd - 1]} spans risk classes {rs.tolist()}")
+        r = int(rs[0])
         if simplify_m > 0:
             geom = geom.simplify(simplify_m, preserve_topology=True)
         written_area += geom.area
@@ -145,7 +172,7 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
             },
         })
     order = {"low": 0, "medium": 1, "high": 2}
-    feats.sort(key=lambda f: (order[f["properties"]["risk"]], f["properties"]["arrival_h"] or -1))
+    feats.sort(key=lambda f: order[f["properties"]["risk"]])   # stable: keeps (band, arrival bin) order within a risk
     n = int(flooded.sum())
     stats = {"flooded_cells": n, "pixel_area_m2": px_area, "flooded_area_m2": n * px_area,
              "polygon_area_m2": poly_area, "written_area_m2": written_area,

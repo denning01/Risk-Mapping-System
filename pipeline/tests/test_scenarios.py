@@ -55,6 +55,36 @@ def test_three_classes_known_area():
     assert 34.9 < lon < 35.2 and -0.3 < lat < -0.1
 
 
+def test_classify_band_edges_follow_the_risk_thresholds():
+    """E-11: band edges are exactly the contract thresholds plus 0.1/0.5/2.0; 0.3 opens medium, 1.0 closes it."""
+    d = np.array([np.nan, 0.0, 0.05, 0.1, 0.2999, 0.3, 0.4999, 0.5, 1.0, 1.0001, 2.0, 2.0001, 7], dtype="float32")
+    assert scen.classify_band(d).tolist() == [0, 0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+    bands, risks = scen.classify_band(d), scen.classify_risk(d)
+    for b in range(1, 7):                                   # every band lies inside ONE risk class
+        assert len(set(risks[bands == b].tolist())) == 1
+    assert scen.DEPTH_BANDS == ("0-0.1", "0.1-0.3", "0.3-0.5", "0.5-1.0", "1.0-2.0", ">2.0")
+
+
+def test_flood_features_one_feature_per_band_with_band_mean_depth():
+    """E-11: six separate 2-cell blocks, one per band (means 0.05 / 0.15 / 0.36 / 0.75 / 1.5 / 3.0); the boundary values
+    0.1, 0.3, 0.5 and 1.0 open or close their bands as the contract says. Features: one per band, risk from the thresholds, depth_m = that band's mean, ordered
+    low -> high and shallow -> deep, areas = the band's cells; risk totals equal the 3-class cell counts."""
+    d = np.full((12, 12), np.nan, dtype="float32")
+    d[0, 0:2] = (0.04, 0.06)                 # band 1 (0, 0.1): mean 0.05
+    d[2, 0:2] = (0.1, 0.2)                   # band 2 [0.1, 0.3): 0.1 opens it, mean 0.15
+    d[4, 0:2] = (0.3, 0.42)                  # band 3 [0.3, 0.5): 0.3 is medium, mean 0.36
+    d[6, 0:2] = (0.5, 1.0)                   # band 4 [0.5, 1.0]: 1.0 is medium, mean 0.75
+    d[8, 0:2] = (1.2, 1.8)                   # band 5 (1.0, 2.0]: mean 1.5
+    d[10, 0:2] = (2.5, 3.5)                  # band 6 > 2.0: mean 3.0
+    feats, st = scen.flood_features(d, TF, CRS, simplify_m=0)
+    props = [(f["properties"]["risk"], f["properties"]["depth_m"]) for f in feats]
+    assert props == [("low", 0.05), ("low", 0.15), ("medium", 0.36), ("medium", 0.75), ("high", 1.5), ("high", 3.0)]
+    for f in feats:                          # 2 cells = 1,800 m2; 5-dp coordinates (~1.1 m) on a 180 m perimeter
+        assert scen.reproject(shape(f["geometry"]), "EPSG:4326", CRS).area == pytest.approx(2 * 900, abs=250)
+    assert st["cells_by_risk"] == {"low": 4, "medium": 4, "high": 4}
+    assert st["polygon_area_m2"] == pytest.approx(12 * 900) == st["flooded_area_m2"]
+
+
 def test_arrival_bins_split_a_class():
     d = grid()
     arr = np.full(d.shape, np.nan, dtype="float32")

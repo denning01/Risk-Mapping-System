@@ -167,3 +167,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   under-count. My second method reused the same cache, so it agreed with the bug; the auditor read the raw PBF. Make
   toy grids non-square (rows != cols) so a transposed lookup fails, feed names unsorted, and use a "mock" source so a
   hard-coded "model" fails.
+- 2026-11-07 (E-11) Splitting a layer into more polygons keeps the AREAS (cells, and drawn area to 0.04 %) but not the
+  SHAPES: each band is simplified on its own, so shared borders move (symmetric difference up to 5.3 % of a class,
+  internal overlap 0.34-1.17 % vs 0.10-0.75 % before). Prove areas three ways (raster cells, pre-simplification
+  polygons = cells, drawn polygons vs the old files) and report the shape change too. Bands must be cut ON the
+  contract thresholds, with the same open/closed ends, or a band straddles two risk classes: assert it in the code.
