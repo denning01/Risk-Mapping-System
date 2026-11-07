@@ -59,7 +59,7 @@ Flooded area, Nyando (calibrated k), km² inside the ruled box [34.80, −0.45, 
 Label: "official outlook / forecast snapshot". Never "our forecast".
 
 - **ICPAC GHACOF74, OND 2026:** probability of above-normal rain is **70–80 %** for Nyando and **80–90 %** for Nairobi. These were read from the official map (Figure 1) against its own legend; ICPAC publishes no gridded file. The statement says El Niño conditions are established.
-- **Open-Meteo 16-day forecast:** the wettest day is 19.4 mm (Nyando) and 11.3 mm (Nairobi). Both are below 25 mm, so **no slider scenario is triggered** today. The average is over Open-Meteo **model grid cells near the area**, not points inside it. The 3×3 requested points snap to 9 distinct cells for Nyando (4 inside the box) and only **6 distinct cells for Nairobi** (4 inside; 3 counted twice). De-duplicated, Nairobi reads 93.7 mm over 16 days and 11.9 mm on the wettest day (vs 92.7 / 11.3), still below 25 mm, so still no scenario (auditor F9.6).
+- **Open-Meteo 16-day forecast:** the wettest day is 19.4 mm (Nyando) and 11.9 mm (Nairobi). Both are below 25 mm, so **no slider scenario is triggered** today. Each figure is the mean over the distinct Open-Meteo **model grid cells near the area**, not points inside it: 9 cells for Nyando (4 inside the box) and 6 for Nairobi (4 inside). The 3×3 requested points snap to those cells. Nairobi read 11.3 mm before duplicate cells were removed (Closes F9.6, 88c271a).
 - **GloFAS river flow:** the 30-day peak is 60.7 m³/s for Nyando (34th percentile) and 26.7 m³/s for Nairobi (93rd percentile), both against the 1997–2020 daily record. This is context only.
 
 ## Data sources and licences
@@ -80,7 +80,7 @@ checked against the provider's page today. Rows marked † are NOT verified.
 | WorldPop Kenya 2020 | population (exposure) | WorldPop, doi:10.5258/SOTON/WP00645; CC BY 4.0 |
 | Google Open Buildings v3 * | buildings (exposure) | CC BY 4.0 or ODbL v1.0, at the user's choice; cite Sirko et al. 2021, arXiv:2107.12283 (sites.research.google/gr/open-buildings) |
 | Open-Meteo forecast API * | forecast snapshot | CC BY 4.0, "Weather data by Open-Meteo.com" (open-meteo.com/en/licence) |
-| GloFAS v4 (via Open-Meteo flood API) † | river-flow context | Open-Meteo lists GloFAS under its **own** licence (a linked PDF, not read). The "CC BY 4.0" in forecast.json is NOT VERIFIED; to be corrected after landing |
+| GloFAS v4 (via Open-Meteo flood API) † | river-flow context | **CEMS-FLOODS datasets licence (rev. 1)**: Open-Meteo lists GloFAS under this separate licence (not its CC BY 4.0). Its terms were NOT read: the ECMWF hosts refused connections on 2026-11-07. Attribute as "Copernicus Emergency Management Service information". forecast.json now says the same (88c271a). |
 | ICPAC GHACOF74 statement † | official outlook | © ICPAC; reuse terms not checked. Cite the statement and URL |
 | UNOSAT 1 May 2024 Nairobi product | evidence for the Nairobi event dates | geo.btaa.org/catalog/70148c8d-4d8a-4e70-8c03-c9bb8370cfb7; terms not checked |
 
