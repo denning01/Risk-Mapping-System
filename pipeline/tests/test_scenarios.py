@@ -541,29 +541,47 @@ def test_write_graph_out_refused_inside_web_or_data_dir_and_without_routes(tmp_p
 def test_ripple_effects_counts_and_names_facilities_in_flood_and_roads_cut():
     """E-13: a facility is in flood when its shelter is not safe (its cell is wet); a market when its point's cell is
     wet (outside the raster = not in flood); only school/hospital/police shelters count (as school/health/police);
-    roads_cut is roads_cut()'s FULL list, not the app's top-N; no people-access field is written (HELD)."""
+    roads_cut is roads_cut()'s FULL list, not the app's top-N; no people-access field is written (HELD).
+    F16.2: the grid is 3 rows x 5 columns with the wet cell at (row 1, col 3), so a transposed lookup misses it;
+    names come in unsorted and must leave sorted; source is copied from exposure.json (a "mock" one here)."""
     crs = "EPSG:32737"
     tf = from_origin(250_000, 9_860_000, 30, 30)
-    wet = np.zeros((3, 3), bool); wet[1, 1] = True
+    wet = np.zeros((3, 5), bool); wet[1, 3] = True
     ll = Transformer.from_crs(crs, "EPSG:4326", always_xy=True).transform
     at = lambda x, y: list(ll(x, y))
     mk = lambda name, x, y: {"type": "Feature", "geometry": {"type": "Point", "coordinates": at(x, y)},
-                             "properties": {"kind": "amenity=marketplace", "name": name}}
-    markets = [mk("Wet market", 250_045, 9_859_955), mk("Dry market", 250_015, 9_859_985), mk(None, 250_045, 9_859_955),
-               mk("Off-grid market", 250_500, 9_859_500)]
+                             "properties": {"kind": "amenity=marketplace", "name": name, "marketplace": True}}
+    wx, wy = 250_000 + 3 * 30 + 15, 9_860_000 - 1 * 30 - 15            # centre of (row 1, col 3)
+    markets = [mk("Wet market", wx, wy), mk("Dry market", 250_000 + 1 * 30 + 15, 9_860_000 - 3 * 30 + 45),
+               mk(None, wx, wy), mk("Off-grid market", 250_500, 9_859_500), mk("Another wet market", wx + 5, wy)]
     sh = lambda n, t, safe: {"id": n, "name": n, "type": t, "safe": safe}
-    shelters = [sh("S1", "school", False), sh("S2", "school", True), sh("H1", "hospital", False), sh("P1", "police", True),
-                sh("C1", "church", False), sh("Hill", "high_ground", True)]
+    shelters = [sh("S9", "school", False), sh("S2", "school", True), sh("S1", "school", False), sh("H1", "hospital", False),
+                sh("P1", "police", True), sh("C1", "church", False), sh("Hill", "high_ground", True)]
     full_cut = [{"name": f"Road {i}", "rank": 0, "cut_m": 1.0} for i in range(12)]
-    r = scen.ripple_effects("50_normal", {"source": "model", "year": 2026}, shelters, markets, full_cut, wet, tf, crs)
+    r = scen.ripple_effects("50_normal", {"source": "mock", "year": 2026}, shelters, markets, full_cut, wet, tf, crs)
     f = r["facilities_in_flood"]
-    assert f["school"] == {"in_flood": 1, "total": 2, "names": ["S1"]}
+    assert f["school"] == {"in_flood": 2, "total": 3, "names": ["S1", "S9"]}
     assert f["health"] == {"in_flood": 1, "total": 1, "names": ["H1"]}
     assert f["police"] == {"in_flood": 0, "total": 1, "names": []}
-    assert f["market"] == {"in_flood": 2, "total": 4, "names": ["Market (unnamed in OpenStreetMap)", "Wet market"]}
+    assert f["market"] == {"in_flood": 3, "total": 5,
+                           "names": ["Another wet market", "Market (unnamed in OpenStreetMap)", "Wet market"]}
     assert set(f) == {"school", "health", "police", "market"}
     assert r["roads_cut"] == {"named": 12, "names": [f"Road {i}" for i in range(12)]}
-    assert set(r) == {"scenario", "source", "facilities_in_flood", "roads_cut"} and r["source"] == "model"
+    assert set(r) == {"scenario", "source", "facilities_in_flood", "roads_cut"} and r["source"] == "mock"
+
+
+def test_markets_in_bbox_selects_by_tag_and_refuses_a_stale_cache():
+    """F16.1: a market whose place_kind is place=informal is still a market; a non-market place is not; outside the
+    bbox is dropped; a cache without the tag field (written before F16.1) is refused, never silently under-counted."""
+    P = lambda osm, kind, mkt, lon: {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, -0.2]},
+                                     "properties": {"osm": osm, "kind": kind, "name": osm, "marketplace": mkt}}
+    bbox = [35.0, -0.3, 35.1, -0.1]
+    feats = [P("w1", "place=informal", True, 35.05), P("n2", "amenity=marketplace", True, 35.06),
+             P("n3", "place=suburb", False, 35.07), P("n4", "amenity=marketplace", True, 35.5)]
+    assert [f["properties"]["osm"] for f in scen.markets_in_bbox(feats, bbox)] == ["w1", "n2"]
+    del feats[2]["properties"]["marketplace"]
+    with pytest.raises(SystemExit, match="before F16.1"):
+        scen.markets_in_bbox(feats, bbox)
 
 
 def test_write_ripple_dir_refused_inside_web_or_data_dir_and_without_routes(tmp_path, monkeypatch, capsys):

@@ -224,6 +224,7 @@ def test_extract_places_on_handwritten_osm(tmp_path):
     body = [n(1, 35.005, -0.205, t("place", "village") + t("name", "In Village")),
             n(2, 35.50, -0.205, t("place", "village") + t("name", "Far Village")),          # outside bbox+buffer
             n(3, 35.025, -0.205, t("place", "hamlet") + t("name", "Buffer Hamlet")),        # in the 0.02 deg buffer
+            n(4, 35.004, -0.204, t("place", "informal") + t("amenity", "marketplace") + t("name", "Hazina-like")),
             n(10, 35.006, -0.207), n(11, 35.007, -0.207), n(12, 35.007, -0.206), n(13, 35.006, -0.206),
             n(20, 35.60, -0.207), n(21, 35.601, -0.207), n(22, 35.601, -0.206), n(23, 35.60, -0.206),
             sq(100, (10, 11, 12, 13, 10), t("landuse", "farmland")),
@@ -231,7 +232,10 @@ def test_extract_places_on_handwritten_osm(tmp_path):
     f = tmp_path / "p.osm"
     f.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n' + "\n".join(body) + "\n</osm>\n")
     got = {p["properties"]["osm"]: p for p in rt.extract_places(f, {"nyando": BBOX})["nyando"]}
-    assert sorted(got) == ["n1", "n3", "w100"]
+    assert sorted(got) == ["n1", "n3", "n4", "w100"]
+    # F16.1: a place=* that is also a market keeps its place kind AND carries the market tag; nothing else does
+    assert got["n4"]["properties"]["kind"] == "place=informal" and got["n4"]["properties"]["marketplace"] is True
+    assert [k for k, v in got.items() if v["properties"]["marketplace"]] == ["n4"]
     farm = got["w100"]["properties"]
     assert farm["kind"] == "landuse=farmland" and farm["name"] is None
     assert farm["area_km2"] == pytest.approx(0.0124, rel=0.02)                 # 0.001 deg x 0.001 deg at the equator

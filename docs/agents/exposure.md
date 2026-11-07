@@ -162,3 +162,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   to the graph's edge, rain-independent channel crossings and OSM's 15 clinics, not the flood. Take that to the
   operator with the numbers; do not tune it quietly. Held metrics leave NO code path and no files behind: the
   first run's outputs under $RMS_DATA were deleted, and the code was taken out, not just switched off.
+- 2026-11-07 (F16.1/F16.2) A cache that stores ONE "kind" per OSM object loses every other tag: select by the TAG
+  (osm_places now carries marketplace: bool), and make a reader refuse a cache that predates the field rather than
+  under-count. My second method reused the same cache, so it agreed with the bug; the auditor read the raw PBF. Make
+  toy grids non-square (rows != cols) so a transposed lookup fails, feed names unsorted, and use a "mock" source so a
+  hard-coded "model" fails.

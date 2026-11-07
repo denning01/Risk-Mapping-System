@@ -292,7 +292,9 @@ def extract_places(pbf: Path, areas: dict[str, list[float]]) -> dict:
             if bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]:
                 out[a].append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
                                "properties": {"osm": osm, "kind": kind, "name": tags.get("name"),
-                                              "area_km2": None if geom is None else round(_area_km2(geom), 4)}})
+                                              "area_km2": None if geom is None else round(_area_km2(geom), 4),
+                                              # F16.1: the TAG, whatever kind won (a place=* market is still a market)
+                                              "marketplace": tags.get("amenity") == "marketplace"}})
 
     for obj in osmium.FileProcessor(str(pbf)).with_locations().with_areas():
         if obj.is_way() or obj.is_relation() or not len(obj.tags):

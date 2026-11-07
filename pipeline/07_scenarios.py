@@ -387,12 +387,22 @@ def buildings_points_geojson(lon, lat, depth_m) -> dict:
         for x, y, v, k in zip(lon, lat, d, cls)]}
 
 
+def markets_in_bbox(place_feats: list[dict], bbox) -> list[dict]:
+    """osm_places features TAGGED amenity=marketplace, whatever kind won in place_kind (F16.1: a place=informal market
+    is still a market), inside the bbox. A cache written before F16.1 has no tag field: refuse, never under-count."""
+    if any("marketplace" not in f["properties"] for f in place_feats):
+        raise SystemExit("osm_places.geojson has no 'marketplace' tag field (written before F16.1): re-run "
+                         "06_routing.py places")
+    return [f for f in place_feats if f["properties"]["marketplace"]
+            and bbox[0] <= f["geometry"]["coordinates"][0] <= bbox[2] and bbox[1] <= f["geometry"]["coordinates"][1] <= bbox[3]]
+
+
 RIPPLE_TYPES = {"school": "school", "health": "hospital", "police": "police"}   # ripple name -> contract shelter type
 
 
 def ripple_effects(key, exposure, shelters, markets, full_cut, wet, tf, crs) -> dict:
     """E-13 per scenario (pending Person B's schema). shelters: the scenario's OSM shelters in the bbox after
-    shelters_safety (in flood = not safe = its 30 m cell is wet); markets: osm_places marketplace features in the bbox
+    shelters_safety (in flood = not safe = its 30 m cell is wet); markets: markets_in_bbox()
     (in flood = its point's cell is wet); full_cut: roads_cut()'s full list (named drive roads with a cut edge in the
     bbox). People losing access to health care is HELD (operator ruling 2026-11-07): not computed, not written."""
     from pyproj import Transformer
@@ -519,10 +529,8 @@ def cmd_write(args) -> int:
                   for f in json.loads((pdir / "osm_places.geojson").read_text())["features"]}
         with rasterio.open(depth_dir / f"{scenario_keys()[0]}_depth.tif") as ds:
             route_crs = ds.crs
-        markets = [f for f in json.loads((pdir / "osm_places.geojson").read_text())["features"]
-                   if f["properties"]["kind"] == "amenity=marketplace"
-                   and bbox[0] <= f["geometry"]["coordinates"][0] <= bbox[2]
-                   and bbox[1] <= f["geometry"]["coordinates"][1] <= bbox[3]]
+        markets = (markets_in_bbox(json.loads((pdir / "osm_places.geojson").read_text())["features"], bbox)
+                   if ripple_dir is not None else [])
         osm_raw = rms_data() / "raw" / "osm"
         W = rt.RoutingGraph(ox.load_graphml(pdir / "graph_walk.graphml"), route_crs,
                             rt.bridge_lines(osm_raw / f"{args.area}_walk.osm"))
