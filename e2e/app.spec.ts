@@ -92,6 +92,7 @@ for (const { area, rain, enso } of scenarios()) {
         for (const t of ["Go to:", "Relocate to high ground", "Commute to", "min on foot"]) await expect(safe).not.toContainText(t);
         continue;
       }
+      await expect(safe, `${o.id}: a routed origin must not show the no-route message`).not.toContainText("No safe route on foot.");
       expect(r.safe.geometry.type).toBe("LineString");
       expect(r.safe.geometry.coordinates.length, `${o.id} route has < 2 points`).toBeGreaterThanOrEqual(2);
       for (const line of routeLines(r)) await expect(safe, `${o.id} (${o.name})`).toContainText(line);
@@ -103,18 +104,24 @@ for (const { area, rain, enso } of scenarios()) {
   });
 }
 
-// Origin in flood (operator ruling (a)): no route is drawn, which the test above asserts. The app does not yet tell the
-// user why; Person B owns that message. test.fail() keeps this red-until-shipped visible without failing the suite;
-// when the message ships this test passes "unexpectedly", the suite goes red, and test.fail() must come off.
+// Origin in flood (operator ruling (a)): no route is drawn (asserted above). Person B shipped the message (origin/main
+// f0c5d32, panels.tsx SafePlacesPanel); E-15 turned the test.fail() tripwire into this exact-text assertion.
+const NO_ROUTE_TEXT = [
+  "No safe route on foot.",
+  "Move to an upper floor or high ground and call for help: Kenya Red Cross toll-free 1199.",
+  "This starting point is inside the flood extent in this scenario, so no route leaves it on dry ground.",
+];
 for (const { area, rain, enso } of scenarios()) {
   for (const o of readJson<Origin[]>(`${area.id}/origins.json`)) {
     if (!NO_ROUTE(area.id, rain, o.id)) continue;
-    test(`${area.id} ${rain}_${enso} ${o.id}: the no-route case tells the user to stay on high ground`, async ({ page, baseURL }) => {
-      test.fail(true, "Person B has not shipped the no-route message yet");
-      await watch(page, baseURL!);
+    test(`${area.id} ${rain}_${enso} ${o.id}: the no-route case shows the stay-on-high-ground message with 1199`, async ({ page, baseURL }) => {
+      const errors = await watch(page, baseURL!);
       await openScenario(page, area, rain, enso);
-      await card(page, safeCardTitle(area)).locator("select#origin").selectOption(o.id);
-      await expect(card(page, safeCardTitle(area))).toContainText(/cut off|stay (where you are|on high ground)|no safe route/i, { timeout: 3_000 });
+      const safe = card(page, safeCardTitle(area));
+      await safe.locator("select#origin").selectOption(o.id);
+      for (const t of NO_ROUTE_TEXT) await expect(safe).toContainText(t, { useInnerText: true });
+      await expect(safe.getByRole("link", { name: "1199" })).toHaveAttribute("href", "tel:1199");
+      expect(errors, errors.join("\n")).toEqual([]);
     });
   }
 }

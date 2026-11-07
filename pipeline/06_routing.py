@@ -139,7 +139,8 @@ def shelter_type(tags: dict) -> str | None:
 # HUMAN DECISION 2026-11-06 (via operator): place_of_worship = YES and police = YES as shelter types — a contract change
 # Person B makes in schema.ts. Until that schema is on `data`, only the current enum may be emitted (validate:data).
 # Flip SCHEMA_HAS_WORSHIP_POLICE to True in the commit that follows the schema landing.
-SCHEMA_HAS_WORSHIP_POLICE = False
+# FLIPPED 2026-11-07 (E-15, ROUND 13): Person B's schema.ts SHELTER_TYPES (origin/main f0c5d32) has both types.
+SCHEMA_HAS_WORSHIP_POLICE = True
 CONTRACT_TYPES_NOW = {"school", "church", "hospital", "community_hall", "high_ground"}
 CONTRACT_TYPES_NEXT = CONTRACT_TYPES_NOW | {"place_of_worship", "police"}
 _CHURCH_WORDS = ("church", "kanisa", "cathedral", "parish", "chapel", "sda", "adventist", "catholic", "anglican",
@@ -862,7 +863,7 @@ def leg(RG: RoutingGraph, o: tuple[float, float], d: tuple[float, float], cut: n
 
 
 def shelters_from_osm(area_prefix: str, feats: list[dict], bbox) -> list[dict]:
-    """Contract shelters (current enum, contract_type) from shelter_candidates.geojson, inside the bbox."""
+    """Contract shelters (contract_type, SCHEMA_HAS_WORSHIP_POLICE) from shelter_candidates.geojson, inside the bbox."""
     out = []
     for f in feats:
         p = f["properties"]
@@ -871,7 +872,7 @@ def shelters_from_osm(area_prefix: str, feats: list[dict], bbox) -> list[dict]:
         if t is None or not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
             continue
         label = {"school": "School", "hospital": "Health facility", "community_hall": "Community hall",
-                 "church": "Church"}[t]
+                 "church": "Church", "place_of_worship": "Place of worship", "police": "Police station"}[t]
         out.append({"id": f"{area_prefix}-{p['osm']}", "name": p.get("name") or f"{label} (unnamed in OpenStreetMap)",
                     "type": t, "lon": round(lon, 5), "lat": round(lat, 5), "capacity": None, "safe": True})
     return out

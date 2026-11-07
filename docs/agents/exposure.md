@@ -140,3 +140,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   writes loader chunks to <new root>/<old relative path>/.next (a root .next/ at 11:45, then web/web/.next after the move
   back). Tooling for the app goes in a SIBLING dir (e2e/package.json). My "cause unknown" was a finding I should have chased:
   grep the build output for warnings before calling a stray directory unexplained.
+- 2026-11-07 (E-15) A feature flag guards code that has never run. Flipping SCHEMA_HAS_WORSHIP_POLICE crashed
+  shelters_from_osm with KeyError: its label map had no place_of_worship/police, because the old test pinned the "off"
+  path. When you add a flag, test BOTH values end to end at once (call schema_next=True through every caller), not
+  just the classifier. Tie an enum to the app's source with a test (CONTRACT_TYPES_NEXT == schema.ts SHELTER_TYPES).
+  Merge with OURS on data, then diff the result against the previous tip before regenerating: here only forecast.json
+  (model's) came in, so every later data change is the writer's and can be explained one by one.
