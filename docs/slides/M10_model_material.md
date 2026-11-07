@@ -59,7 +59,7 @@ Flooded area, Nyando (calibrated k), km² inside the ruled box [34.80, −0.45, 
 Label: "official outlook / forecast snapshot". Never "our forecast".
 
 - **ICPAC GHACOF74, OND 2026:** probability of above-normal rain is **70–80 %** for Nyando and **80–90 %** for Nairobi. These were read from the official map (Figure 1) against its own legend; ICPAC publishes no gridded file. The statement says El Niño conditions are established.
-- **Open-Meteo 16-day forecast:** the wettest day is 19.4 mm (Nyando) and 11.3 mm (Nairobi). Both are below 25 mm, so **no slider scenario is triggered** today.
+- **Open-Meteo 16-day forecast:** the wettest day is 19.4 mm (Nyando) and 11.3 mm (Nairobi). Both are below 25 mm, so **no slider scenario is triggered** today. The average is over Open-Meteo **model grid cells near the area**, not points inside it. The 3×3 requested points snap to 9 distinct cells for Nyando (4 inside the box) and only **6 distinct cells for Nairobi** (4 inside; 3 counted twice). De-duplicated, Nairobi reads 93.7 mm over 16 days and 11.9 mm on the wettest day (vs 92.7 / 11.3), still below 25 mm, so still no scenario (auditor F9.6).
 - **GloFAS river flow:** the 30-day peak is 60.7 m³/s for Nyando (34th percentile) and 26.7 m³/s for Nairobi (93rd percentile), both against the 1997–2020 daily record. This is context only.
 
 ## Data sources and licences
