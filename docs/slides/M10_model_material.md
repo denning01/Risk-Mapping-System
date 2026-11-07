@@ -43,12 +43,12 @@ Flooded area, Nyando (calibrated k), km² inside the ruled box [34.80, −0.45, 
 - Nairobi (k transferred, **uncalibrated**): 5.98 km² flooded at 150 mm normal, out of a 189.6 km² AOI.
 - Pitch numbers at 100 mm, normal (sent to the operator 2026-11-06):
 
-  | | mean runoff Q | flooded share of AOI |
+  | | mean runoff Q (AOI, water excluded) | flooded share of AOI |
   |---|---|---|
   | Nyando | 50.5 mm | 3.72 % |
   | Nairobi | 70.7 mm | 2.92 % |
 
-  Nairobi has about 40 % more runoff (70.7 / 50.5 = 1.40) but a smaller flooded share. Why has NOT been analysed; do not give a cause on the slide.
+  Nairobi has about 40 % more runoff (70.7 / 50.5 = 1.40) but a smaller flooded share. Why has NOT been analysed; do not give a cause on the slide. (The demo-script wording adopted 2026-11-06 cites narrow valleys and catchment size, 411 vs 3,422 km²; those sizes are true, but the causal link was not tested.)
 - El Niño multiplier: CHIRPS OND 2023 total divided by the OND 1991–2020 mean, over each area box.
   - Nyando: 549.4 / 387.1 mm = **1.419**; OND 2023 was the 6th wettest of 33 years (1991–2023).
   - Nairobi: 329.7 / 286.8 mm = **1.150**; 10th of 33.
@@ -96,8 +96,8 @@ checked against the provider's page today. Rows marked † are NOT verified.
    About 44 % of Nairobi's flooded area at 150 mm is the channels themselves (2.62 of 5.98 km²), and extent moves only
    from 4.76 to 6.63 km² between 50 and 250 mm. It is a river-corridor map, not a city-wide pluvial map: there is no
    drainage model (F8.4).
-3. **Surface DEM in Nyando.** GLO-30 is a surface model. On Ahero's buildings it reads 0.8–1.8 m above bare earth (FABDEM; median–90th percentile over 441 building cells), so HAND there is overstated, and flood depth understated, by about 1–2 m. Nairobi uses bare-earth FABDEM.
-   - Do NOT say "rooftops read as 12–14 m HAND": building cells have median HAND 8.0 m, and that height is mostly above the nearest drainage, not the roofs.
+3. **Surface DEM in Nyando.** GLO-30 is a surface model. On Ahero's buildings it reads 0.8–1.8 m above bare earth (FABDEM; median–90th percentile over 476 OSM-building pixels on the 1″ DEM grid around Ahero), so HAND there is overstated, and flood depth understated, by about 1–2 m. Nairobi uses bare-earth FABDEM.
+   - Do NOT say "rooftops read as 12–14 m HAND": the 453 building cells (30 m) have median HAND 8.1 m (90th percentile 12.1 m), and that height is mostly above the nearest drainage, not the roofs.
 4. **No river hydraulics.** The stage rule is h = k·V^0.4. Closed depressions have HAND 0 and flood in every scenario, with depth h, not pond depth.
 5. **Soil gaps.** Under 55 % of the Nairobi AOI, SoilGrids has no texture; those cells take the nearest soil value. Nyando: 1.8 % of cells have no CN and get no runoff.
 6. **The El Niño scenario is one season's ratio** (OND 2023 vs 1991–2020), applied uniformly. It is not an ENSO forecast.
