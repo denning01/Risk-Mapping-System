@@ -139,7 +139,8 @@ def shelter_type(tags: dict) -> str | None:
 # HUMAN DECISION 2026-11-06 (via operator): place_of_worship = YES and police = YES as shelter types — a contract change
 # Person B makes in schema.ts. Until that schema is on `data`, only the current enum may be emitted (validate:data).
 # Flip SCHEMA_HAS_WORSHIP_POLICE to True in the commit that follows the schema landing.
-SCHEMA_HAS_WORSHIP_POLICE = False
+# FLIPPED 2026-11-07 (E-15, ROUND 13): Person B's schema.ts SHELTER_TYPES (origin/main f0c5d32) has both types.
+SCHEMA_HAS_WORSHIP_POLICE = True
 CONTRACT_TYPES_NOW = {"school", "church", "hospital", "community_hall", "high_ground"}
 CONTRACT_TYPES_NEXT = CONTRACT_TYPES_NOW | {"place_of_worship", "police"}
 _CHURCH_WORDS = ("church", "kanisa", "cathedral", "parish", "chapel", "sda", "adventist", "catholic", "anglican",
@@ -157,15 +158,17 @@ def is_christian(props: dict) -> bool:
 def contract_type(props: dict, schema_next: bool | None = None) -> str | None:
     """Contract shelter type for a cached shelter candidate (its osm_tag, religion and name), or None = not emitted.
     Before the schema change: worship places are emitted as "church" ONLY if Christian (a mosque or temple is never
-    called a church); other worship places and police are held back. After it: every worship place is
-    "place_of_worship" (the real name is kept), police stations are "police"."""
+    called a church); other worship places and police are held back. After it (operator ruling 2026-11-07, following
+    DATA_CONTRACT.md:63 "church stays for places tagged as such"): religion=christian -> "church"; any other religion
+    or NO religion tag -> "place_of_worship" (the name heuristic is not used: only the tag says church). Police
+    stations are "police". The real name is kept."""
     nxt = SCHEMA_HAS_WORSHIP_POLICE if schema_next is None else schema_next
     tag = props.get("osm_tag")
     if tag == "amenity=place_of_worship":
         if not (props.get("name") or "").strip():
             return None          # operator ruling 2026-11-06: unnamed worship places are held back (no real name to keep)
         if nxt:
-            return "place_of_worship"
+            return "church" if props.get("religion") == "christian" else "place_of_worship"
         return "church" if is_christian(props) else None
     if tag == "amenity=police":
         return "police" if nxt else None
@@ -320,10 +323,22 @@ def _area_km2(geom) -> float:
     return abs(Geod(ellps="WGS84").geometry_area_perimeter(geom)[0]) / 1e6
 
 
+def _contract_props(s: dict) -> dict:
+    """The candidate's properties as contract_type reads them (osm_tag, name, religion), from its OSM tags."""
+    t = s.get("tags", {})
+    tag = next((f"{k}={v}" for (k, v) in SHELTER_TAGS if t.get(k) == v), None)
+    return {"osm_tag": tag, "name": t.get("name"), "religion": t.get("religion")}
+
+
 def dedupe_shelters(sh: list[dict]) -> tuple[list[dict], int]:
-    """Drop a node shelter that lies inside an area shelter of the same type (same facility mapped twice)."""
+    """Drop a node shelter that lies inside an area shelter of the same facility (mapped twice). F13.1: the area
+    absorbs the node ONLY if both have the same CONTRACT type (contract_type with the schema change on). An unnamed
+    worship area's contract type is None (held back), so it can never swallow the named church node inside it (3 Nairobi
+    churches were lost that way); a church node inside a mosque area is a different contract type."""
     from shapely.geometry import Point
     from shapely.strtree import STRtree
+    def ctype(s):
+        return contract_type(_contract_props(s), schema_next=True) if "tags" in s else s["type"]
     areas = [s for s in sh if "geom" in s]
     if not areas:
         return sh, 0
@@ -332,7 +347,7 @@ def dedupe_shelters(sh: list[dict]) -> tuple[list[dict], int]:
     for s in sh:
         if "geom" not in s:
             hits = tree.query(Point(s["lon"], s["lat"]), predicate="within")
-            if any(areas[i]["type"] == s["type"] for i in hits):
+            if any(areas[i]["type"] == s["type"] and ctype(areas[i]) == ctype(s) for i in hits):
                 dropped += 1
                 continue
         keep.append(s)
@@ -445,7 +460,9 @@ def cmd_prepare(args) -> int:
                         "untagged edges capped at 50 km/h (Cap 403 s.42(3)); tagged edges use OSM maxspeed",
                     ],
                     "graphs": {}}
-        for nt in ("drive", "walk"):
+        if args.shelters_only:   # F13.1: re-derive the shelter cache only; graphs, XML and their manifest stay as they are
+            manifest = json.loads((outd / "osm_manifest.json").read_text())
+        for nt in (() if args.shelters_only else ("drive", "walk")):
             nodes, ways = ex[a][nt]
             xml = rms_data() / "raw" / "osm" / f"{a}_{nt}.osm"
             write_osm_xml(xml, nodes, ways)
@@ -862,7 +879,7 @@ def leg(RG: RoutingGraph, o: tuple[float, float], d: tuple[float, float], cut: n
 
 
 def shelters_from_osm(area_prefix: str, feats: list[dict], bbox) -> list[dict]:
-    """Contract shelters (current enum, contract_type) from shelter_candidates.geojson, inside the bbox."""
+    """Contract shelters (contract_type, SCHEMA_HAS_WORSHIP_POLICE) from shelter_candidates.geojson, inside the bbox."""
     out = []
     for f in feats:
         p = f["properties"]
@@ -871,7 +888,7 @@ def shelters_from_osm(area_prefix: str, feats: list[dict], bbox) -> list[dict]:
         if t is None or not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
             continue
         label = {"school": "School", "hospital": "Health facility", "community_hall": "Community hall",
-                 "church": "Church"}[t]
+                 "church": "Church", "place_of_worship": "Place of worship", "police": "Police station"}[t]
         out.append({"id": f"{area_prefix}-{p['osm']}", "name": p.get("name") or f"{label} (unnamed in OpenStreetMap)",
                     "type": t, "lon": round(lon, 5), "lat": round(lat, 5), "capacity": None, "safe": True})
     return out
@@ -1070,6 +1087,8 @@ def main(argv=None) -> int:
     s = sub.add_parser("prepare")
     s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
     s.add_argument("--pbf", default=None)
+    s.add_argument("--shelters-only", action="store_true",
+                   help="rewrite only shelter_candidates.geojson and the manifest's shelter keys (graphs and XML untouched)")
     s.set_defaults(fn=cmd_prepare)
     s = sub.add_parser("places", help="cache named OSM places per area (origin checks, E-03)")
     s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])

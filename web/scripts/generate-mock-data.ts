@@ -120,6 +120,8 @@ const NAIROBI: AreaConfig = {
     { id: "nbi-s5", name: "Secondary school, Kibera (mock)", type: "school", lon: 36.79, lat: -1.3, capacity: 900 },
     { id: "nbi-s6", name: "Church, South B (mock)", type: "church", lon: 36.84, lat: -1.318, capacity: 350 },
     { id: "nbi-s7", name: "High ground, City Park (mock)", type: "high_ground", lon: 36.817, lat: -1.262, capacity: null },
+    { id: "nbi-s8", name: "Mosque, Eastleigh (mock)", type: "place_of_worship", lon: 36.848, lat: -1.276, capacity: 400 },
+    { id: "nbi-s9", name: "Police station, Pangani (mock)", type: "police", lon: 36.838, lat: -1.264, capacity: null },
   ],
   origins: [
     { id: "nbi-o1", name: "Mathare", lon: 36.858, lat: -1.258, user_type: "informal_settlement_resident" },
@@ -195,6 +197,8 @@ const NYANDO: AreaConfig = {
     { id: "nya-s5", name: "High ground: northern ridge (mock)", type: "high_ground", lon: 34.93, lat: -0.05, capacity: null },
     { id: "nya-s6", name: "High ground: southern plateau (mock)", type: "high_ground", lon: 34.98, lat: -0.36, capacity: null },
     { id: "nya-s7", name: "High ground: eastern hills (mock)", type: "high_ground", lon: 35.2, lat: -0.05, capacity: null },
+    { id: "nya-s8", name: "Mosque, Ahero (mock)", type: "place_of_worship", lon: 34.925, lat: -0.182, capacity: 200 },
+    { id: "nya-s9", name: "Police station, Awasi (mock)", type: "police", lon: 35.072, lat: -0.157, capacity: null },
   ],
   origins: [
     { id: "nya-o1", name: "Ahero town", lon: 34.919, lat: -0.173, user_type: "settler" },
@@ -308,6 +312,26 @@ function shelterPath(from: LL, to: LL): LL[] {
   return [from, [round(mid[0]), round(mid[1])], to];
 }
 
+/**
+ * MOCK forecast snapshot. The ICPAC band and the 16-day wettest-day figure are
+ * the real values Person A quoted on 2026-11-07, but the URLs are left empty
+ * until their pipeline supplies the real links, and the banner hides any link
+ * it has no URL for. Person A's real forecast.json overwrites this file.
+ */
+function mockForecast(id: AreaId) {
+  const perArea = {
+    nairobi: { above: [80, 90] as [number, number], wettest: 11.3 },
+    nyando: { above: [70, 80] as [number, number], wettest: 27.8 },
+  }[id];
+  return {
+    as_of: new Date().toISOString(),
+    icpac: { season: "OND 2026", statement: "GHACOF74", url: "", above_normal_pct: perArea.above },
+    short_range: { source: "Open-Meteo / GloFAS", wettest_day_mm: perArea.wettest, river_discharge_m3s: null, url: "" },
+    // Both areas' wettest forecast day is below the lowest 50 mm scenario.
+    suggested_scenario: null,
+  };
+}
+
 function generateArea(cfg: AreaConfig) {
   const rivers = riverInfo(cfg);
   const [w, s, e, n] = cfg.area.bbox;
@@ -325,6 +349,7 @@ function generateArea(cfg: AreaConfig) {
 
   const id = cfg.area.id;
   writeJson(`${id}/origins.json`, cfg.origins);
+  writeJson(`${id}/forecast.json`, mockForecast(id));
 
   const summary: string[] = [];
 
@@ -387,7 +412,10 @@ function generateArea(cfg: AreaConfig) {
       writeJson(`${id}/scenarios/${key}.shelters.json`, shelters);
 
       // --- routes ---
-      const routes: Route[] = cfg.origins.map((o) => {
+      // flatMap, not map: the contract allows an origin with no route (one that
+      // stands inside the flood). The mock's hand-entered coordinates are too
+      // rough to decide that, so it emits one for every origin.
+      const routes: Route[] = cfg.origins.flatMap((o): Route[] => {
         const plan = cfg.plans[o.id];
         const from: LL = [o.lon, o.lat];
         if (plan.kind === "commute") {
@@ -406,7 +434,7 @@ function generateArea(cfg: AreaConfig) {
                 .filter((r) => r.coords.some((p) => turf.pointToLineDistance(turf.point(p), baseLine, { units: "kilometers" }) < 0.3))
                 .map((r) => r.name)
             : [];
-          return {
+          return [{
             origin_id: o.id,
             kind: "commute",
             shelter_id: null,
@@ -418,7 +446,7 @@ function generateArea(cfg: AreaConfig) {
               minutes: baseBlocked ? Math.round((lineKm(safeCoords) / 14) * 60) : baseMin,
             },
             avoided: baseBlocked && avoided.length === 0 ? ["Flooded section of the usual route"] : avoided,
-          };
+          }];
         }
         // to_shelter / relocation: nearest safe shelter of the right type whose path is not blocked
         const pool = shelters.filter((sh) => sh.safe && (plan.kind === "relocation" ? sh.type === "high_ground" : true));
@@ -435,7 +463,7 @@ function generateArea(cfg: AreaConfig) {
           .filter((r) => roadsCut.includes(r.name))
           .filter((r) => turf.pointToLineDistance(turf.point(from), turf.lineString(r.coords), { units: "kilometers" }) < 1.5)
           .map((r) => r.name);
-        return {
+        return [{
           origin_id: o.id,
           kind: plan.kind,
           shelter_id: target.id,
@@ -443,12 +471,12 @@ function generateArea(cfg: AreaConfig) {
           baseline: null,
           safe: { geometry: { type: "LineString", coordinates: coords }, minutes: Math.round((lineKm(coords) / speedKmh) * 60) },
           avoided,
-        };
+        }];
       });
       writeJson(`${id}/scenarios/${key}.routes.json`, routes);
 
       summary.push(
-        `${id.padEnd(8)} ${key.padEnd(11)} area=${String(exposure.flooded_area_km2).padStart(6)} km²  people=${String(medium).padStart(7)}  roads_cut=${roadsCut.length}  safe_shelters=${shelters.filter((x) => x.safe).length}/${shelters.length}`,
+        `${id.padEnd(8)} ${key.padEnd(11)} area=${String(exposure.flooded_area_km2).padStart(6)} km²  people=${String(medium).padStart(7)}  roads_cut=${roadsCut.length}  safe_shelters=${shelters.filter((x) => x.safe).length}/${shelters.length}  routes=${routes.length}/${cfg.origins.length}`,
       );
     }
   }

@@ -4,6 +4,7 @@ import type {
   CropRuleSchema,
   ExposureSchema,
   FloodCollectionSchema,
+  ForecastSchema,
   FloodFeatureSchema,
   MetaSchema,
   OriginSchema,
@@ -31,6 +32,7 @@ export type Route = z.infer<typeof RouteSchema>;
 export type CropRule = z.infer<typeof CropRuleSchema>;
 export type Meta = z.infer<typeof MetaSchema>;
 export type Population = z.infer<typeof PopulationSchema>;
+export type Forecast = z.infer<typeof ForecastSchema>;
 
 export interface Scenario {
   flood: FloodCollection;
@@ -38,6 +40,17 @@ export interface Scenario {
   shelters: Shelter[];
   routes: Route[];
 }
+
+/** Human labels for shelter types; `replace("_", " ")` only swaps the first underscore. */
+export const SHELTER_TYPE_LABELS: Record<Shelter["type"], string> = {
+  school: "School",
+  church: "Church",
+  place_of_worship: "Place of worship",
+  hospital: "Hospital",
+  community_hall: "Community hall",
+  police: "Police station",
+  high_ground: "High ground",
+};
 
 export const RISK_COLORS: Record<Risk, string> = {
   low: "#facc15",

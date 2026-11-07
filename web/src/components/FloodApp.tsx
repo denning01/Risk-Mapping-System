@@ -3,10 +3,20 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RAIN_VALUES } from "@/lib/schema";
-import { loadAreas, loadCrops, loadMeta, loadOrigins, loadPopulation, loadScenario, preloadArea } from "@/lib/data";
+import { loadAreas, loadCrops, loadForecast, loadMeta, loadOrigins, loadPopulation, loadScenario, preloadArea } from "@/lib/data";
 import { riskNear } from "@/lib/geo";
-import type { Area, AreaId, CropRule, Enso, Meta, Origin, Population, Rain, Scenario } from "@/lib/types";
-import { AdvisoryPanel, AlertPreview, ExposurePanel, Legend, LimitationsContent, RoadsPanel, SafePlacesPanel, ScenarioControls } from "./panels";
+import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Scenario } from "@/lib/types";
+import {
+  AdvisoryPanel,
+  AlertPreview,
+  ExposurePanel,
+  ForecastBanner,
+  Legend,
+  LimitationsContent,
+  RoadsPanel,
+  SafePlacesPanel,
+  ScenarioControls,
+} from "./panels";
 import { Badge, Card, Modal } from "./ui";
 import type { Report } from "./FloodMap";
 
@@ -42,6 +52,9 @@ export default function FloodApp() {
   const [scenario, setScenario] = useState<Scenario | null>(null);
   const [origins, setOrigins] = useState<Origin[]>([]);
   const [population, setPopulation] = useState<Population | null>(null);
+  // Tagged with the area it belongs to, so switching area never paints Nyando's
+  // outlook over Nairobi for the frame before the new file resolves.
+  const [forecast, setForecast] = useState<{ area: AreaId; data: Forecast | null } | null>(null);
   const [originId, setOriginId] = useState<string | null>(null);
   const [userType, setUserType] = useState<string>("settler");
   const [animating, setAnimating] = useState(false);
@@ -79,6 +92,7 @@ export default function FloodApp() {
       .then((o) => alive && setOrigins(o))
       .catch((e: Error) => alive && setError(e.message));
     loadPopulation(areaId).then((p) => alive && setPopulation(p));
+    loadForecast(areaId).then((f) => alive && setForecast({ area: areaId, data: f }));
     return () => {
       alive = false;
     };
@@ -316,6 +330,14 @@ export default function FloodApp() {
                     ))}
                   </div>
                 )}
+                <ForecastBanner
+                  forecast={forecast?.area === areaId ? forecast.data : null}
+                  onUseScenario={(r, e) => {
+                    setAnimating(false);
+                    setRain(r);
+                    setEnso(e);
+                  }}
+                />
                 <ScenarioControls
                   rain={rain}
                   enso={enso}
@@ -363,7 +385,7 @@ export default function FloodApp() {
       </div>
 
       <Modal open={aboutOpen} onClose={() => setAboutOpen(false)} title="About this prototype">
-        <LimitationsContent />
+        <LimitationsContent meta={meta} />
       </Modal>
     </div>
   );

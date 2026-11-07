@@ -318,11 +318,14 @@ def test_osm_points_fixture_equals_the_places_cache_when_present():
 
 
 # ---- shelter contract types: human decision (worship + police YES), gated on Person B's schema change ----
+# After the change (ROUND 13 ruling, DATA_CONTRACT.md:63): ONLY the tag religion=christian makes "church".
 @pytest.mark.parametrize("props,now,nxt", [
-    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "St Paul"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "St Paul"}, "church", "church"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "muslim", "name": "Jamia Mosque"}, None, "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "hindu", "name": "Shree Temple"}, None, "place_of_worship"),
-    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),   # name says church, no tag
+    ({"osm_tag": "amenity=place_of_worship", "name": "St Mary Cathedral"}, "church", "place_of_worship"),  # key absent
+    ({"osm_tag": "amenity=place_of_worship", "religion": "Christian", "name": "X"}, None, "place_of_worship"),  # OSM values are lowercase
     ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Masjid Noor"}, None, "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": None}, None, None),   # unnamed: held back
     ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "  "}, None, None),
@@ -340,9 +343,16 @@ def test_contract_type_before_and_after_the_schema_change(props, now, nxt):
     assert nxt is None or nxt in rt.CONTRACT_TYPES_NEXT
 
 
-def test_default_emits_only_the_current_enum():
-    assert rt.SCHEMA_HAS_WORSHIP_POLICE is False     # flipped only after Person B's schema is on data
-    assert rt.contract_type({"osm_tag": "amenity=police"}) is None
+def test_default_emits_the_new_enum_and_it_is_exactly_the_apps_shelter_types():
+    """E-15: flipped once Person B's schema (SHELTER_TYPES in web/src/lib/schema.ts, read only) has the two new types.
+    The set we may emit must equal the app's enum, so neither side can drift without this test going red."""
+    import re
+    assert rt.SCHEMA_HAS_WORSHIP_POLICE is True
+    assert rt.contract_type({"osm_tag": "amenity=police"}) == "police"
+    assert rt.contract_type({"osm_tag": "amenity=place_of_worship", "name": "Jamia Mosque", "religion": "muslim"}) == "place_of_worship"
+    src = (Path(__file__).resolve().parents[2] / "web" / "src" / "lib" / "schema.ts").read_text()
+    block = re.search(r"SHELTER_TYPES = \[(.*?)\] as const", src, re.S).group(1)
+    assert set(re.findall(r'"([a-z_]+)"', block)) == rt.CONTRACT_TYPES_NEXT
 
 
 # ---------------------------------------------------------------------------------------------
@@ -514,15 +524,20 @@ def test_roads_cut_orders_main_classes_first_and_keeps_only_named_in_bbox():
     assert rt.roads_cut(D, cut, [0, 0, 1, 1])[0] == []        # nothing in this bbox
 
 
-def test_shelters_from_osm_uses_the_current_enum_and_labels_unnamed():
-    feats = [{"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n1", "osm_tag": "amenity=school", "name": None}},
-             {"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n2", "osm_tag": "amenity=place_of_worship",
-                                                                       "name": "Masjid", "religion": "muslim"}},
-             {"geometry": {"coordinates": [35.0, -0.2]}, "properties": {"osm": "n3", "osm_tag": "amenity=police", "name": "Police"}},
+def test_shelters_from_osm_emits_the_new_enum_and_labels_unnamed():
+    """E-15: with SCHEMA_HAS_WORSHIP_POLICE a mosque is place_of_worship, police stations are police, and an
+    UNNAMED police station gets a label (it raised KeyError before the label map had the new types)."""
+    g = {"coordinates": [35.0, -0.2]}
+    feats = [{"geometry": g, "properties": {"osm": "n1", "osm_tag": "amenity=school", "name": None}},
+             {"geometry": g, "properties": {"osm": "n2", "osm_tag": "amenity=place_of_worship", "name": "Masjid", "religion": "muslim"}},
+             {"geometry": g, "properties": {"osm": "n3", "osm_tag": "amenity=police", "name": "Police"}},
+             {"geometry": g, "properties": {"osm": "n5", "osm_tag": "amenity=police", "name": None}},
+             {"geometry": g, "properties": {"osm": "n6", "osm_tag": "amenity=place_of_worship", "name": None}},   # held back
              {"geometry": {"coordinates": [36.0, -0.2]}, "properties": {"osm": "n4", "osm_tag": "amenity=school", "name": "Out"}}]
     out = rt.shelters_from_osm("x", feats, [34.9, -0.3, 35.1, -0.1])
-    assert out == [{"id": "x-n1", "name": "School (unnamed in OpenStreetMap)", "type": "school", "lon": 35.0,
-                    "lat": -0.2, "capacity": None, "safe": True}]
+    row = lambda i, name, t: {"id": i, "name": name, "type": t, "lon": 35.0, "lat": -0.2, "capacity": None, "safe": True}
+    assert out == [row("x-n1", "School (unnamed in OpenStreetMap)", "school"), row("x-n2", "Masjid", "place_of_worship"),
+                   row("x-n3", "Police", "police"), row("x-n5", "Police station (unnamed in OpenStreetMap)", "police")]
 
 
 def test_a_bridge_way_is_not_cut_but_its_flooded_approach_on_the_same_edge_is(tmp_path):
@@ -806,3 +821,21 @@ def test_cut_is_right_on_two_different_grids_with_one_graph():
     r, c = rowcol(tc, _X0 + 150, _Y0 - _SP)
     wc[int(r), int(c)] = True
     assert edges(RG.cut(wc, tc)) == {frozenset((10, 11))}
+
+
+def test_dedupe_keeps_a_named_church_inside_an_area_that_will_not_be_emitted():
+    """F13.1: the named node survives inside an UNNAMED worship area (held back by contract_type) and inside a worship
+    area of another contract type (a mosque); it is dropped inside a NAMED area of the same contract type."""
+    from shapely.geometry import box
+    g = box(35.0, -0.201, 35.001, -0.2)
+    def area(osm, **tags):
+        return {"osm": osm, "type": "church", "lon": 35.0005, "lat": -0.2005, "geom": g,
+                "tags": {"amenity": "place_of_worship", **tags}}
+    node = {"osm": "n1", "type": "church", "lon": 35.0002, "lat": -0.2002,
+            "tags": {"amenity": "place_of_worship", "name": "Mariakani Christian Centre", "religion": "christian"}}
+    for a, kept in [(area("w1"), True),                                                   # unnamed area: node kept
+                    (area("w2", name="  "), True),                                        # blank name = unnamed
+                    (area("w3", name="Jamia Mosque", religion="muslim"), True),           # other contract type
+                    (area("w4", name="St Paul", religion="christian"), False)]:           # same facility: dropped
+        keep, dropped = rt.dedupe_shelters([a, node])
+        assert ("n1" in [s["osm"] for s in keep]) is kept and dropped == (0 if kept else 1), a["osm"]

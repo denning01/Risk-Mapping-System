@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl, { type GeoJSONSource, type Map as MLMap, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection } from "geojson";
-import type { Area, Origin, Route, Scenario } from "@/lib/types";
-import { RISK_COLORS } from "@/lib/types";
+import type { Area, Origin, Route, Scenario, Shelter } from "@/lib/types";
+import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
 
 const VECTOR_STYLE = "https://tiles.openfreemap.org/styles/liberty";
 const RASTER_STYLE: StyleSpecification = {
@@ -138,12 +138,13 @@ export default function FloodMap(props: Props) {
       if (propsRef.current.reportMode) return;
       const f = e.features?.[0];
       if (!f) return;
-      const p = f.properties as { name: string; type: string; safe: boolean | string; capacity: number | string | null };
+      const p = f.properties as { name: string; type: Shelter["type"]; safe: boolean | string; capacity: number | string | null };
       const safe = p.safe === true || p.safe === "true";
+      const typeLabel = SHELTER_TYPE_LABELS[p.type] ?? p.type.replaceAll("_", " ");
       new maplibregl.Popup({ maxWidth: "240px" })
         .setLngLat(e.lngLat)
         .setHTML(
-          `<div style="font:13px system-ui"><b>${p.name}</b><br/>${p.type.replace("_", " ")}${p.capacity && p.capacity !== "null" ? ` · capacity ${p.capacity}` : ""}<br/><b style="color:${safe ? "#15803d" : "#6b7280"}">${safe ? "Safe in this scenario" : "Flooded in this scenario"}</b></div>`,
+          `<div style="font:13px system-ui"><b>${p.name}</b><br/>${typeLabel}${p.capacity && p.capacity !== "null" ? ` · capacity ${p.capacity}` : ""}<br/><b style="color:${safe ? "#15803d" : "#6b7280"}">${safe ? "Safe in this scenario" : "Flooded in this scenario"}</b></div>`,
         )
         .addTo(map);
     });

@@ -18,11 +18,12 @@ web/public/data/
   meta.json
   advice/crops.json
   {area}/origins.json
+  {area}/forecast.json                         # optional: official outlook snapshot
   {area}/population.json                       # written by Person B (npm run population)
   {area}/scenarios/{rain}_{enso}.geojson       # flood polygons
   {area}/scenarios/{rain}_{enso}.exposure.json # people & buildings at risk
   {area}/scenarios/{rain}_{enso}.shelters.json # safe places
-  {area}/scenarios/{rain}_{enso}.routes.json   # one route per origin
+  {area}/scenarios/{rain}_{enso}.routes.json   # one route per routable origin
 ```
 
 - `area`: `nairobi` | `nyando`
@@ -59,7 +60,7 @@ Set `source` to `"model"` for real output (`"mock"` shows a Mock badge).
 ```json
 [{"id":"s1","name":"Example Primary School","type":"school","lon":35.0,"lat":-0.2,"capacity":null,"safe":true}]
 ```
-`type`: `school` | `church` | `hospital` | `community_hall` | `high_ground`. `safe` is false when the shelter is inside the flood extent for that scenario.
+`type`: `school` | `church` | `place_of_worship` | `hospital` | `community_hall` | `police` | `high_ground`. Use `place_of_worship` for mosques, temples and anything that is not a church; `church` stays for places tagged as such. `safe` is false when the shelter is inside the flood extent for that scenario.
 
 ### {area}/origins.json
 Named demo starting points (routes are precomputed, not computed live).
@@ -69,7 +70,7 @@ Named demo starting points (routes are precomputed, not computed live).
 `user_type` must be one of the area's `user_types`.
 
 ### {rain}_{enso}.routes.json
-One entry per origin:
+One entry per origin that has a route. An origin inside the flood has none, and the app shows the no-route message ("No safe route on foot. Move to an upper floor or high ground and call for help: Kenya Red Cross toll-free 1199.").
 ```json
 [{"origin_id":"o1","kind":"to_shelter","shelter_id":"s1","destination_name":"Example Primary School",
   "baseline":null,
@@ -87,14 +88,31 @@ One entry per origin:
 ```
 `season`: `short_rains` | `long_rains`.
 
+### {area}/forecast.json (optional)
+A snapshot of **official** outlooks. Never our own forecast: the banner is labelled "Official outlook / forecast snapshot as of <time>". The file is optional — if it is missing or fails the schema the banner simply does not render, and nothing else in the app depends on it.
+
+```json
+{"as_of":"2026-11-07T06:00:00Z",
+ "icpac":{"season":"OND 2026","statement":"GHACOF74","url":"https://...","above_normal_pct":[70,80]},
+ "short_range":{"source":"Open-Meteo / GloFAS","wettest_day_mm":27.8,"river_discharge_m3s":null,"url":"https://..."},
+ "suggested_scenario":null}
+```
+- `above_normal_pct`: a single number **or** a `[low, high]` pair, because ICPAC publishes a probability band per zone (70-80% for Nyando, 80-90% for Nairobi). `null` if unknown.
+- `icpac` and `short_range` may each be `null`; `wettest_day_mm` and `river_discharge_m3s` may be `null`. A blank `url` just hides that link.
+- `suggested_scenario`: `null`, or `{"rain":150,"enso":"elnino","rule":"<how it was mapped>"}`. `rain` must be one of the five slider values. When set, the banner shows a button that moves the slider to it; when `null`, it reads "No flood scenario expected in the next 16 days."
+
 ### meta.json
 ```json
 {"mock":false,"generated_at":"2026-11-05T10:00:00Z","sources":["Copernicus DEM","CHIRPS"],"notes":"Screening-level model, not a forecast"}
 ```
 Set `mock` to `false` when real data replaces the mock; the MOCK DATA badge then disappears.
 
+`notes` and `sources` are **rendered in the About & limits modal**, under "Status of this dataset" and "Data sources". Write the honest status there; `notes` keeps its line breaks.
+
 ### {area}/population.json (Person B)
 Written by `npm run population` from `web/data-inputs/census.csv`. Person A uses these totals to scale WorldPop when computing exposure.
+
+**Nyando spans six counties** (WorldPop share: Kisumu 47%, Kericho 40%, Homa Bay 6%, Nandi 5%, Nyamira 1.4%, Bomet 0.6%), so `units` must list all six, not Kisumu alone. Person A supplies the KNBS 2009/2019 totals and source URLs; Person B adds them to `web/data-inputs/census.csv` and reruns `npm run population`. The exposure caption shows the growth-rate range across units.
 
 **Why county / sub-county level:** ward boundaries changed between the 2009 and 2019 censuses (wards were created in 2013), so ward-level growth rates are not comparable. Compute `r` at county or sub-county level and apply it to 2019 counts.
 
