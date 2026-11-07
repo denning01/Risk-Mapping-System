@@ -9,6 +9,7 @@ import {
   ENSO_VALUES,
   ExposureSchema,
   FloodCollectionSchema,
+  ForecastSchema,
   MetaSchema,
   OriginsSchema,
   PopulationSchema,
@@ -17,7 +18,7 @@ import {
   SheltersSchema,
   validate,
 } from "./schema";
-import type { Area, AreaId, CropRule, Enso, Meta, Origin, Population, Rain, Scenario } from "./types";
+import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Scenario } from "./types";
 
 const BASE = "/data";
 const cache = new Map<string, Promise<unknown>>();
@@ -44,6 +45,14 @@ export const loadCrops = (): Promise<CropRule[]> => load("advice/crops.json", Cr
 export const loadOrigins = (area: AreaId): Promise<Origin[]> => load(`${area}/origins.json`, OriginsSchema);
 export const loadPopulation = (area: AreaId): Promise<Population | null> =>
   load(`${area}/population.json`, PopulationSchema).catch(() => null);
+
+/**
+ * Optional: the forecast banner is a bonus, never a dependency. A missing file
+ * (Person A has not landed it for this area yet) or one that fails the contract
+ * resolves to null and the banner stays hidden.
+ */
+export const loadForecast = (area: AreaId): Promise<Forecast | null> =>
+  load(`${area}/forecast.json`, ForecastSchema).catch(() => null);
 
 export async function loadScenario(area: AreaId, rain: Rain, enso: Enso): Promise<Scenario> {
   const base = `${area}/scenarios/${rain}_${enso}`;

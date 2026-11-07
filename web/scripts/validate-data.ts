@@ -14,6 +14,7 @@ import {
   ENSO_VALUES,
   ExposureSchema,
   FloodCollectionSchema,
+  ForecastSchema,
   MetaSchema,
   OriginsSchema,
   PopulationSchema,
@@ -53,6 +54,7 @@ check("advice/crops.json", CropsSchema);
 for (const area of AREA_IDS) {
   check(`${area}/origins.json`, OriginsSchema);
   check(`${area}/population.json`, PopulationSchema, true);
+  check(`${area}/forecast.json`, ForecastSchema, true);
   for (const rain of RAIN_VALUES) {
     for (const enso of ENSO_VALUES) {
       const base = `${area}/scenarios/${rain}_${enso}`;
