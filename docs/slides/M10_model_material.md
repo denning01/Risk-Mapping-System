@@ -54,7 +54,7 @@ Flooded area, Nyando (calibrated k), km² inside the ruled box [34.80, −0.45, 
   - Nairobi: 329.7 / 286.8 mm = **1.150**; 10th of 33.
   - Source: CHIRPS v2.0 (Funk et al. 2015).
 
-## Forecast anchor (M-11, snapshot 2026-11-06 11:02 UTC; ROUND 9, awaiting auditor)
+## Forecast anchor (M-11, snapshot 2026-11-06 11:02 UTC; ROUND 9 ACCEPT; F9.2 closed)
 
 Label: "official outlook / forecast snapshot". Never "our forecast".
 
@@ -105,4 +105,4 @@ checked against the provider's page today. Rows marked † are NOT verified.
 8. **Data dates.** WorldCover 2021, WorldPop 2020 and JRC GSW to 2021 do not show change since then.
 
 NOT VERIFIED here: the GloFAS and ICPAC reuse terms; how complete OSM buildings are around Ahero; FABDEM's own vertical
-error. The M-11 (ROUND 9) numbers are awaiting the auditor.
+error.
