@@ -821,3 +821,21 @@ def test_cut_is_right_on_two_different_grids_with_one_graph():
     r, c = rowcol(tc, _X0 + 150, _Y0 - _SP)
     wc[int(r), int(c)] = True
     assert edges(RG.cut(wc, tc)) == {frozenset((10, 11))}
+
+
+def test_dedupe_keeps_a_named_church_inside_an_area_that_will_not_be_emitted():
+    """F13.1: the named node survives inside an UNNAMED worship area (held back by contract_type) and inside a worship
+    area of another contract type (a mosque); it is dropped inside a NAMED area of the same contract type."""
+    from shapely.geometry import box
+    g = box(35.0, -0.201, 35.001, -0.2)
+    def area(osm, **tags):
+        return {"osm": osm, "type": "church", "lon": 35.0005, "lat": -0.2005, "geom": g,
+                "tags": {"amenity": "place_of_worship", **tags}}
+    node = {"osm": "n1", "type": "church", "lon": 35.0002, "lat": -0.2002,
+            "tags": {"amenity": "place_of_worship", "name": "Mariakani Christian Centre", "religion": "christian"}}
+    for a, kept in [(area("w1"), True),                                                   # unnamed area: node kept
+                    (area("w2", name="  "), True),                                        # blank name = unnamed
+                    (area("w3", name="Jamia Mosque", religion="muslim"), True),           # other contract type
+                    (area("w4", name="St Paul", religion="christian"), False)]:           # same facility: dropped
+        keep, dropped = rt.dedupe_shelters([a, node])
+        assert ("n1" in [s["osm"] for s in keep]) is kept and dropped == (0 if kept else 1), a["osm"]
