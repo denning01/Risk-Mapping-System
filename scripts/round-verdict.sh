@@ -24,6 +24,8 @@
 #                 `REMEDIATION · ROUND <n> ...` — written BEFORE that final verdict. That is what the
 #                 auditor was looking at when it decided. A COMMIT: written after the verdict is not
 #                 audited by it.
+#   * A sha's trailing , ; or . is punctuation, not part of it: "COMMIT: 573d002, 6ee95af" names
+#                 573d002 (model ROUND 10, 2026-11-07, refused as "573d002,").
 #   * named-sha = the `(at <sha>` the final verdict line states, when it states one. The gate
 #                 cross-checks it against lead-sha and refuses on disagreement.
 set -uo pipefail
@@ -61,7 +63,7 @@ awk -v n="$n" '
     next
   }
   lead && /^COMMIT:/ {
-    c = $0; sub(/^COMMIT:[[:space:]]*/, "", c); split(c, a, /[[:space:]]+/); last_lead = a[1]
+    c = $0; sub(/^COMMIT:[[:space:]]*/, "", c); split(c, a, /[[:space:]]+/); sub(/[,;.]+$/, "", a[1]); last_lead = a[1]
   }
   aud && /^VERDICT:/ {
     v = $0; sub(/^VERDICT:[[:space:]]*/, "", v); split(v, b, /[[:space:]]+/)
