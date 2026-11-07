@@ -373,9 +373,6 @@ def cmd_snapshot(args) -> int:
     return 0
 
 
-RISK_NAMES = {1: "low", 2: "medium", 3: "high"}
-
-
 def buildings_points_geojson(lon, lat, depth_m) -> dict:
     """E-10 (pending Person B's schema): one Point per flooded building. depth_class comes from the UNROUNDED depth
     with the contract thresholds (classify_risk); depth_m is rounded to 2 dp with a floor of 0.01 m, so a wet building
@@ -416,6 +413,17 @@ def cmd_write(args) -> int:
                   "Person B's schema (write it under $RMS_DATA)", file=sys.stderr)
             return 1
         pts_dir.mkdir(parents=True, exist_ok=True)
+    graph_out = Path(args.graph_out) if args.graph_out else None
+    if graph_out is not None:
+        if not args.routes:
+            print("ERROR: --graph-out needs --routes (it exports the graphs and cuts the routes use)", file=sys.stderr)
+            return 1
+        # E-12: graph.json has no contract yet (Person B). Until it does it may not reach the app's data.
+        if _inside(graph_out, REPO / "web") or _inside(graph_out, data_dir):
+            print(f"ERROR: --graph-out {graph_out} is inside web/ or --data-dir; graph.json waits for Person B's schema "
+                  "(write it under $RMS_DATA)", file=sys.stderr)
+            return 1
+    graph_cuts = {}
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
@@ -568,6 +576,7 @@ def cmd_write(args) -> int:
             if not np.array_equal(wet_walk, wet):
                 raise SystemExit(f"{key}: walk flood mask differs from the risk-class mask")
             cut_w, cut_d = W.cut(wet, tf), D.cut(wet_drive, tf)
+            graph_cuts[key] = (cut_w, cut_d)
             reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
                      if hand is not None else None)
             routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
@@ -620,6 +629,13 @@ def cmd_write(args) -> int:
             "slope_max_pct": rt.SLOPE_MAX_PCT, "slope_used": slope_pct is not None, "commute": rt.COMMUTE},
             "scenarios": route_checks}, indent=1, ensure_ascii=False))
         print(f"route checks -> {cp}")
+    if graph_out is not None:
+        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts)
+        raw = json.dumps(g, separators=(",", ":"))
+        graph_out.parent.mkdir(parents=True, exist_ok=True)
+        graph_out.write_text(raw)
+        print(f"graph.json -> {graph_out}: {len(g['nodes']) // 2:,} nodes, walk {len(g['walk']['flooded']):,} two-way edges, "
+              f"drive {len(g['drive']['flooded']):,} directed edges, {len(raw) / 2**20:.2f} MiB")
     print(f"\n{len(problems)} warning(s)")
     for p in problems:
         print("  WARN", p)
@@ -659,6 +675,9 @@ def main(argv=None) -> int:
     w.add_argument("--buildings-points-dir", default=None,
                    help="E-10: also write <key>.buildings.geojson (one Point per flooded building) to this dir; needs "
                         "--buildings; refused inside web/ until Person B agrees the schema")
+    w.add_argument("--graph-out", default=None,
+                   help="E-12: also write graph.json (walk + drive graph, per-scenario flooded bitmask) to this FILE; needs "
+                        "--routes; refused inside web/ until Person B agrees the schema")
     w.add_argument("--routes", action="store_true",
                    help="shelters from OSM + routes + roads_cut from the graphs (E-05; else carried)")
     w.add_argument("--hand", default=None, help="hand.tif (model, from a snapshot): needed by --routes for a rural area")

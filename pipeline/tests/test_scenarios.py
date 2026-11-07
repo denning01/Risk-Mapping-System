@@ -517,3 +517,22 @@ def test_write_buildings_layer_refused_inside_web_or_data_dir_and_without_buildi
     assert scen.main(base + ["--buildings-points-dir", str(tmp_path / "ok")]) == 1          # needs --buildings
     assert not list(web_dir.glob("*.buildings.geojson")) and not (tmp_path / "ok").exists()
     assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before  # nothing written
+
+
+def test_write_graph_out_refused_inside_web_or_data_dir_and_without_routes(tmp_path, monkeypatch, capsys):
+    """E-12: graph.json may not reach the app's data until Person B agrees the schema; it needs --routes. Each refusal
+    must be the guard's own (its message), not a later failure of the run: this fixture cannot route, so without
+    the guard the run crashes on its own, which must not count as a refusal."""
+    monkeypatch.setenv("RMS_DATA", str(tmp_path / "rms"))
+    monkeypatch.setattr(scen, "REPO", tmp_path / "repo")   # a fake repo: a broken guard can never write the real web/
+    data, depth = _write_inputs(tmp_path, mock=True)
+    before = (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text()
+    base = ["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]
+    web_file = scen.REPO / "web" / "public" / "data" / "nyando" / "graph.json"
+    for extra, msg in ((["--routes", "--graph-out", str(web_file)], "waits for Person B's schema"),
+                       (["--routes", "--graph-out", str(data / "nyando" / "graph.json")], "waits for Person B's schema"),
+                       (["--graph-out", str(tmp_path / "ok" / "graph.json")], "--graph-out needs --routes")):
+        assert scen.main(base + extra) == 1
+        assert msg in capsys.readouterr().err
+    assert not web_file.exists() and not (data / "nyando" / "graph.json").exists() and not (tmp_path / "ok").exists()
+    assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before   # nothing written

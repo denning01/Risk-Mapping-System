@@ -839,3 +839,68 @@ def test_dedupe_keeps_a_named_church_inside_an_area_that_will_not_be_emitted():
                     (area("w4", name="St Paul", religion="christian"), False)]:           # same facility: dropped
         keep, dropped = rt.dedupe_shelters([a, node])
         assert ("n1" in [s["osm"] for s in keep]) is kept and dropped == (0 if kept else 1), a["osm"]
+
+
+# ---- E-12: graph.json export + the reference client router ----
+def _graph(cut_cells_by_key):
+    """4x4 lattice for both nets; per scenario key a list of UTM points that are wet (walk = drive here)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    cuts = {}
+    for k, cells in cut_cells_by_key.items():
+        wet, tf = _wet(cells)
+        cuts[k] = (W.cut(wet, tf), D.cut(wet, tf))
+    return W, D, rt.export_graph("t", list(cut_cells_by_key), W, D, cuts)
+
+
+def test_export_graph_shapes_bits_and_two_way_walk():
+    W, D, g = _graph({"a": [(_X0 + 150, _Y0)], "b": []})          # a: edge 0-1 wet at its middle; b: all dry
+    n = 16
+    assert len(g["nodes"]) == 2 * n and g["scenarios"] == ["a", "b"]
+    assert len(g["walk"]["flooded"]) == W.n_edges // 2 == 24          # one row per two-way pair
+    assert len(g["drive"]["flooded"]) == D.n_edges == 48               # every directed edge
+    E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    ids = sorted(W.nodes)
+    wet = {(ids[E[3 * i]], ids[E[3 * i + 1]]) for i in range(len(F)) if F[i]}
+    assert {frozenset(p) for p in wet} == {frozenset((0, 1))} and all(F[i] in (0, 1) for i in range(len(F)))  # bit 0 = "a"
+    assert sorted(set(g["drive"]["flooded"])) == [0, 1] and sum(g["drive"]["flooded"]) == 2                  # both directions
+    assert E[2] == 3000                                                # 300 m at 1 m/s = 300 s = 3000 ds
+
+
+def test_export_graph_closes_a_pair_if_either_direction_is_cut():
+    W, D = _lattice(2), _lattice(2, drive=True)
+    cw = np.zeros(W.n_edges, bool)
+    cw[[e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (1, 0)][0]] = True   # only 1 -> 0
+    g = rt.export_graph("t", ["a"], W, D, {"a": (cw, np.zeros(D.n_edges, bool))})
+    ids = sorted(W.nodes); E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    closed = [frozenset((ids[E[3 * i]], ids[E[3 * i + 1]])) for i in range(len(F)) if F[i]]
+    assert closed == [frozenset((0, 1))]
+
+
+def test_graph_route_never_uses_a_flooded_edge_and_matches_the_pipeline_dijkstra():
+    """Wet cell on edge 0-1: the walk from node 0 to node 1 detours 0-10-11-1 (900 s), and every edge on the path is
+    dry in that scenario; in the dry scenario it is the direct 300 s edge. Distances equal RoutingGraph.dijkstra."""
+    W, D, g = _graph({"a": [(_X0 + 150, _Y0)], "b": []})
+    ids = sorted(W.nodes); s, t = ids.index(0), ids.index(1)
+    for key, want in (("a", 900.0), ("b", 300.0)):
+        sec, path = rt.graph_route(g, "walk", key, s, t)
+        assert sec == want
+        k = g["scenarios"].index(key)
+        assert path and all(not (g["walk"]["flooded"][i] >> k & 1) for i in path)
+        cut = W.cut(*_wet([(_X0 + 150, _Y0)] if key == "a" else []))
+        assert W.dijkstra(W.idx[0], cut)[0][W.idx[1]] == pytest.approx(want, abs=0.1)
+    # a node with every edge flooded is unreachable, never routed through water
+    wet_all = [(_X0 + 150, _Y0), (_X0, _Y0 - 150)]                       # both edges at node 0
+    _, _, g2 = _graph({"a": wet_all})
+    assert rt.graph_route(g2, "walk", "a", ids.index(0), ids.index(33)) == (None, [])
+
+
+def test_export_graph_geometry_is_simplified_for_drawing_only():
+    from shapely.geometry import LineString
+    W, D = _lattice(2), _lattice(2, drive=True)
+    e = 0
+    a, b = W.geom[e][0], W.geom[e][-1]
+    mid = [(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f + (1e-6 if f == 0.5 else 0)) for f in (0.25, 0.5, 0.75)]
+    W.geom[e] = np.array([a, *mid, b])                                   # 3 interior vertices, 0.1 m off the line
+    zero = {"a": (np.zeros(W.n_edges, bool), np.zeros(D.n_edges, bool))}
+    assert rt.export_graph("t", ["a"], W, D, zero)["walk"]["geom"][0] == []          # within 5 m: dropped
+    assert len(rt.export_graph("t", ["a"], W, D, zero, simplify_m=0.0)["walk"]["geom"][0]) == 6

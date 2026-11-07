@@ -150,3 +150,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   "not written there today": the writer refuses any --buildings-points-dir inside web/ or --data-dir, and the test
   points REPO at a fake tree so a broken guard cannot write the real web/. Run the real writer against a scratch COPY
   of web/public/data (--data-dir); `diff -rq` against the committed data then doubles as a determinism check.
+- 2026-11-07 (E-12) Prove "no route uses a flooded edge" against a SECOND geometry, not the bitmask the code wrote: the
+  proof re-cuts every edge from the full OSM geometry and the depth rasters (its own sampler), and requires 0 edges wet
+  there but unflagged (40 area x net x scenario checks). Then reproduce the PUBLISHED numbers (every routes.json minute,
+  including the walk-to-network snap legs) from the exported file alone: this catches unit and rounding bugs (seconds
+  vs deciseconds) that a self-consistent test misses. A refusal test must pin the refusal's MESSAGE (capsys), or a
+  fixture KeyError passes it vacuously.
