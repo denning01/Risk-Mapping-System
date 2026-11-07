@@ -72,14 +72,14 @@ Suggested slide lines (medium, with the range):
 Sanity checks done in exposure ROUND 7:
 - Exposure rises with rain in every step, and El Niño ≥ normal in all 10 pairs, in both areas.
 - People per flooded building: Nyando 2.1–2.9 (AOI average 2.03); Nairobi 8.0–8.4 (AOI average 12.54).
-- Flooded km² equals the model's hand-off table in all 20 scenarios per area. The drawn polygons are within +0.004 %
+- Flooded km² equals the model's hand-off table in every scenario (10 per area, 20 in all). The drawn polygons are within +0.004 %
   (Nyando, 18 m simplification). Nairobi's drawn area equals the table to 2 dp.
 
 **Not for slides (audit only):** if people are spread by WorldPop alone ("W1"), medium exposure is 29,821–53,559 (Nyando) and
 108,348–171,566 (Nairobi). W1 puts about 41 % of Nyando's people in pixels with no building, so it is an upper bound, not a
 range. It stays off screen by ruling.
 
-## 3. El Niño — the rainfall context (model ROUND 5, F5.3 ACCEPTed)
+## 3. El Niño — the rainfall context (each row has its own source; see below the table)
 
 CHIRPS October–December 2023 rainfall against the OND 1991–2020 mean, over each AOI:
 
@@ -87,6 +87,12 @@ CHIRPS October–December 2023 rainfall against the OND 1991–2020 mean, over e
 |---|---|---|---|---|
 | Nyando | 549.4 mm | 387.1 mm | **×1.419** (42 % wetter) | **6th** wettest |
 | Nairobi | 329.7 mm | 286.8 mm | **×1.1497** (15 % wetter) | **10th** wettest |
+
+Sources, row by row:
+- **Nyando** ×1.419, 6th of 33: model ROUND 5, finding F5.3 closed, ACCEPTed.
+- **Nairobi** ×1.1497, 10th of 33: model ROUND 8 (rms-audit/model.md:1298). The model auditor checked it in their ROUND 8
+  (model.md:1540, "10th of 33 ✓"), but that round is **not closed** yet: model F8.2 is still open (model.md:1675). Use the Nairobi
+  row only once model ROUND 8 is closed.
 
 Do **not** use "5th of 31" for Nyando: it skipped 2021–2022 and is wrong.
 The ratios come from the unrounded totals: the rounded Nairobi millimetres give 329.7 / 286.8 = 1.1496. On a slide, say
@@ -118,16 +124,22 @@ plausible", not "people who will be flooded".
   - At 100 mm the usual route is cut and the safe route takes **28 min**. From 150 mm it takes **33 min**.
   - The usual route loses 3 graph edges to the flood at 100–150 mm, and 4 from 200 mm.
   - Avoided road names are taken from the graph, never typed.
-- **Gikomba Market (Nairobi trader):** from 150 mm the start point itself is cut off by water. **No route is drawn**, and the app
-  says "No safe route on foot. Move to an upper floor and call for help". The Kenya Red Cross toll-free line is **1199**,
-  verified at https://www.redcross.or.ke/?p=56 ("Toll Free: 1199").
+- **Gikomba Market (Nairobi trader):** from 150 mm the start point itself is cut off by water. **No route is drawn**, and in
+  the current app no message appears for that origin either (web/src FloodApp.tsx:151, panels.tsx:227 render a route block
+  only when a route exists). The wording "No safe route on foot. Move to an upper floor and call for help" is **pending with
+  Person B**: do not say on a slide or in the demo that the app shows it until Person B ships it. If the message
+  gives a number, the Kenya Red Cross toll-free line is **1199**, verified at https://www.redcross.or.ke/?p=56 ("Toll Free:
+  1199").
 - **Mathare and Kibera:** a 3 min walk in every scenario to the nearest school outside the flood (Angel Junior Academy;
   Mzalendo High Technical Center).
 - **Nyando:**
   - Ahero town → high ground near Onjiko Boys High School (HAND 16 m): **39 min**.
   - A farm in the Ahero Irrigation Scheme → the same high ground: **90 min** (**113 min** at 250 mm El Niño).
   - Katito Market → Katito hospital: **9 min**.
-- Roads cut (named, from the graph):
+- **NOT FOR SLIDES until exposure ROUND 9 lands (operator ruling).** The road-cut test sampled too sparsely and missed
+  1–10 % of flooded road segments, so the lists below may be missing roads. The drawn routes are unaffected.
+  ROUND 9 will publish the corrected lists.
+- Roads cut (named, from the graph; PROVISIONAL, see above):
   - Nairobi 250 mm El Niño: Thika Road, Kiambu Road, Murang'a Road, Uhuru Highway, Chiromo Road, Mombasa Road, …
   - Nyando 250 mm El Niño: Kisii–Kisumu Road, Kericho–Kisumu Highway, Katito–Kendu Bay–Homa Bay road, …
   - Some Thika Road / Murang'a Road cuts are shallow cells that are the F2.13 closed-depression limit (§7).
