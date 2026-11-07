@@ -68,7 +68,8 @@ for role in $ROLES; do
       next
     }
     /^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+CLOSED([^A-Za-z]|$)/ {
-      if (tolower($0) ~ /rout(ed|ing)/) next
+      # "routed"/"routing" as WORDS: an identifier like RoutingGraph is not a hand-off (exposure F6.8, 2026-11-07).
+      if (tolower($0) ~ /(^|[^a-z])rout(ed|ing)([^a-z]|$)/) next
       id = $1; r = id; sub(/^F/, "", r); sub(/\..*/, "", r)
       n++; cid[n] = id; crd[n] = r; cln[n] = NR
     }

@@ -64,4 +64,14 @@ ROUND 3 · AUDITOR · t
   VERDICT: ACCEPT — quoted, not real
 L
 
+expect "an identifier containing Routing does not void a CLOSED" "" <<'L'
+ROUND 6 · AUDITOR · t
+  F6.8  SHOULD  x
+VERDICT: ACCEPT — with F6.8 open
+REMEDIATION · ROUND 6 · t
+F6.8  CLOSED  test_cut on one RoutingGraph across two grids
+ROUND 6 · AUDITOR · t  (re-audit)
+VERDICT: ACCEPT — closed
+L
+
 [ "$fail" = 0 ] && echo "audit-findings: all fixture cases pass" || { echo "audit-findings: FAILED" >&2; exit 1; }
