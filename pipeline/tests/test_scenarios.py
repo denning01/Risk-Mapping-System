@@ -134,7 +134,7 @@ def test_raster_covers_bbox_refuses_south_up_and_rotated():
         assert not ok and "north-up" in why
 
 
-def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None):
+def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None, old_year: int = 2026):
     data, depth = tmp / "data", tmp / "depth"
     sd = data / "nyando" / "scenarios"
     sd.mkdir(parents=True)
@@ -153,7 +153,7 @@ def _write_inputs(tmp: Path, mock: bool, carried_source: str = "mock", bbox=None
             ds.write(grid(), 1)
             if mock:
                 ds.update_tags(MOCK="1")
-        (sd / f"{k}.exposure.json").write_text(json.dumps({"year": 2026, "population": {"low": 1, "medium": 2, "high": 3},
+        (sd / f"{k}.exposure.json").write_text(json.dumps({"year": old_year, "population": {"low": 1, "medium": 2, "high": 3},
                                                            "buildings": 4, "flooded_area_km2": 99, "roads_cut": [], "source": carried_source}))
         (sd / f"{k}.shelters.json").write_text(json.dumps([{"id": "s1", "name": "x", "type": "school", "lon": wet[0],
                                                             "lat": wet[1], "capacity": None, "safe": True}]))
@@ -230,3 +230,227 @@ def test_write_fails_on_missing_raster(tmp_path):
     data, depth = _write_inputs(tmp_path, mock=True)
     (depth / "250_elnino_depth.tif").unlink()
     assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]) == 1
+
+
+# ---- AOI restriction: a model raster may cover a larger export box than the area ----
+def test_aoi_mask_selects_cell_centres_inside_bbox():
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    w, n = to_wgs(722600 + 2 * RES, 9977880 - 1 * RES)       # bbox edges on cell boundaries: cols 2..6, rows 1..7
+    e, s_ = to_wgs(722600 + 7 * RES, 9977880 - 8 * RES)
+    m = scen.aoi_mask((10, 10), TF, CRS, [w, s_, e, n])
+    rows, cols = np.nonzero(m)
+    assert m.sum() == 5 * 7 and (rows.min(), rows.max(), cols.min(), cols.max()) == (1, 7, 2, 6)
+
+
+def test_write_draws_and_counts_only_inside_the_area(tmp_path):
+    """The default test bbox spans cells 1..8, so the low block's (0,0),(0,1),(1,0) and the high cell (8,9) are
+    outside: 12 wet cells -> 8 inside, and no polygon may reach the raster's own west/north edge."""
+    data, depth = _write_inputs(tmp_path, mock=True)
+    bbox = json.loads((data / "areas.json").read_text())[0]["bbox"]
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]) == 0
+    from shapely.geometry import box
+    # a cell is kept when its CENTRE is inside, so its edge may stick out by half a cell (15 m), plus 1e-5 deg rounding;
+    # an unmasked edge cell sticks out a whole cell (30 m ~ 2.7e-4 deg) and fails
+    allowed = box(*bbox).buffer(0.5 * RES / 111_000 + 1.5e-5)
+    for k in scen.scenario_keys():
+        fc = json.loads((data / "nyando" / "scenarios" / f"{k}.geojson").read_text())
+        for f in fc["features"]:
+            assert allowed.contains(shape(f["geometry"])), (k, f["properties"])
+    d = np.where(scen.aoi_mask((10, 10), TF, CRS, bbox), grid(), np.nan)
+    assert scen.flood_features(d, TF, CRS)[1]["flooded_cells"] == 8
+
+
+# ---- snapshot: a model hand-off is frozen and sha256-verified before use ----
+def _handoff(tmp: Path, mutate=None, commit="abc1234"):
+    import hashlib
+    md = tmp / "model" / "scenarios"
+    md.mkdir(parents=True)
+    rows = []
+    prof = dict(driver="GTiff", width=10, height=10, count=1, dtype="float32", crs=CRS, transform=TF, nodata=np.nan)
+    for k in scen.scenario_keys():
+        f = md / f"{k}_depth.tif"
+        with rasterio.open(f, "w", **prof) as ds:
+            ds.write(grid(), 1)
+            ds.update_tags(git_commit=commit)
+        b = f.read_bytes()
+        rows.append(f"| `scenarios/{k}_depth.tif` | 0.01 | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()[:16]}…` |")
+    hand = md.parent / "hand.tif"
+    with rasterio.open(hand, "w", **prof) as ds:
+        ds.write(grid(), 1)
+    hb = hand.read_bytes()
+    rows.append(f"| `hand.tif` | – | 3.0 | {len(hb):,} | `{hashlib.sha256(hb).hexdigest()}` |")   # full 64-hex form
+    h = tmp / "flood-nyando.md"
+    h.write_text("# Hand-off\n\n| file | flooded km² | margin px | bytes | sha256 |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
+    if mutate:
+        mutate(md)
+    return md.parent, h
+
+
+def test_parse_handoff_reads_the_table():
+    t = scen.parse_handoff("| `scenarios/50_normal_depth.tif` | 99.53 | 371.8 | 900,470 | `5b981f986ed4874c…` |\n"
+                           "| `hand.tif` | – | 371.8 | 40,041,784 | `f1b767794edddbe2…` |")
+    assert t["scenarios/50_normal_depth.tif"] == {"bytes": 900470, "sha_prefix": "5b981f986ed4874c", "km2": 99.53}
+    assert t["hand.tif"]["km2"] is None
+
+
+def test_snapshot_copies_and_names_by_commit(tmp_path):
+    model, h = _handoff(tmp_path)
+    d = scen.snapshot(model, h, tmp_path / "snap")
+    assert d.name == "abc1234" and len(list(d.glob("*_depth.tif"))) == 10     # 5 rain x 2 enso
+    assert (d / "hand.tif").exists() and "hand.tif" in json.loads((d / "snapshot.json").read_text())["sha256"]
+    assert json.loads((d / "snapshot.json").read_text())["git_commit"] == "abc1234"
+
+
+def test_snapshot_refuses_a_file_changed_after_the_handoff(tmp_path):
+    def rewrite(md):
+        with rasterio.open(md / "250_elnino_depth.tif", "r+") as ds:
+            ds.write(np.where(np.isnan(grid()), 0.7, grid()).astype("float32"), 1)
+    model, h = _handoff(tmp_path, mutate=rewrite)
+    with pytest.raises(ValueError, match="250_elnino_depth.tif"):
+        scen.snapshot(model, h, tmp_path / "snap")
+    assert [p.name for p in (tmp_path / "snap").iterdir()] == []          # nothing left behind
+
+
+def test_write_flags_km2_that_disagree_with_the_handoff(tmp_path, capsys):
+    data, depth = _write_inputs(tmp_path, mock=True)
+    km2 = {f"scenarios/{k}_depth.tif": 0.01 for k in scen.scenario_keys()}
+    km2["scenarios/100_elnino_depth.tif"] = 5.0
+    (depth / "snapshot.json").write_text(json.dumps({"handoff_km2": km2}))
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]) == 0
+    out = capsys.readouterr().out
+    assert "100_elnino: flooded" in out and "5.0 km2" in out and "50_normal: flooded" not in out
+
+
+# ---- E-04: write puts the RULED population number (W2 weight, option B factors) into exposure.json ----
+def _pop_inputs(rms: Path, low_building: bool = False, county_factors: bool = True):
+    from rasterio.transform import from_origin as fo
+    ex = rms / "processed" / "nyando" / "exposure"
+    ex.mkdir(parents=True)
+    to_wgs = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    w, n = to_wgs(722600 - 300, 9977880 + 300)
+    prof = dict(driver="GTiff", width=4, height=4, count=1, crs="EPSG:4326", transform=fo(w, n, 0.003, 0.003))
+    with rasterio.open(ex / "worldpop_2020_aoi.tif", "w", dtype="float32", **prof) as d:
+        d.write(np.full((4, 4), 100.0, dtype="float32"), 1)
+    with rasterio.open(ex / "county_id_aoi.tif", "w", dtype="uint8", **prof) as d:
+        d.write(np.ones((4, 4), dtype="uint8"), 1)
+    pts = [to_wgs(722600 + 4.5 * RES, 9977880 - 4.5 * RES),       # in the wet medium block, 30 m2
+           to_wgs(722600 + 7.5 * RES, 9977880 - 2.5 * RES)]       # dry cell inside the AOI, 90 m2
+    areas = [30.0, 90.0]
+    if low_building:                                              # LOW cell (depth 0.1 m) inside the AOI, 60 m2
+        pts.append(to_wgs(722600 + 1.5 * RES, 9977880 - 1.5 * RES))
+        areas.append(60.0)
+    n = len(pts)
+    np.savez(ex / "open_buildings_aoi.npz", lon=np.array([p[0] for p in pts]), lat=np.array([p[1] for p in pts]),
+             area_m2=np.array(areas), conf=np.full(n, 0.9), thr80=np.full(n, 0.7), thr85=np.full(n, 0.7),
+             thr90=np.full(n, 0.7))
+    county = {"id": 1, "worldpop_aoi_2020": 1000.0}
+    if county_factors:
+        county["factors"] = {"low": 1.0, "medium": 2.0, "high": 4.0}
+    (ex / "population_manifest.json").write_text(json.dumps({
+        "unit": "t", "year": 2026, "projection": {}, "modes": {"A": "a", "B": "b"},
+        "factors_A": {"low": 3.0, "medium": 3.0, "high": 3.0},
+        "counties": [county]}))
+
+
+def test_write_population_uses_the_ruled_weight_and_mode(tmp_path, monkeypatch):
+    data, depth = _write_inputs(tmp_path, mock=True)
+    _pop_inputs(tmp_path / "rms")
+    monkeypatch.setenv("RMS_DATA", str(tmp_path / "rms"))
+    args = ["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data), "--population",
+            "--population-mode", "B", "--population-weight", "buildings", "--buildings"]
+    assert scen.main(args) == 0
+    exp = json.loads((data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text())
+    # W2/B: 1000 people x factor_B x (30 / 120 wet footprint share) ; A would give 750 for medium
+    assert exp["population"] == {"low": 250, "medium": 500, "high": 1000} and exp["buildings"] == 1
+    assert exp["year"] == 2026 and exp["source"] == "mock"
+    assert scen.main(args[:7] + ["--population", "--buildings"]) == 1       # no mode/weight -> refused
+
+
+def test_snapshot_refuses_a_changed_hand_tif(tmp_path):
+    def rewrite(md):
+        with rasterio.open(md.parent / "hand.tif", "r+") as ds:
+            ds.write(np.full((10, 10), 9.0, dtype="float32"), 1)
+    model, h = _handoff(tmp_path, mutate=rewrite)
+    with pytest.raises(ValueError, match="hand.tif"):
+        scen.snapshot(model, h, tmp_path / "snap")
+
+
+def _add_row(model, h, name, value):
+    import hashlib
+    f = model / name
+    prof = dict(driver="GTiff", width=10, height=10, count=1, dtype="float32", crs=CRS, transform=TF, nodata=np.nan)
+    with rasterio.open(f, "w", **prof) as ds:
+        ds.write(np.full((10, 10), value, dtype="float32"), 1)
+    b = f.read_bytes()
+    h.write_text(h.read_text() + f"| `{name}` | – | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()}` |\n")
+
+
+def test_snapshot_accepts_a_document_only_repost_that_adds_a_row(tmp_path):
+    model, h = _handoff(tmp_path)
+    d = scen.snapshot(model, h, tmp_path / "snap")
+    _add_row(model, h, "slope.tif", 2.0)                     # the 14:21 re-post: slope.tif row added, nothing else
+    d2 = scen.snapshot(model, h, tmp_path / "snap")
+    assert d2 == d and (d / "slope.tif").exists()
+    snap = json.loads((d / "snapshot.json").read_text())
+    assert "slope.tif" in snap["sha256"] and len(snap["sha256"]) == 12
+    assert "slope.tif" in (d / "handoff.md").read_text()
+
+
+def test_snapshot_refuses_a_repost_that_changes_an_existing_file(tmp_path):
+    model, h = _handoff(tmp_path)
+    scen.snapshot(model, h, tmp_path / "snap")
+    import hashlib
+    with rasterio.open(model / "hand.tif", "r+") as ds:          # hand.tif rewritten, table updated to match
+        ds.write(np.full((10, 10), 7.0, dtype="float32"), 1)
+    b = (model / "hand.tif").read_bytes()
+    lines = [l if "`hand.tif`" not in l else f"| `hand.tif` | – | 3.0 | {len(b):,} | `{hashlib.sha256(b).hexdigest()}` |"
+             for l in h.read_text().splitlines()]
+    h.write_text("\n".join(lines) + "\n")
+    with pytest.raises(ValueError, match="different contents"):
+        scen.snapshot(model, h, tmp_path / "snap")
+
+
+def test_written_area_is_measured_after_simplification():
+    """A 10x10-cell block missing one corner cell: simplifying at 25 m cuts the notch's corner (30/sqrt(2) = 21 m off the
+    chord), so the DRAWN area grows by half a cell. written_area_m2 must report the drawn polygon, not the
+    pre-simplification one (the pre-simplification number hid a +0.12 % change on Nyando at 20 m)."""
+    d = np.full((10, 10), 0.5, dtype="float32")
+    d[0, 9] = np.nan
+    _, st0 = scen.flood_features(d, TF, CRS, simplify_m=0)
+    _, st = scen.flood_features(d, TF, CRS, simplify_m=25)
+    assert st0["written_area_m2"] == pytest.approx(99 * 900) == st["polygon_area_m2"]
+    assert st["written_area_m2"] == pytest.approx(99 * 900 + 450)
+
+
+# ---- R5 audit F5.5 / F5.7 / F5.8 ----
+_POP_ARGS = ["--population", "--population-mode", "B", "--population-weight", "buildings", "--buildings"]
+
+
+def _run_pop(tmp_path, monkeypatch, **kw):
+    old_year = kw.pop("old_year", 2026)
+    data, depth = _write_inputs(tmp_path, mock=True, old_year=old_year)
+    _pop_inputs(tmp_path / "rms", **kw)
+    monkeypatch.setenv("RMS_DATA", str(tmp_path / "rms"))
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)] + _POP_ARGS) == 0
+    return json.loads((data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text())
+
+
+def test_exposed_includes_low_class_water(tmp_path, monkeypatch):
+    """F5.5: "exposed" = any depth > 0, LOW class (0.1 m) included. A building only in a 0.1 m cell is counted, and its
+    footprint carries people: wet share (30 + 60) / 180 = 0.5 -> medium 1000 x 2 x 0.5 = 1000. Counting only depth
+    > 0.3 m would give 1 building and 333 people."""
+    exp = _run_pop(tmp_path, monkeypatch, low_building=True)
+    assert exp["buildings"] == 2
+    assert exp["population"] == {"low": 500, "medium": 1000, "high": 2000}
+
+
+def test_written_year_comes_from_the_manifest_not_the_old_file(tmp_path, monkeypatch):
+    """F5.7: the carried file says 2020; the manifest's projection year (2026) must be written."""
+    exp = _run_pop(tmp_path, monkeypatch, old_year=2020)
+    assert exp["year"] == 2026
+
+
+def test_county_without_knbs_figures_uses_the_unit_factor_in_w2(tmp_path, monkeypatch):
+    """F5.8: a county with no KNBS figures falls back to A's factor (3.0) in mode B: 1000 x 3 x 30/120 = 750."""
+    exp = _run_pop(tmp_path, monkeypatch, county_factors=False)
+    assert exp["population"] == {"low": 750, "medium": 750, "high": 750}

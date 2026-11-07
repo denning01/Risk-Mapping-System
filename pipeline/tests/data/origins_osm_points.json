@@ -1,0 +1,62 @@
+{
+ "nairobi": {
+  "n11155030940": {
+   "name": "Mathare",
+   "kind": "place=village",
+   "lonlat": [
+    36.84957,
+    -1.265011
+   ]
+  },
+  "n11007276790": {
+   "name": "Kibera",
+   "kind": "place=suburb",
+   "lonlat": [
+    36.789,
+    -1.311333
+   ]
+  },
+  "n30121815": {
+   "name": "Westlands",
+   "kind": "place=suburb",
+   "lonlat": [
+    36.801842,
+    -1.264756
+   ]
+  },
+  "n7005142185": {
+   "name": "Gikomba Market",
+   "kind": "amenity=marketplace",
+   "lonlat": [
+    36.841473,
+    -1.286343
+   ]
+  }
+ },
+ "nyando": {
+  "n3901069801": {
+   "name": "Ahero",
+   "kind": "place=town",
+   "lonlat": [
+    34.919023,
+    -0.172461
+   ]
+  },
+  "w540459358": {
+   "name": "Katito Market",
+   "kind": "amenity=marketplace",
+   "lonlat": [
+    34.971492,
+    -0.271188
+   ]
+  },
+  "w1133831832": {
+   "name": "Ahero Irrigation Scheme",
+   "kind": "landuse=farmland",
+   "lonlat": [
+    34.926312,
+    -0.149614
+   ]
+  }
+ }
+}

@@ -76,3 +76,52 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-06 (E-02) osmnx simplification returns list-valued attributes (`highway`, `name`, ...) in SET order, which
   changes with PYTHONHASHSEED; anything that takes element [0] (osmnx add_edge_speeds does) is non-reproducible.
   Same counts across runs does not mean same graph: compare sum(travel_time) under two seeds. Fixed by slowest_class.
+- 2026-11-06 (E-03) Take an origin's coordinates from its OSM feature (by id), never type them. A large OSM area's
+  representative point can sit far from any road (West Kano scheme: 605 m from the drive graph), so check the snap
+  distance to both graphs before choosing it. "X market" in mock data is not evidence that an OSM marketplace exists.
+- 2026-11-06 (E-04) A flood model's raster can cover a bigger box than the AOI: mask to the AOI BEFORE counting km2,
+  people or buildings (aoi_mask). A test whose rounded output hides a 12-vs-8 cell difference is not a test.
+- 2026-11-06 (E-04/E-06) Never read a model directory in place: it was rewritten mid-run (10:38-10:39) and produced a
+  silent mix of two model versions. `07_scenarios.py snapshot` copies + sha256-checks first; read only the copy.
+- 2026-11-06 (E-04) Unconstrained WorldPop (ken_ppp_2020) puts ~41 % of Nyando's people in pixels with no building, so
+  flood exposure in farmland came out ~6x too high (16 vs 2-3 people per flooded building). Sanity-check people per
+  flooded building against the AOI average. Weight by building footprint area (W2) instead.
+- 2026-11-06 (E-04) A rural AOI can span several counties (Nyando: Kisumu 47 %, Kericho 40 %); population.json has one.
+  Measure the county shares before scaling. data.worldpop.org has no HTTP range support and drops long downloads:
+  start the 300 MB national file early; the 1 km aggregate (3 MB) is enough for county-level sums.
+- 2026-11-06 Use `date` for ROUND timestamps; a guessed timestamp needed an erratum.
+- 2026-11-06 (E-05) Never "snap to the nearest node that still has an uncut edge": when the origin's own node is cut off,
+  that node can be 1-1.5 km away and the route draws a straight line through the water. Snap on the unflooded graph,
+  then refuse (report unreachable) if that node is cut off or the snap leg is wet. Found only by resampling the WRITTEN
+  LineStrings against the raster (a second method); every unit test was green.
+- 2026-11-06 (E-05) A HAND flood raster marks the river cell under a bridge as wet, so every river crossing (even the
+  elevated Nairobi Expressway) gets "cut". Exempt samples on OSM bridge WAYS (raw XML), not bridge-tagged graph EDGES:
+  osmnx simplification merges approach roads into the bridge edge (Nyando: median 468 m, max 7 km).
+- 2026-11-06 (E-05) Don't diagnose a DEM bias from one transect. I called Ahero's 12-14 m HAND "rooftops" from a spike
+  between 4-6 m cells; model measured GLO-30 vs bare-earth FABDEM on Ahero building pixels: only 0.8 m (p50) / 1.8 m
+  (p90). The surface-model bias is ~1-2 m (HAND overstated, depth understated on buildings); ask model for the
+  DSM-minus-DTM difference before writing a limitation. Nairobi uses FABDEM; Nyando GLO-30.
+- 2026-11-06 (E-06) "polygon km2 = pixel km2" was measured BEFORE simplification, so it could not see what
+  simplification did: at 20 m the DRAWN Nyando polygons were +0.12 % (Douglas-Peucker cuts staircase corners once the
+  tolerance passes ~19 m); at 18 m +0.004 %. The writer now prints the drawn area. A symmetric test shape hides it (the
+  errors cancel); use an asymmetric notch. Don't promise a number you read from the wrong column.
+- 2026-11-06 A zsh helper with "${3:+--flag $3}" passes "--flag value" as ONE word (no word splitting), argparse rejects
+  it, and an `echo exit=$?` after a redirect can still print 0. Write landing commands out in full.
+- 2026-11-06 (E-08) A slide doc drafted from memory of the data over-claims. "Loses 4 segments from 150 mm" was really 3 at
+  100–150 and 4 from 200, and the river names were never measured. Check every sentence against routes_check / the JSON,
+  and match the tables to the files by script (all 20 rows), before committing. Reported impacts: IFRC GO PDFs
+  (go-api.ifrc.org/api/DownloadFile/…) are fetchable primary sources when ReliefWeb/OCHA return 403.
+- 2026-11-06 (R5 audit) A fixture whose only wet buildings sit in the MEDIUM block cannot tell "depth > 0" from "depth > 0.3":
+  put a building in every class you claim to count. A fixture that already equals the right answer (old year = manifest
+  year) cannot catch carrying the wrong one; make them differ. "Downloaded this round" in EVIDENCE must mean a file under
+  $RMS_DATA with its sha256, not a scratchpad copy.
+- 2026-11-07 (R6 F6.5) "Sample every 15 m along the edge" is not "every cell gets a sample": sampling at fractions of
+  the whole edge skips interior vertices, and a line can clip a cell corner between samples. Missed 2-8 % of wet edges
+  on the model floods, with every test green, because no fixture put a VERTEX or a CORNER CLIP in a wet cell. Sample every
+  vertex plus <= s m: then any wet stretch longer than s m is caught (straight between vertices), which is provable.
+  Test the exactness with a fixture that the coarser rule demonstrably misses (assert that as a precondition). At 0.5 m
+  the walk graph is 19.5 M samples: compute the bridge exemption only on edges near a bridge, never on every sample.
+- 2026-11-07 (R9 F9.1) A cache test must change ONE half of the key at a time, straight after a call that set the other
+  half. Otherwise an intermediate call rebuilds the cache and hides a half-key bug: my first fix caught "shape only" but
+  not "transform only", and reordering flipped which one escaped. Inject every half-key fault, not just "never refreshed".
+  Quoting a list "from the graph" on a slide means the file's order and spelling; check it by script (prefix equality).

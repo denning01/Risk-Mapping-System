@@ -135,6 +135,46 @@ def shelter_type(tags: dict) -> str | None:
     return None
 
 
+# Contract shelter types (docs/DATA_CONTRACT.md, web/src/lib/schema.ts ShelterSchema.type).
+# HUMAN DECISION 2026-11-06 (via operator): place_of_worship = YES and police = YES as shelter types — a contract change
+# Person B makes in schema.ts. Until that schema is on `data`, only the current enum may be emitted (validate:data).
+# Flip SCHEMA_HAS_WORSHIP_POLICE to True in the commit that follows the schema landing.
+SCHEMA_HAS_WORSHIP_POLICE = False
+CONTRACT_TYPES_NOW = {"school", "church", "hospital", "community_hall", "high_ground"}
+CONTRACT_TYPES_NEXT = CONTRACT_TYPES_NOW | {"place_of_worship", "police"}
+_CHURCH_WORDS = ("church", "kanisa", "cathedral", "parish", "chapel", "sda", "adventist", "catholic", "anglican",
+                 "pentecostal", "gospel", "tabernacle", "ministr", "assembly of god", "fellowship")
+
+
+def is_christian(props: dict) -> bool:
+    """religion=christian, or (no religion tag and) a name that says church in English or Swahili ("kanisa")."""
+    if props.get("religion"):
+        return props["religion"] == "christian"
+    name = (props.get("name") or "").lower()
+    return any(w in name for w in _CHURCH_WORDS)
+
+
+def contract_type(props: dict, schema_next: bool | None = None) -> str | None:
+    """Contract shelter type for a cached shelter candidate (its osm_tag, religion and name), or None = not emitted.
+    Before the schema change: worship places are emitted as "church" ONLY if Christian (a mosque or temple is never
+    called a church); other worship places and police are held back. After it: every worship place is
+    "place_of_worship" (the real name is kept), police stations are "police"."""
+    nxt = SCHEMA_HAS_WORSHIP_POLICE if schema_next is None else schema_next
+    tag = props.get("osm_tag")
+    if tag == "amenity=place_of_worship":
+        if not (props.get("name") or "").strip():
+            return None          # operator ruling 2026-11-06: unnamed worship places are held back (no real name to keep)
+        if nxt:
+            return "place_of_worship"
+        return "church" if is_christian(props) else None
+    if tag == "amenity=police":
+        return "police" if nxt else None
+    t = {"amenity=school": "school", "amenity=community_centre": "community_hall"}.get(tag)
+    if t is None and tag in ("amenity=hospital", "amenity=clinic", "healthcare=hospital", "healthcare=clinic"):
+        t = "hospital"   # contract word; on slides: "health facilities (hospitals + clinics)"
+    return t
+
+
 # ---------------------------------------------------------------------------------------------
 # PBF -> per-area XML + shelter candidates (one pass for all areas)
 # ---------------------------------------------------------------------------------------------
@@ -219,6 +259,65 @@ def extract(pbf: Path, areas: dict[str, list[float]]) -> dict:
                                                "area_m2": None, "tags": tags})
     out["_objects_read"] = n_seen
     return out
+
+
+PLACE_AREA_LANDUSE = {"farmland", "farmyard", "orchard"}  # kept even unnamed: candidate farm origins
+
+
+def place_kind(tags: dict) -> str | None:
+    """Which named-place class an OSM object belongs to for origin checks (E-03), or None."""
+    if "place" in tags and "name" in tags:
+        return f"place={tags['place']}"
+    if tags.get("amenity") == "marketplace":
+        return "amenity=marketplace"
+    if tags.get("boundary") == "administrative" and "name" in tags:
+        return f"admin_level={tags.get('admin_level')}"
+    if tags.get("landuse") in PLACE_AREA_LANDUSE:
+        return f"landuse={tags['landuse']}"
+    return None
+
+
+def extract_places(pbf: Path, areas: dict[str, list[float]]) -> dict:
+    """Named places (place=*, marketplaces, admin areas) and farmland per area bbox + buffer: id -> [feature]."""
+    import osmium
+    from shapely.geometry import MultiPolygon, Polygon, mapping
+    buf = {a: (b[0] - BUFFER_DEG, b[1] - BUFFER_DEG, b[2] + BUFFER_DEG, b[3] + BUFFER_DEG) for a, b in areas.items()}
+    out = {a: [] for a in areas}
+
+    def add(osm, kind, tags, lon, lat, geom=None):
+        for a, bb in buf.items():
+            if bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]:
+                out[a].append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
+                               "properties": {"osm": osm, "kind": kind, "name": tags.get("name"),
+                                              "area_km2": None if geom is None else round(_area_km2(geom), 4)}})
+
+    for obj in osmium.FileProcessor(str(pbf)).with_locations().with_areas():
+        if obj.is_way() or obj.is_relation() or not len(obj.tags):
+            continue
+        tags = dict(obj.tags)
+        kind = place_kind(tags)
+        if not kind:
+            continue
+        if obj.is_node():
+            add(f"n{obj.id}", kind, tags, obj.location.lon, obj.location.lat)
+        else:
+            try:
+                polys = [Polygon([(n.lon, n.lat) for n in ring], [[(n.lon, n.lat) for n in inner]
+                                                                  for inner in obj.inner_rings(ring)])
+                         for ring in obj.outer_rings()]
+            except osmium.InvalidLocationError:
+                continue
+            if not polys:
+                continue
+            geom = MultiPolygon(polys) if len(polys) > 1 else polys[0]
+            c = geom.representative_point()
+            add(f"w{obj.orig_id()}" if obj.from_way() else f"r{obj.orig_id()}", kind, tags, c.x, c.y, geom)
+    return out
+
+
+def _area_km2(geom) -> float:
+    from pyproj import Geod
+    return abs(Geod(ellps="WGS84").geometry_area_perimeter(geom)[0]) / 1e6
 
 
 def dedupe_shelters(sh: list[dict]) -> tuple[list[dict], int]:
@@ -316,14 +415,10 @@ def md5(path: Path) -> str:
 
 def cmd_prepare(args) -> int:
     import osmnx as ox
-    pbf = Path(args.pbf or rms_data() / "raw" / "osm" / PBF_NAME)
-    md5_file = pbf.with_suffix(pbf.suffix + ".md5")
-    digest = md5(pbf)
-    expected = md5_file.read_text().split()[0] if md5_file.exists() else None
-    print(f"pbf {pbf} md5 {digest} expected {expected}")
-    if expected and digest != expected:
-        print("ERROR: PBF checksum mismatch", file=sys.stderr)
+    chk = check_pbf(args.pbf)
+    if not chk:
         return 1
+    pbf, digest = chk
     meta = {a: load_area(a) for a in args.area}
     t0 = time.time()
     ex = extract(pbf, {a: m["bbox"] for a, m in meta.items()})
@@ -382,6 +477,577 @@ def cmd_prepare(args) -> int:
     return 0
 
 
+def check_pbf(pbf_arg) -> tuple[Path, str] | None:
+    pbf = Path(pbf_arg or rms_data() / "raw" / "osm" / PBF_NAME)
+    md5_file = pbf.with_suffix(pbf.suffix + ".md5")
+    digest = md5(pbf)
+    expected = md5_file.read_text().split()[0] if md5_file.exists() else None
+    print(f"pbf {pbf} md5 {digest} expected {expected}")
+    if expected and digest != expected:
+        print("ERROR: PBF checksum mismatch", file=sys.stderr)
+        return None
+    return pbf, digest
+
+
+def cmd_places(args) -> int:
+    import collections
+    chk = check_pbf(args.pbf)
+    if not chk:
+        return 1
+    pbf, digest = chk
+    t0 = time.time()
+    pl = extract_places(pbf, {a: load_area(a)["bbox"] for a in args.area})
+    print(f"read in {time.time() - t0:.0f} s")
+    for a, feats in pl.items():
+        outd = rms_data() / "processed" / a / "exposure"
+        outd.mkdir(parents=True, exist_ok=True)
+        (outd / "osm_places.geojson").write_text(json.dumps(
+            {"type": "FeatureCollection", "source": PBF_URL, "pbf_md5": digest, "features": feats}))
+        print(a, len(feats), dict(collections.Counter(f["properties"]["kind"] for f in feats)))
+    return 0
+
+
+# E-03 demo origins. Coordinates are NOT typed here: each is the OSM feature's own point (node location, or the
+# representative point of an area) read from osm_places.geojson, so a typo cannot move an origin.
+ORIGINS = {
+    "nairobi": [
+        ("nbi-o1", "Mathare", "n11155030940", "informal_settlement_resident"),
+        ("nbi-o2", "Kibera", "n11007276790", "informal_settlement_resident"),
+        ("nbi-o3", "Westlands (commute to Kasarani)", "n30121815", "commuter"),     # Kasarani = OSM n289910864
+        ("nbi-o4", "Gikomba Market", "n7005142185", "trader"),
+    ],
+    "nyando": [
+        ("nya-o1", "Ahero town", "n3901069801", "settler"),
+        ("nya-o2", "Katito Market", "w540459358", "trader"),
+        ("nya-o3", "Farm in the Ahero Irrigation Scheme", "w1133831832", "farmer"),   # West Kano w1144291596: 605 m from drive graph
+    ],
+}
+MAX_SNAP_M = 500.0  # an origin further than this from the walk graph cannot start a credible route
+
+
+def build_origins(area: str, places: list[dict], user_types: list[str], bbox, graph_nodes: dict) -> tuple[list, list]:
+    """-> (origins.json rows, check rows). Raises ValueError on any failed check.
+    graph_nodes: network -> (lon array, lat array)."""
+    from pyproj import Geod
+    g = Geod(ellps="WGS84")
+    by_id = {f["properties"]["osm"]: f for f in places}
+    rows, checks, errors = [], [], []
+    for oid, name, osm, ut in ORIGINS[area]:
+        f = by_id.get(osm)
+        if f is None:
+            errors.append(f"{oid}: OSM {osm} not in osm_places")
+            continue
+        lon, lat = f["geometry"]["coordinates"]
+        if ut not in user_types:
+            errors.append(f"{oid}: user_type {ut!r} not in {user_types}")
+        if not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+            errors.append(f"{oid}: {lon},{lat} outside bbox {bbox}")
+        others = [h for h in places if h["properties"]["name"] and h["properties"]["osm"] != osm]
+        d_near, near = min(((g.inv(lon, lat, *h["geometry"]["coordinates"])[2], h) for h in others),
+                           key=lambda t: t[0])
+        snap = {}
+        for nt, (xs, ys) in graph_nodes.items():
+            snap[nt] = float(np.min(g.inv(np.full(len(xs), lon), np.full(len(xs), lat), xs, ys)[2]))
+            if snap[nt] > MAX_SNAP_M:
+                errors.append(f"{oid}: {snap[nt]:.0f} m from the {nt} graph (> {MAX_SNAP_M:.0f})")
+        rows.append({"id": oid, "name": name, "lon": round(lon, 5), "lat": round(lat, 5), "user_type": ut})
+        checks.append({"id": oid, "osm": osm, "osm_name": f["properties"]["name"], "osm_kind": f["properties"]["kind"],
+                       "nearest_other_osm_name": near["properties"]["name"], "nearest_other_m": round(d_near),
+                       "snap_m": {k: round(v) for k, v in snap.items()}})
+    missing = set(user_types) - {r["user_type"] for r in rows}
+    if missing:
+        errors.append(f"user_types with no origin (the app picks the first origin of a type): {sorted(missing)}")
+    if errors:
+        raise ValueError("; ".join(errors))
+    return rows, checks
+
+
+def cmd_origins(args) -> int:
+    import networkx as nx
+    data_dir = Path(args.data_dir)
+    for a in args.area:
+        meta = load_area(a, data_dir)
+        exd = rms_data() / "processed" / a / "exposure"
+        places = json.loads((exd / "osm_places.geojson").read_text())["features"]
+        gn = {}
+        for nt in ("walk", "drive"):
+            G = nx.read_graphml(exd / f"graph_{nt}.graphml")
+            gn[nt] = (np.array([float(d["x"]) for _, d in G.nodes(data=True)]),
+                      np.array([float(d["y"]) for _, d in G.nodes(data=True)]))
+        try:
+            rows, checks = build_origins(a, places, meta["user_types"], meta["bbox"], gn)
+        except ValueError as e:
+            print(f"ERROR {a}: {e}", file=sys.stderr)
+            return 1
+        (data_dir / a / "origins.json").write_text(json.dumps(rows, ensure_ascii=False))
+        (exd / "origins_check.json").write_text(json.dumps(checks, indent=1, ensure_ascii=False))
+        for r, c in zip(rows, checks):
+            print(f"{a} {r['id']} {r['name']!r} {r['user_type']} {r['lon']},{r['lat']} <- OSM {c['osm']} "
+                  f"{c['osm_kind']} {c['osm_name']!r}; nearest other named OSM: {c['nearest_other_osm_name']!r} "
+                  f"{c['nearest_other_m']} m; snap walk {c['snap_m']['walk']} m drive {c['snap_m']['drive']} m")
+    return 0
+
+
+# ---------------------------------------------------------------------------------------------
+# flood-aware routing (E-05)
+# ---------------------------------------------------------------------------------------------
+# RULES (stated; each one is a CHOICE unless a source is named):
+#  * An edge is CUT in a scenario when ANY sample of its geometry lies in a flooded cell. Samples = EVERY vertex of the
+#    edge geometry plus points at most SAMPLE_STEP_M = 0.5 m apart (shapely segmentize). Between vertices the edge is
+#    straight, so ANY stretch of the edge longer than 0.5 m inside a wet cell contains a sample: the cut equals an
+#    exact-geometry cut with a 0.5 m length threshold (the exposure auditor's ROUND 6 criterion). Only a corner clip
+#    shorter than 0.5 m can be missed. Stricter than "midpoint flooded".
+#    History (R6 F6.5, found in E-09): 15 m steps at fractions of the whole edge skipped interior vertices and missed
+#    1-10 % of wet edges; a drawn commute crossed a 0.31 m cell. "Flooded" differs by mode (operator ruling 2026-11-06, part 2):
+#      WALK edges: depth > 0, ANY depth (errs safe).
+#      DRIVE edges: depth >= DRIVE_CUT_M = 0.3 m. Source: US National Weather Service, "Turn Around Don't Drown",
+#        https://www.weather.gov/safety/flood-turn-around-dont-drown : "It takes just 12 inches of rushing water to carry
+#        away most cars" (12 in = 0.305 m; 0.3 m is also the contract's low/medium boundary). The NWS figure is for MOVING
+#        water; the model gives still depth, so this is a screening threshold. Drive snap legs use the same 0.3 m mask.
+#  * BRIDGES: a sample within BRIDGE_TOL_M of an OSM way tagged bridge=* (any value but "no") is never wet: the deck
+#    stands above the river cell the flood raster marks. Matched per WAY from the raw OSM XML the graph was built from,
+#    not per graph edge, because simplification merged approach roads into bridge edges (Nyando drive: median bridge-
+#    tagged edge 468 m, max 7 km). LIMITATION: deck overtopping and washed-out bridges are not modelled.
+#  * to_shelter / relocation are ON FOOT (walk graph, WALK_KPH); the app says "min on foot". commute is by road
+#    (drive graph, free-flow, see the module docstring).
+#  * Endpoints snap to the nearest node of the UNFLOODED graph (never to a further "live" node: that drew straight lines
+#    across the water). The route is reported unreachable if that node lost all its edges to the flood, or if the straight
+#    snap leg itself crosses a flooded cell (sampled every SAMPLE_STEP_M). A person inside the flood gets no route.
+#  * Minutes = graph travel time + straight-line snap legs (origin->node, node->destination) at walking speed, rounded UP.
+#  * avoided = the named roads on the usual (unflooded) path to the SAME destination that are cut in this scenario.
+#  * A route that cannot be found is NOT written (the contract has no "unreachable" leg); it is listed in the run's
+#    routes_check.json and printed, so it is reported, never silently dropped.
+SAMPLE_STEP_M = 0.5
+DRIVE_CUT_M = 0.3
+BRIDGE_TOL_M = 5.0
+MAX_DEST_SNAP_M = 500.0       # a shelter further than this from the walk graph is not routed to
+COMMUTE = {"nbi-o3": ("n289910864", "Kasarani")}   # origin id -> (OSM place id, name); place=suburb, in osm_places
+# Relocation (Nyando settlers, farmers): candidate = a walk-graph node inside the bbox, in a DRY cell, HAND >= HAND_MIN_M,
+# whose 30 m cell holds NO Open Buildings footprint (operator ruling 2026-11-06 part 3: a site is open ground, and on the
+# surface DEM a built cell's HAND is overstated by ~1-2 m), reachable on foot on the cut graph within RELOC_MAX_MIN. Score (weights sum to 1), highest first:
+#   hand    min(HAND / HAND_FULL_M, 1)                height above the nearest drainage (model hand.tif)
+#   slope   1 at <= 4 %, linear to 0 at 10 %          UNHCR site gradient (below); only when slope is given
+#   road    1 if a drive-graph node lies within ROAD_NEAR_M, else 0   (vehicle access for supplies / evacuation)
+#   service 1 if a SAFE school or health facility lies within SERVICE_NEAR_M, else 0
+#   time    1 - minutes / RELOC_MAX_MIN               shorter walk is better
+# HAND is used as a ROBUST LOCAL value (robust_hand): the 25th percentile over a HAND_WINDOW x HAND_WINDOW cell window
+# (150 m at 30 m): a site must be high across most of its neighbourhood, not in one cell. NaN HAND counts as 0.
+# LIMITATION (model's wording, operator correction 2026-11-06): "Nyando terrain is GLO-30, a surface model: on buildings it
+# sits 0.8-1.8 m above bare earth, so HAND there is overstated, and flood depth understated, by about 1-2 m. Nairobi uses
+# bare-earth FABDEM." (Ahero's 12-14 m HAND is mostly real height above drainage, NOT a roof artefact.)
+# SLOPE (model slope.tif, degrees, in the hand-off table and sha-verified since the 14:21 re-posts; operator ruling part 3):
+# robust local slope = median over the same 150 m window, as a percent gradient (100 tan). Source: UNHCR Emergency Handbook
+# (4th ed.), "Principles & Standards for Settlement Planning", https://emergency.unhcr.org/print/pdf/node/531 :
+# "Ideally, a site should have a slope of 2%-4% for good drainage, and not more than 10% to avoid erosion ...".
+# So: a candidate steeper than SLOPE_MAX_PCT (10 %) is excluded; slope score is 1 up to SLOPE_IDEAL_PCT (4 %), falling
+# linearly to 0 at 10 %. (The 2 % lower bound is for drainage; a flatter site is still dry here, so not penalised: CHOICE.)
+HAND_MIN_M, HAND_FULL_M = 5.0, 15.0
+HAND_WINDOW, HAND_PCT = 5, 25
+RELOC_MAX_MIN = 120.0
+ROAD_NEAR_M, SERVICE_NEAR_M = 250.0, 1000.0
+RELOC_WEIGHTS = {"hand": 0.4, "road": 0.2, "service": 0.2, "time": 0.2}                   # without slope (Nairobi has none)
+RELOC_WEIGHTS_SLOPE = {"hand": 0.3, "slope": 0.2, "road": 0.15, "service": 0.15, "time": 0.2}   # with slope (CHOICE)
+SLOPE_IDEAL_PCT, SLOPE_MAX_PCT = 4.0, 10.0
+ROAD_CLASS_ORDER = ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential"]
+ROADS_CUT_MAX = 8
+
+
+def _names(v) -> list[str]:
+    if v is None or (isinstance(v, float) and np.isnan(v)):
+        return []
+    return sorted(set(v)) if isinstance(v, list) else [str(v)]
+
+
+def flood_masks(depth: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(walk-flooded, drive-flooded) from a depth raster (m; NaN or <= 0 = dry). See the RULES above."""
+    d = np.nan_to_num(depth, nan=0.0)
+    return d > 0, d >= DRIVE_CUT_M
+
+
+def bridge_lines(osm_xml: Path) -> list[list[tuple[float, float]]]:
+    """(lon, lat) node lists of every way tagged bridge=* (not "no") in a minimal OSM XML (write_osm_xml)."""
+    import xml.etree.ElementTree as ET
+    nodes, out = {}, []
+    for _, el in ET.iterparse(osm_xml, events=("end",)):
+        if el.tag == "node":
+            nodes[el.get("id")] = (float(el.get("lon")), float(el.get("lat")))
+        elif el.tag == "way":
+            tags = {t.get("k"): t.get("v") for t in el.findall("tag")}
+            if tags.get("bridge", "no") != "no":
+                out.append([nodes[n.get("ref")] for n in el.findall("nd")])
+            el.clear()
+    return out
+
+
+class RoutingGraph:
+    """An osmnx graph (lon/lat) as arrays for fast per-scenario cutting and scipy Dijkstra."""
+
+    def __init__(self, G, crs, bridges: list | None = None):
+        from pyproj import Transformer
+        from scipy.spatial import cKDTree
+        from shapely.geometry import LineString
+        self.G, self.crs = G, crs
+        self.nodes = list(G.nodes)
+        self.idx = {n: i for i, n in enumerate(self.nodes)}
+        self.lon = np.array([G.nodes[n]["x"] for n in self.nodes], float)
+        self.lat = np.array([G.nodes[n]["y"] for n in self.nodes], float)
+        to = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform
+        self.nx_, self.ny_ = to(self.lon, self.lat)
+        self.tree = cKDTree(np.c_[self.nx_, self.ny_])
+        self.u, self.v, self.w, self.geom, self.name, self.hwy, self.length = [], [], [], [], [], [], []
+        sx, sy, se, lines_utm = [], [], [], []
+        for e, (u, v, d) in enumerate(G.edges(data=True)):
+            g = d.get("geometry")
+            if g is None:
+                g = LineString([(G.nodes[u]["x"], G.nodes[u]["y"]), (G.nodes[v]["x"], G.nodes[v]["y"])])
+            c = np.asarray(g.coords)
+            if np.hypot(*(c[0] - (G.nodes[u]["x"], G.nodes[u]["y"]))) > np.hypot(*(c[-1] - (G.nodes[u]["x"], G.nodes[u]["y"]))):
+                c = c[::-1]                                     # orient u -> v
+            self.u.append(self.idx[u]); self.v.append(self.idx[v]); self.w.append(float(d["travel_time"]))
+            self.geom.append(c); self.name.append(_names(d.get("name"))); self.length.append(float(d["length"]))
+            h = d.get("highway"); self.hwy.append(h if isinstance(h, str) else slowest_class(h))
+            gu = LineString(np.c_[to(c[:, 0], c[:, 1])])
+            lines_utm.append(gu)
+            xy = np.asarray(gu.segmentize(SAMPLE_STEP_M).coords)                   # keeps every vertex
+            sx.append(xy[:, 0]); sy.append(xy[:, 1]); se.append(np.full(len(xy), e, np.int32))
+        self.u, self.v, self.w = np.array(self.u), np.array(self.v), np.array(self.w)
+        self.sx, self.sy, self.se = (np.concatenate(a) if a else np.zeros(0) for a in (sx, sy, se))
+        self.se = self.se.astype(np.int64)
+        self.n_edges = len(self.u)
+        self.on_bridge = np.zeros(len(self.sx), bool)
+        self._cells = None
+        if bridges:
+            import shapely
+            blines = [LineString(np.c_[to(*np.array(b).T)]) for b in bridges if len(b) >= 2]
+            tree = shapely.STRtree(blines)
+            # only samples of edges that come within BRIDGE_TOL_M of a bridge can be on one: test those, not all
+            near = np.unique(tree.query(lines_utm, predicate="dwithin", distance=BRIDGE_TOL_M)[0])
+            k = np.nonzero(np.isin(self.se, near))[0]
+            hit = tree.query(shapely.points(self.sx[k], self.sy[k]), predicate="dwithin", distance=BRIDGE_TOL_M)
+            self.on_bridge[k[np.unique(hit[0])]] = True
+
+    def cut(self, wet: np.ndarray, transform) -> np.ndarray:
+        """bool per edge: any sample in a wet cell. Samples outside the raster are dry (no information)."""
+        from rasterio.transform import rowcol
+        key = (tuple(transform), wet.shape)
+        if self._cells is None or self._cells[0] != key:          # every scenario shares one grid: compute once
+            r, c = rowcol(transform, self.sx, self.sy, op=np.floor)
+            r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
+            ok = (r >= 0) & (r < wet.shape[0]) & (c >= 0) & (c < wet.shape[1])
+            self._cells = (key, r, c, ok)
+        _, r, c, ok = self._cells
+        hit = np.zeros(len(r), bool)
+        hit[ok] = wet[r[ok], c[ok]]
+        hit &= ~self.on_bridge
+        out = np.zeros(self.n_edges, bool)
+        out[np.unique(self.se[hit])] = True
+        return out
+
+    def snap(self, lon: float, lat: float) -> tuple[int, float]:
+        """Nearest node (index) of the whole graph and its distance in metres."""
+        from pyproj import Transformer
+        x, y = Transformer.from_crs("EPSG:4326", self.crs, always_xy=True).transform(lon, lat)
+        d, i = self.tree.query([x, y])
+        return int(i), float(d)
+
+    def live(self, cut: np.ndarray) -> np.ndarray:
+        """bool per node: keeps >= 1 uncut edge."""
+        out = np.zeros(len(self.nodes), bool)
+        out[self.u[~cut]] = True; out[self.v[~cut]] = True
+        return out
+
+    def snap_leg_wet(self, lon: float, lat: float, node: int, flood) -> bool:
+        """Does the straight leg (lon, lat) -> node cross a flooded cell? flood = (wet, transform) or None."""
+        if flood is None:
+            return False
+        from pyproj import Transformer
+        from rasterio.transform import rowcol
+        wet, tf = flood
+        x, y = Transformer.from_crs("EPSG:4326", self.crs, always_xy=True).transform(lon, lat)
+        n = max(int(np.ceil(np.hypot(self.nx_[node] - x, self.ny_[node] - y) / SAMPLE_STEP_M)), 1)
+        t = np.linspace(0, 1, n + 1)
+        r, c = rowcol(tf, x + t * (self.nx_[node] - x), y + t * (self.ny_[node] - y), op=np.floor)
+        r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
+        ok = (r >= 0) & (r < wet.shape[0]) & (c >= 0) & (c < wet.shape[1])
+        return bool(wet[r[ok], c[ok]].any())
+
+    def endpoint(self, lon: float, lat: float, cut, flood=None) -> tuple[int, float, str | None]:
+        """(node, snap m, None) or (-1, inf, reason). See the RULES above."""
+        i, d = self.snap(lon, lat)
+        if cut is not None and not self.live(cut)[i]:
+            return -1, float("inf"), "nearest road/path node is cut off by the flood"
+        if cut is not None and self.snap_leg_wet(lon, lat, i, flood):
+            return -1, float("inf"), "the way to the nearest road/path node is flooded"
+        return i, d, None
+
+    def dijkstra(self, src: int, cut: np.ndarray | None = None):
+        """-> (seconds to every node, predecessor array, edge id per (u,v) used)."""
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import dijkstra
+        keep = np.ones(self.n_edges, bool) if cut is None else ~cut
+        e = np.nonzero(keep)[0]
+        e = e[np.lexsort((self.w[e], self.v[e], self.u[e]))]          # per (u,v): fastest parallel edge first
+        first = np.ones(len(e), bool)
+        first[1:] = (self.u[e][1:] != self.u[e][:-1]) | (self.v[e][1:] != self.v[e][:-1])
+        e = e[first]
+        n = len(self.nodes)
+        M = csr_matrix((self.w[e] + 1e-9, (self.u[e], self.v[e])), shape=(n, n))   # +1e-9: keep zero-time edges
+        dist, pred = dijkstra(M, directed=True, indices=src, return_predecessors=True)
+        return dist, pred, {(int(self.u[i]), int(self.v[i])): int(i) for i in e}
+
+    @staticmethod
+    def path_edges(pred, used, dst: int) -> list[int]:
+        out, j = [], dst
+        while pred[j] >= 0:
+            out.append(used[(int(pred[j]), int(j))]); j = int(pred[j])
+        return out[::-1]
+
+    def line(self, edges: list[int], start=None, end=None) -> list[list[float]]:
+        pts = [] if start is None else [list(start)]
+        for e in edges:
+            c = self.geom[e].tolist()
+            pts.extend(c if not pts or c[0] != pts[-1] else c[1:])
+        if end is not None:
+            pts.append(list(end))
+        out = []
+        for p in pts:
+            q = [round(p[0], 5), round(p[1], 5)]
+            if not out or q != out[-1]:
+                out.append(q)
+        return out
+
+    def avoided(self, edges: list[int], cut: np.ndarray) -> list[str]:
+        seen = []
+        for e in edges:
+            if cut[e]:
+                for nm in self.name[e]:
+                    if nm not in seen:
+                        seen.append(nm)
+        return seen
+
+
+def _minutes(sec: float, *snap_m: float) -> int:
+    # rounded UP, after rounding away float noise (600.0000001 s is 10 min, not 11)
+    return int(np.ceil(round((sec + sum(snap_m) / (WALK_KPH / 3.6)) / 60.0, 6)))
+
+
+def leg(RG: RoutingGraph, o: tuple[float, float], d: tuple[float, float], cut: np.ndarray | None, flood=None):
+    """Fastest path o -> d (lon, lat) on the graph minus `cut`. -> dict(minutes, edges, coords) or None."""
+    so, do_, _ = RG.endpoint(*o, cut, flood)
+    sd, dd, _ = RG.endpoint(*d, cut, flood)
+    if so < 0 or sd < 0:
+        return None
+    dist, pred, used = RG.dijkstra(so, cut)
+    if not np.isfinite(dist[sd]):
+        return None
+    edges = RG.path_edges(pred, used, sd)
+    return {"minutes": _minutes(float(dist[sd]), do_, dd), "edges": edges, "snap_m": [round(do_), round(dd)],
+            "coords": RG.line(edges, start=o, end=d)}
+
+
+def shelters_from_osm(area_prefix: str, feats: list[dict], bbox) -> list[dict]:
+    """Contract shelters (current enum, contract_type) from shelter_candidates.geojson, inside the bbox."""
+    out = []
+    for f in feats:
+        p = f["properties"]
+        t = contract_type(p)
+        lon, lat = f["geometry"]["coordinates"]
+        if t is None or not (bbox[0] <= lon <= bbox[2] and bbox[1] <= lat <= bbox[3]):
+            continue
+        label = {"school": "School", "hospital": "Health facility", "community_hall": "Community hall",
+                 "church": "Church"}[t]
+        out.append({"id": f"{area_prefix}-{p['osm']}", "name": p.get("name") or f"{label} (unnamed in OpenStreetMap)",
+                    "type": t, "lon": round(lon, 5), "lat": round(lat, 5), "capacity": None, "safe": True})
+    return out
+
+
+def roads_cut(RG: RoutingGraph, cut: np.ndarray, bbox) -> tuple[list[str], list[dict]]:
+    """Named drive roads with a cut edge whose midpoint is in the bbox: main classes first, then cut length."""
+    agg = {}
+    for e in np.nonzero(cut)[0]:
+        mid = RG.geom[e][len(RG.geom[e]) // 2]
+        if not (bbox[0] <= mid[0] <= bbox[2] and bbox[1] <= mid[1] <= bbox[3]):
+            continue
+        rank = ROAD_CLASS_ORDER.index(RG.hwy[e]) if RG.hwy[e] in ROAD_CLASS_ORDER else len(ROAD_CLASS_ORDER)
+        for nm in RG.name[e]:
+            a = agg.setdefault(nm, {"name": nm, "rank": rank, "cut_m": 0.0})
+            a["rank"] = min(a["rank"], rank); a["cut_m"] += RG.length[e]
+    full = sorted(agg.values(), key=lambda a: (a["rank"], -a["cut_m"], a["name"]))
+    return [a["name"] for a in full[:ROADS_CUT_MAX]], full
+
+
+def robust_hand(hand: np.ndarray) -> np.ndarray:
+    """25th percentile of HAND over a HAND_WINDOW square window; NaN counts as 0 (see the RULES above)."""
+    from scipy.ndimage import percentile_filter
+    return percentile_filter(np.nan_to_num(hand.astype("float32"), nan=0.0), HAND_PCT, size=HAND_WINDOW, mode="nearest")
+
+
+def robust_slope_pct(slope_deg: np.ndarray) -> np.ndarray:
+    """Median slope over a HAND_WINDOW square window, as a percent gradient; NaN counts as steep (excluded)."""
+    from scipy.ndimage import median_filter
+    pct = 100.0 * np.tan(np.radians(np.nan_to_num(slope_deg.astype("float32"), nan=90.0 - 1e-3)))
+    return median_filter(np.minimum(pct, 1e4), size=HAND_WINDOW, mode="nearest")
+
+
+def relocation_candidates(RG: RoutingGraph, wet, wet_tf, hand, hand_tf, bbox, drive: RoutingGraph,
+                          safe_services: list[tuple[float, float]], dist_s, snap_m: float, built=None,
+                          slope_pct=None) -> list[dict]:
+    """`built`: bool grid on the HAND grid, True where a building footprint sits (excluded); None = not applied."""
+    """Scored candidates (best first) among nodes reachable from the origin; see the RULES above."""
+    from rasterio.transform import rowcol
+    from pyproj import Transformer
+    from scipy.spatial import cKDTree
+    mins = (dist_s + snap_m / (WALK_KPH / 3.6)) / 60.0
+    inb = (RG.lon >= bbox[0]) & (RG.lon <= bbox[2]) & (RG.lat >= bbox[1]) & (RG.lat <= bbox[3])
+    ok = inb & np.isfinite(mins) & (mins <= RELOC_MAX_MIN)
+
+    def sample(arr, tf, x, y):
+        r, c = rowcol(tf, x, y, op=np.floor)
+        r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
+        inside = (r >= 0) & (r < arr.shape[0]) & (c >= 0) & (c < arr.shape[1])
+        out = np.full(len(r), np.nan)
+        out[inside] = arr[r[inside], c[inside]]
+        return out
+    w = sample(wet.astype(float), wet_tf, RG.nx_, RG.ny_)
+    h = sample(hand, hand_tf, RG.nx_, RG.ny_)
+    ok &= (w == 0) & np.isfinite(h) & (h >= HAND_MIN_M)
+    if built is not None:
+        ok &= sample(built.astype(float), hand_tf, RG.nx_, RG.ny_) == 0
+    sl = None
+    if slope_pct is not None:                       # same grid as hand.tif (checked by the caller)
+        sl = sample(slope_pct, hand_tf, RG.nx_, RG.ny_)
+        ok &= np.isfinite(sl) & (sl <= SLOPE_MAX_PCT)
+    i = np.nonzero(ok)[0]
+    if len(i) == 0:
+        return []
+    xy = np.c_[RG.nx_[i], RG.ny_[i]]
+    road_d = drive.tree.query(xy)[0]
+    if safe_services:
+        to = Transformer.from_crs("EPSG:4326", RG.crs, always_xy=True).transform
+        sx, sy = to(*np.array(safe_services).T)
+        svc_d = cKDTree(np.c_[sx, sy]).query(xy)[0]
+    else:
+        svc_d = np.full(len(i), np.inf)
+    s = {"hand": np.minimum(h[i] / HAND_FULL_M, 1.0), "road": (road_d <= ROAD_NEAR_M).astype(float),
+         "service": (svc_d <= SERVICE_NEAR_M).astype(float), "time": 1.0 - mins[i] / RELOC_MAX_MIN}
+    weights = RELOC_WEIGHTS
+    if sl is not None:
+        s["slope"] = np.clip((SLOPE_MAX_PCT - sl[i]) / (SLOPE_MAX_PCT - SLOPE_IDEAL_PCT), 0.0, 1.0)
+        weights = RELOC_WEIGHTS_SLOPE
+    score = sum(weights[k] * s[k] for k in weights)
+    order = np.lexsort((mins[i], -score))                          # ties: shorter walk first
+    return [{"node": int(i[j]), "lon": float(RG.lon[i[j]]), "lat": float(RG.lat[i[j]]), "score": round(float(score[j]), 4),
+             "hand_m": round(float(h[i[j]]), 1),
+             "slope_pct": (round(float(sl[i[j]]), 1) if sl is not None else None), "road_m": round(float(road_d[j])), "service_m": (round(float(svc_d[j]))
+             if np.isfinite(svc_d[j]) else None), "walk_min": round(float(mins[i[j]]), 1)} for j in order]
+
+
+RELOCATION_USER_TYPES = {"settler", "farmer"}     # rural households move to high ground; traders go to a shelter
+
+
+def route_kind(origin: dict, area_type: str) -> str:
+    if origin["id"] in COMMUTE:
+        return "commute"
+    if area_type == "rural" and origin["user_type"] in RELOCATION_USER_TYPES:
+        return "relocation"
+    return "to_shelter"
+
+
+def _nearest_safe_shelter(W: RoutingGraph, o, shelters: list[dict], cut, flood=None):
+    """Fastest walk from o to any safe shelter on the cut graph. -> (shelter, leg) or (None, reason)."""
+    from pyproj import Transformer
+    so, do_, why = W.endpoint(*o, cut, flood)
+    if so < 0:
+        return None, f"origin: {why}"
+    dist, pred, used = W.dijkstra(so, cut)
+    safe = [s for s in shelters if s["safe"]]
+    if not safe:
+        return None, "no safe shelter in this scenario"
+    to = Transformer.from_crs("EPSG:4326", W.crs, always_xy=True).transform
+    x, y = to(np.array([s["lon"] for s in safe]), np.array([s["lat"] for s in safe]))
+    dd, nodes = W.tree.query(np.c_[x, y])                            # nearest node of the UNFLOODED graph
+    sec = dist[nodes] + (do_ + dd) / (WALK_KPH / 3.6)
+    sec[(dd > MAX_DEST_SNAP_M) | ~W.live(cut)[nodes]] = np.inf
+    order = [int(k) for k in np.lexsort(([s["id"] for s in safe], sec)) if np.isfinite(sec[k])]   # ties by id
+    k = next((k for k in order if not W.snap_leg_wet(safe[k]["lon"], safe[k]["lat"], int(nodes[k]), flood)), None)
+    if k is None:
+        return None, f"no safe shelter reachable on foot ({len(safe)} safe shelters)"
+    edges = W.path_edges(pred, used, int(nodes[k]))
+    s = safe[k]
+    return s, {"minutes": _minutes(float(dist[nodes[k]]), do_, float(dd[k])), "edges": edges,
+               "snap_m": [round(do_), round(float(dd[k]))], "coords": W.line(edges, start=o, end=(s["lon"], s["lat"]))}
+
+
+def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,
+                 D: RoutingGraph, cut_w, cut_d, places: dict, reloc: dict | None, flood=None,
+                 flood_drive=None) -> tuple[list, list, list]:
+    """-> (routes.json rows, extra high_ground shelters, check rows incl. unreachable). `reloc` (rural only):
+    wet, wet_tf, hand, hand_tf. `places`: osm id -> (lon, lat) for commute destinations."""
+    routes, extra, checks = [], [], []
+    bbox = area_meta["bbox"]
+    for o in origins:
+        op = (o["lon"], o["lat"])
+        kind = route_kind(o, area_meta["type"])
+        chk = {"origin_id": o["id"], "kind": kind}
+        if kind == "commute":
+            osm, name = COMMUTE[o["id"]]
+            dest = places[osm]
+            base, safe = leg(D, op, dest, None), leg(D, op, dest, cut_d, flood_drive)
+            chk.update(destination=name, osm=osm)
+            if base is None or safe is None:
+                chk["unreachable"] = "no drive path" + (" even on the unflooded graph" if base is None else " avoiding flooded edges")
+                checks.append(chk); continue
+            blocked = bool(cut_d[base["edges"]].any()) if base["edges"] else False
+            if not blocked:
+                safe = base
+            row = {"origin_id": o["id"], "kind": kind, "shelter_id": None, "destination_name": name,
+                   "baseline": {"geometry": {"type": "LineString", "coordinates": base["coords"]}, "minutes": base["minutes"]},
+                   "safe": {"geometry": {"type": "LineString", "coordinates": safe["coords"]}, "minutes": safe["minutes"]},
+                   "avoided": D.avoided(base["edges"], cut_d)}
+            chk.update(baseline_min=base["minutes"], safe_min=safe["minutes"], baseline_blocked=blocked,
+                       baseline_cut_edges=int(cut_d[base["edges"]].sum()) if base["edges"] else 0)
+        else:
+            if kind == "relocation":
+                so, do_, why = W.endpoint(*op, cut_w, flood)
+                cands = [] if so < 0 else relocation_candidates(
+                    W, reloc["wet"], reloc["wet_tf"], reloc["hand"], reloc["hand_tf"], bbox, D,
+                    [(s["lon"], s["lat"]) for s in shelters if s["safe"] and s["type"] in ("school", "hospital")],
+                    W.dijkstra(so, cut_w)[0], do_, reloc.get("built"), reloc.get("slope_pct"))
+                chk["candidates_top5"] = cands[:5]
+                chk["n_candidates"] = len(cands)
+                if not cands:
+                    chk["unreachable"] = (f"origin: {why}" if so < 0 else
+                                          f"no dry node with HAND >= {HAND_MIN_M} m within {RELOC_MAX_MIN:.0f} min on foot")
+                    checks.append(chk); continue
+                c = cands[0]
+                near = min(((np.hypot(s["lon"] - c["lon"], s["lat"] - c["lat"]), s["name"]) for s in shelters
+                            if "unnamed" not in s["name"]), default=(None, None))
+                sid = f"{o['id'].split('-')[0]}-hg-{W.nodes[c['node']]}"
+                s = {"id": sid, "name": (f"High ground near {near[1]}" if near[1] else "High ground") + f" (HAND {c['hand_m']:.0f} m)",
+                     "type": "high_ground", "lon": round(c["lon"], 5), "lat": round(c["lat"], 5), "capacity": None,
+                     "safe": True}
+                if sid not in {e["id"] for e in extra}:
+                    extra.append(s)
+                safe = leg(W, op, (c["lon"], c["lat"]), cut_w, flood)
+                if safe is None:                            # cannot happen: the candidate came from this search
+                    chk["unreachable"] = "chosen relocation site lost its path"; checks.append(chk); continue
+            else:
+                s, safe = _nearest_safe_shelter(W, op, shelters, cut_w, flood)
+                if s is None:
+                    chk["unreachable"] = safe; checks.append(chk); continue
+            base = leg(W, op, (s["lon"], s["lat"]), None)
+            avoided = W.avoided(base["edges"], cut_w) if base else []
+            row = {"origin_id": o["id"], "kind": kind, "shelter_id": s["id"], "destination_name": s["name"],
+                   "baseline": None,
+                   "safe": {"geometry": {"type": "LineString", "coordinates": safe["coords"]}, "minutes": safe["minutes"]},
+                   "avoided": avoided}
+            chk.update(shelter_id=s["id"], destination=s["name"], safe_min=safe["minutes"], snap_m=safe["snap_m"],
+                       usual_min=base["minutes"] if base else None)
+        routes.append(row)
+        checks.append(chk)
+    return routes, extra, checks
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -389,6 +1055,14 @@ def main(argv=None) -> int:
     s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
     s.add_argument("--pbf", default=None)
     s.set_defaults(fn=cmd_prepare)
+    s = sub.add_parser("places", help="cache named OSM places per area (origin checks, E-03)")
+    s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
+    s.add_argument("--pbf", default=None)
+    s.set_defaults(fn=cmd_places)
+    s = sub.add_parser("origins", help="write <area>/origins.json from OSM features (E-03)")
+    s.add_argument("--area", action="append", required=True, choices=["nairobi", "nyando"])
+    s.add_argument("--data-dir", default=str(Path(__file__).resolve().parents[1] / "web" / "public" / "data"))
+    s.set_defaults(fn=cmd_origins)
     args = p.parse_args(argv)
     return args.fn(args)
 
