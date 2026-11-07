@@ -125,3 +125,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   half. Otherwise an intermediate call rebuilds the cache and hides a half-key bug: my first fix caught "shape only" but
   not "transform only", and reordering flipped which one escaped. Inject every half-key fault, not just "never refreshed".
   Quoting a list "from the graph" on a slide means the file's order and spelling; check it by script (prefix equality).
+- 2026-11-07 (E-14) An e2e test that copies the app's own logic proves nothing. My first Mock/Model badge check used the
+  app's rule (anything but "mock" = Model), so a file with source "bogus" stayed GREEN. Assert the CONTRACT
+  (source in {mock, model}), then fault-inject it. In Playwright, read app text with useInnerText: textContent glues
+  blocks together ("projected for 20266,602buildings"), so a number can match across two fields. One schema-broken file
+  turns EVERY test of that area red (the app preloads all 10 scenarios and logs a [data contract] console error), as it
+  should. Playwright 1.65 needs chromium-headless-shell build 1254 (`npx playwright install chromium-headless-shell`).
