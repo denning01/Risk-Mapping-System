@@ -904,3 +904,37 @@ def test_export_graph_geometry_is_simplified_for_drawing_only():
     zero = {"a": (np.zeros(W.n_edges, bool), np.zeros(D.n_edges, bool))}
     assert rt.export_graph("t", ["a"], W, D, zero)["walk"]["geom"][0] == []          # within 5 m: dropped
     assert len(rt.export_graph("t", ["a"], W, D, zero, simplify_m=0.0)["walk"]["geom"][0]) == 6
+
+
+def _pair_graph(ways):
+    """Nodes 0 and 1, 300 m apart; ways: list of (length m, travel_time s), each added both ways (parallel ways)."""
+    import networkx as nx
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    for i, x in enumerate((_X0, _X0 + 300)):
+        lon, lat = _ll(x, _Y0)
+        G.add_node(i, x=lon, y=lat)
+    for length, tt in ways:
+        for u, v in ((0, 1), (1, 0)):
+            G.add_edge(u, v, length=length, travel_time=tt, highway="residential")
+    return rt.RoutingGraph(G, "EPSG:32736")
+
+
+def test_export_graph_rounds_time_to_the_nearest_decisecond():
+    """F15.1(a): deciseconds = round(sec * 10), never truncated: 12.37 s -> 124 ds (int() would give 123), 12.32 -> 123."""
+    for tt, want in ((12.37, 124), (12.32, 123)):
+        W = _pair_graph([(300.0, tt)])
+        g = rt.export_graph("t", ["a"], W, W, {"a": (np.zeros(W.n_edges, bool), np.zeros(W.n_edges, bool))})
+        assert g["walk"]["edges"][2::3] == [want]
+        assert g["drive"]["edges"][2::3] == [want, want]
+
+
+def test_export_graph_keeps_parallel_walk_ways_of_different_length_apart():
+    """F15.1(b): two ways between one node pair (300 m and 420 m) stay two rows with their own time and flags; flooding
+    only the long way leaves the short one open, and the router still takes it."""
+    W = _pair_graph([(300.0, 300.0), (420.0, 420.0)])
+    long_ = np.array([W.length[e] == 420.0 for e in range(W.n_edges)])
+    g = rt.export_graph("t", ["a"], W, W, {"a": (long_, long_)})
+    E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    rows = sorted(zip(E[2::3], F))
+    assert rows == [(3000, 0), (4200, 1)]
+    assert rt.graph_route(g, "walk", "a", 0, 1)[0] == 300.0
