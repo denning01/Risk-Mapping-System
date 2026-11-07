@@ -454,3 +454,66 @@ def test_county_without_knbs_figures_uses_the_unit_factor_in_w2(tmp_path, monkey
     """F5.8: a county with no KNBS figures falls back to A's factor (3.0) in mode B: 1000 x 3 x 30/120 = 750."""
     exp = _run_pop(tmp_path, monkeypatch, county_factors=False)
     assert exp["population"] == {"low": 750, "medium": 750, "high": 750}
+
+
+# ---- E-10: buildings layer (pending Person B's schema; never written under web/) ----
+def test_buildings_points_geojson_classes_from_unrounded_depth_and_floor():
+    fc = scen.buildings_points_geojson([35.123456, 35.2], [-0.1234567, -0.3], [0.2999, 0.004])
+    p = [f["properties"] for f in fc["features"]]
+    # 0.2999 rounds to 0.30 but is LOW (under 0.3 m); 0.004 m is wet, so it reads 0.01, never 0.00
+    assert p == [{"depth_m": 0.3, "depth_class": "low"}, {"depth_m": 0.01, "depth_class": "low"}]
+    assert fc["features"][0]["geometry"] == {"type": "Point", "coordinates": [35.12346, -0.12346]}
+    cls = [f["properties"]["depth_class"] for f in scen.buildings_points_geojson([0] * 4, [0] * 4, [0.3, 1.0, 1.0001, 5])["features"]]
+    assert cls == ["medium", "medium", "high", "high"]
+    with pytest.raises(ValueError):
+        scen.buildings_points_geojson([0], [0], [0.0])
+    with pytest.raises(ValueError):
+        scen.buildings_points_geojson([0], [0], [np.nan])
+
+
+def _buildings_npz(rms: Path, cells_conf):
+    to = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+    pts = [to(722600 + (c + 0.5) * RES, 9977880 - (r + 0.5) * RES) for (r, c), _ in cells_conf]
+    d = rms / "processed" / "nyando" / "exposure"
+    d.mkdir(parents=True)
+    n = len(pts)
+    np.savez(d / "open_buildings_aoi.npz", lon=np.array([p[0] for p in pts]), lat=np.array([p[1] for p in pts]),
+             area_m2=np.full(n, 50.0), conf=np.array([c for _, c in cells_conf]), thr80=np.full(n, 0.67),
+             thr85=np.full(n, 0.716), thr90=np.full(n, 0.77))
+
+
+def test_write_buildings_layer_matches_the_counter_and_masks_the_aoi(tmp_path, monkeypatch):
+    """grid(): medium 0.5 m at rows 4-5 x cols 4-6, high 2.0 m at row 8 x cols 8-9, low 0.1 m at rows 0-1 x cols 0-1.
+    The AOI bbox spans cells 1..9, so the low cell (0, 0) is OUTSIDE the area: a building there is in neither the
+    counter nor the layer. Expected layer: (4, 4) medium 0.5, (5, 6) medium 0.5, (8, 8) high 2.0."""
+    rms = tmp_path / "rms"
+    monkeypatch.setenv("RMS_DATA", str(rms))
+    _buildings_npz(rms, [((4, 4), 0.9), ((5, 6), 0.9), ((8, 8), 0.9), ((4, 5), 0.5),   # 0.5 < thr85: not counted
+                         ((0, 0), 0.9), ((2, 2), 0.9)])                                   # outside AOI / dry
+    data, depth = _write_inputs(tmp_path, mock=True)
+    out = rms / "processed" / "nyando" / "exposure" / "buildings_points" / "t"
+    assert scen.main(["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data),
+                      "--buildings", "--buildings-points-dir", str(out)]) == 0
+    for k in scen.scenario_keys():
+        exp = json.loads((data / "nyando" / "scenarios" / f"{k}.exposure.json").read_text())
+        fc = json.loads((out / f"{k}.buildings.geojson").read_text())
+        assert exp["buildings"] == len(fc["features"]) == 3
+        assert sorted((f["properties"]["depth_class"], f["properties"]["depth_m"]) for f in fc["features"]) == \
+            [("high", 2.0), ("medium", 0.5), ("medium", 0.5)]
+    assert not list((data / "nyando" / "scenarios").glob("*.buildings.geojson"))   # nothing reaches the app's data
+
+
+def test_write_buildings_layer_refused_inside_web_or_data_dir_and_without_buildings(tmp_path, monkeypatch):
+    rms = tmp_path / "rms"
+    monkeypatch.setenv("RMS_DATA", str(rms))
+    _buildings_npz(rms, [((4, 4), 0.9)])
+    data, depth = _write_inputs(tmp_path, mock=True)
+    before = (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text()
+    base = ["write", "--area", "nyando", "--depth-dir", str(depth), "--data-dir", str(data)]
+    monkeypatch.setattr(scen, "REPO", tmp_path / "repo")   # a fake repo: a broken guard can never write the real web/
+    web_dir = scen.REPO / "web" / "public" / "data" / "nyando" / "scenarios"
+    assert scen.main(base + ["--buildings", "--buildings-points-dir", str(web_dir)]) == 1
+    assert scen.main(base + ["--buildings", "--buildings-points-dir", str(data / "nyando" / "x")]) == 1
+    assert scen.main(base + ["--buildings-points-dir", str(tmp_path / "ok")]) == 1          # needs --buildings
+    assert not list(web_dir.glob("*.buildings.geojson")) and not (tmp_path / "ok").exists()
+    assert (data / "nyando" / "scenarios" / "50_normal.exposure.json").read_text() == before  # nothing written

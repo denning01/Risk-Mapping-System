@@ -146,3 +146,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   just the classifier. Tie an enum to the app's source with a test (CONTRACT_TYPES_NEXT == schema.ts SHELTER_TYPES).
   Merge with OURS on data, then diff the result against the previous tip before regenerating: here only forecast.json
   (model's) came in, so every later data change is the writer's and can be explained one by one.
+- 2026-11-07 (E-10) A new output whose contract is not agreed yet must be UNABLE to reach the app's data, not just
+  "not written there today": the writer refuses any --buildings-points-dir inside web/ or --data-dir, and the test
+  points REPO at a fake tree so a broken guard cannot write the real web/. Run the real writer against a scratch COPY
+  of web/public/data (--data-dir); `diff -rq` against the committed data then doubles as a determinism check.

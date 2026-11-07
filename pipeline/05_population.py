@@ -416,6 +416,28 @@ def buildings_in_wet(b: dict, wet: np.ndarray, transform, crs, precision: str = 
     return int(wet[r[ok], c[ok]].sum())
 
 
+def buildings_in_wet_points(b: dict, depth: np.ndarray, transform, crs, precision: str = OB_PRECISION):
+    """E-10: the buildings that buildings_in_wet COUNTS, as points: (lon, lat, depth_m) arrays for every footprint
+    whose CENTROID falls in a wet cell (depth > 0; NaN = dry or outside the AOI), at the given precision. Same rule
+    and same row/col lookup as buildings_in_wet, so len(lon) == buildings_in_wet(b, depth > 0, ...); the writer
+    asserts it. depth_m is the depth of the 30 m cell holding the centroid, not a per-building measurement."""
+    from pyproj import Transformer
+    from rasterio.transform import rowcol
+    keep = np.nonzero(b["conf"] >= b[f"thr{precision}"])[0]
+    empty = (np.empty(0), np.empty(0), np.empty(0))
+    if not len(keep):
+        return empty
+    x, y = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(b["lon"][keep], b["lat"][keep])
+    r, c = rowcol(transform, x, y, op=np.floor)
+    r, c = np.asarray(r).astype(np.int64), np.asarray(c).astype(np.int64)
+    ok = (r >= 0) & (r < depth.shape[0]) & (c >= 0) & (c < depth.shape[1])
+    d = np.full(len(keep), np.nan)
+    d[ok] = depth[r[ok], c[ok]]
+    wet = np.isfinite(d) & (d > 0)
+    i = keep[wet]
+    return b["lon"][i], b["lat"][i], d[wet]
+
+
 def cmd_buildings(args) -> int:
     for a in args.area:
         bbox = load_area(a)["bbox"]
