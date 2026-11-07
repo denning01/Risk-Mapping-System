@@ -136,11 +136,11 @@ plausible", not "people who will be flooded".
   - Ahero town → high ground near Onjiko Boys High School (HAND 16 m): **39 min**.
   - A farm in the Ahero Irrigation Scheme → the same high ground: **90 min** (**113 min** at 250 mm El Niño).
   - Katito Market → Katito hospital: **9 min**.
-- **NOT FOR SLIDES until the exposure ROUND 6 remediation (the road-cut fix, F6.5) is ACCEPTed (operator ruling).**
-  The road-cut test used to sample too sparsely and missed 1–10 % of flooded road segments. The fixed check samples every
-  bend point plus every 0.5 m. The lists below are now from the fixed check: in 3 of 20 scenario files, Nyando at 50 mm
-  normal, 50 mm El Niño and 100 mm normal, a road was added or swapped. The drawn routes did not change.
-- Roads cut (named, from the graph; PROVISIONAL, see above):
+- **Roads cut: cleared for slides (operator ruling, 2026-11-07).** Exposure ROUND 6 is ACCEPTed, and the auditor rebuilt
+  every list independently and found 20/20 equal. The road-cut check samples every bend point of a road plus every 0.5 m.
+  The earlier check sampled too sparsely; the fix added or swapped a road in 3 of the 20 scenario exposure files (10 per
+  area), all Nyando at 50 mm normal, 50 mm El Niño and 100 mm normal. The drawn routes did not change.
+- Roads cut (named, from the graph):
   - Nairobi 250 mm El Niño: Thika Road, Kiambu Road, Murang'a Road, Uhuru Highway, Chiromo Road, Mombasa Road, …
   - Nyando 250 mm El Niño: Kisii–Kisumu Road, Kericho–Kisumu Highway, Katito–Kendu Bay–Homa Bay road, …
   - Some Thika Road / Murang'a Road cuts are shallow cells that are the F2.13 closed-depression limit (§7).
