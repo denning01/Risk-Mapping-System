@@ -515,11 +515,26 @@ ORIGINS = {
         ("nbi-o2", "Kibera", "n11007276790", "informal_settlement_resident"),
         ("nbi-o3", "Westlands (commute to Kasarani)", "n30121815", "commuter"),     # Kasarani = OSM n289910864
         ("nbi-o4", "Gikomba Market", "n7005142185", "trader"),
+        # E-09: named OSM places within ~400 m of the modelled 150 mm flood, snap <= 200 m walk (scan in ROUND 11)
+        ("nbi-o5", "Korogocho", "n289911998", "informal_settlement_resident"),
+        ("nbi-o6", "Mukuru Kwa Ruben", "n10271125000", "informal_settlement_resident"),
+        ("nbi-o7", "Kiamaiko", "n11431675440", "informal_settlement_resident"),
+        ("nbi-o8", "Muthurwa Market", "n8213846284", "trader"),
+        ("nbi-o9", "South C (commute to Westlands)", "n30031480", "commuter"),       # Westlands = OSM n30121815
+        ("nbi-o10", "Babadogo (commute to Upper Hill)", "n6346946572", "commuter"),  # Upper Hill = OSM n5380579643
     ],
     "nyando": [
         ("nya-o1", "Ahero town", "n3901069801", "settler"),
         ("nya-o2", "Katito Market", "w540459358", "trader"),
         ("nya-o3", "Farm in the Ahero Irrigation Scheme", "w1133831832", "farmer"),   # West Kano w1144291596: 605 m from drive graph
+        # E-09: named OSM towns/villages/markets near the modelled flood (scan in ROUND 11). Farmer origins are villages:
+        # OSM names almost no farms here (10 named landuse areas in the AOI), so the name says "farming village".
+        ("nya-o4", "Muhoroni town", "n44927549", "settler"),
+        ("nya-o5", "Sondu Agricultural Market", "n6976663147", "trader"),
+        ("nya-o6", "Kibigori", "n10651322618", "settler"),
+        ("nya-o7", "Pap Onditi", "n1180528044", "settler"),
+        ("nya-o8", "Kanyibana Katito 'C' I (farming village)", "n9852990449", "farmer"),
+        ("nya-o9", "Chiga (farming village)", "n10280508666", "farmer"),
     ],
 }
 MAX_SNAP_M = 500.0  # an origin further than this from the walk graph cannot start a credible route
@@ -621,7 +636,8 @@ SAMPLE_STEP_M = 0.5
 DRIVE_CUT_M = 0.3
 BRIDGE_TOL_M = 5.0
 MAX_DEST_SNAP_M = 500.0       # a shelter further than this from the walk graph is not routed to
-COMMUTE = {"nbi-o3": ("n289910864", "Kasarani")}   # origin id -> (OSM place id, name); place=suburb, in osm_places
+COMMUTE = {"nbi-o3": ("n289910864", "Kasarani"), "nbi-o9": ("n30121815", "Westlands"),
+           "nbi-o10": ("n5380579643", "Upper Hill")}   # origin id -> (OSM place id, name); place=suburb, in osm_places
 # Relocation (Nyando settlers, farmers): candidate = a walk-graph node inside the bbox, in a DRY cell, HAND >= HAND_MIN_M,
 # whose 30 m cell holds NO Open Buildings footprint (operator ruling 2026-11-06 part 3: a site is open ground, and on the
 # surface DEM a built cell's HAND is overstated by ~1-2 m), reachable on foot on the cut graph within RELOC_MAX_MIN. Score (weights sum to 1), highest first:

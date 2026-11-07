@@ -131,3 +131,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   blocks together ("projected for 20266,602buildings"), so a number can match across two fields. One schema-broken file
   turns EVERY test of that area red (the app preloads all 10 scenarios and logs a [data contract] console error), as it
   should. Playwright 1.65 needs chromium-headless-shell build 1254 (`npx playwright install chromium-headless-shell`).
+- 2026-11-07 (E-09) A test bound copied from an earlier task's done-criterion (E-03: 3-6 origins) turns into a wall
+  when the next task changes the criterion. Move the bound to the new criterion IN THE SAME COMMIT, cite the task id
+  in the assert, and fault-inject the new bound. For a re-landing, diff old entries against HEAD (64/64 old-origin routes
+  identical) so "added" never hides "changed".
