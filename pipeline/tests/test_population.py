@@ -195,3 +195,32 @@ def test_built_cells_marks_centroid_cells_at_the_precision_threshold():
          "conf": np.array([0.9, 0.5]), "thr85": np.full(2, 0.716)}
     g = pop.built_cells(b, (5, 5), tf, "EPSG:32736")
     assert g.sum() == 1 and g[0, 2] and not g[2, 0]
+
+
+# ---- E-10: the buildings layer is exactly the buildings the counter counts ----
+def test_buildings_in_wet_points_are_the_counted_buildings_with_their_cell_depth():
+    """Same asymmetric probes as the counter's test, on a DEPTH grid: (row 0, col 2) 0.25 m, (row 3, col 1) 1.4 m.
+    A transposed lookup would read (2, 0) / (1, 3), which hold different depths (0.7, NaN)."""
+    from pyproj import Transformer
+    tf = from_origin(722600.0, 9977880.0, 30, 30)
+    to = Transformer.from_crs(32736, 4326, always_xy=True).transform
+    pts = [to(722600 + 2.5 * 30, 9977880 - 0.5 * 30),    # row 0, col 2
+           to(722600 + 1.5 * 30, 9977880 - 3.5 * 30),    # row 3, col 1
+           to(722600 + 2.5 * 30, 9977880 - 0.5 * 30),    # row 0, col 2 but low confidence
+           to(722600 - 100.0, 9977880 + 100.0),          # outside the raster
+           to(722600 + 4.5 * 30, 9977880 - 4.5 * 30)]    # row 4, col 4: dry (0.0)
+    b = {"lon": np.array([p[0] for p in pts]), "lat": np.array([p[1] for p in pts]),
+         "conf": np.array([0.9, 0.9, 0.5, 0.9, 0.9]), "thr85": np.full(5, 0.716)}
+    depth = np.full((5, 5), np.nan)
+    depth[0, 2], depth[3, 1], depth[2, 0], depth[4, 4] = 0.25, 1.4, 0.7, 0.0
+    lon, lat, d = pop.buildings_in_wet_points(b, depth, tf, "EPSG:32736")
+    assert d.tolist() == [0.25, 1.4]
+    assert lon.tolist() == [b["lon"][0], b["lon"][1]] and lat.tolist() == [b["lat"][0], b["lat"][1]]
+    wet = np.isfinite(depth) & (depth > 0)
+    assert len(lon) == pop.buildings_in_wet(b, wet, tf, "EPSG:32736") == 2
+    for cells in ([(0, 2)], [(3, 1)], [(2, 0), (1, 3)], []):   # the count agrees on every wet pattern
+        dd = np.full((5, 5), np.nan)
+        for rc in cells:
+            dd[rc] = 0.5
+        assert len(pop.buildings_in_wet_points(b, dd, tf, "EPSG:32736")[0]) == pop.buildings_in_wet(
+            b, np.isfinite(dd) & (dd > 0), tf, "EPSG:32736")

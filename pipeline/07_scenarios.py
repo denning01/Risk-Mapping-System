@@ -373,6 +373,31 @@ def cmd_snapshot(args) -> int:
     return 0
 
 
+RISK_NAMES = {1: "low", 2: "medium", 3: "high"}
+
+
+def buildings_points_geojson(lon, lat, depth_m) -> dict:
+    """E-10 (pending Person B's schema): one Point per flooded building. depth_class comes from the UNROUNDED depth
+    with the contract thresholds (classify_risk); depth_m is rounded to 2 dp with a floor of 0.01 m, so a wet building
+    never reads 0.00 m. Coordinates WGS84 lon/lat, 5 dp (~1 m)."""
+    d = np.asarray(depth_m, dtype=float)
+    cls = classify_risk(d)
+    if (cls == 0).any():
+        raise ValueError("buildings_points_geojson: a point is not wet (depth <= 0 or NaN)")
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(float(x), 5), round(float(y), 5)]},
+         "properties": {"depth_m": max(round(float(v), 2), 0.01), "depth_class": RISK_NAMES[int(k)]}}
+        for x, y, v, k in zip(lon, lat, d, cls)]}
+
+
+def _inside(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def cmd_write(args) -> int:
     data_dir, depth_dir = Path(args.data_dir), Path(args.depth_dir)
     scen_dir = data_dir / args.area / "scenarios"
@@ -380,6 +405,17 @@ def cmd_write(args) -> int:
     if missing:
         print(f"ERROR: {len(missing)} depth raster(s) missing in {depth_dir}: {missing}", file=sys.stderr)
         return 1
+    pts_dir = Path(args.buildings_points_dir) if args.buildings_points_dir else None
+    if pts_dir is not None:
+        if not args.buildings:
+            print("ERROR: --buildings-points-dir needs --buildings", file=sys.stderr)
+            return 1
+        # E-10: the buildings layer has no contract yet (Person B). Until it does it may not reach the app's data.
+        if _inside(pts_dir, REPO / "web") or _inside(pts_dir, data_dir):
+            print(f"ERROR: --buildings-points-dir {pts_dir} is inside web/ or --data-dir; the buildings layer waits for "
+                  "Person B's schema (write it under $RMS_DATA)", file=sys.stderr)
+            return 1
+        pts_dir.mkdir(parents=True, exist_ok=True)
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
@@ -506,6 +542,15 @@ def cmd_write(args) -> int:
             year = pman["year"]
         if bld is not None:
             buildings = pop.buildings_in_wet(bld, wet, tf, crs)
+        if pts_dir is not None:
+            plon, plat, pdep = pop.buildings_in_wet_points(bld, depth, tf, crs)
+            if len(plon) != buildings:
+                raise SystemExit(f"{key}: buildings layer has {len(plon)} points but exposure buildings = {buildings}")
+            raw = json.dumps(buildings_points_geojson(plon, plat, pdep), separators=(",", ":"))
+            (pts_dir / f"{key}.buildings.geojson").write_text(raw)
+            pk = np.bincount(classify_risk(pdep), minlength=4)
+            print(f"  {key}: buildings layer {len(plon):,} points (= exposure buildings) low/med/high "
+                  f"{pk[1]:,}/{pk[2]:,}/{pk[3]:,}  {len(raw) / 1024:.1f} KiB -> {pts_dir}")
         exposure = {
             "year": year, "population": population, "buildings": buildings,
             "flooded_area_km2": round(st["flooded_area_m2"] / 1e6, 2), "roads_cut": exp_old["roads_cut"],
@@ -611,6 +656,9 @@ def main(argv=None) -> int:
                    help="dasymetric weight inside each county's part of the AOI (required with --population)")
     w.add_argument("--buildings", action="store_true",
                    help="buildings at risk from 05_population.py buildings output (else carried)")
+    w.add_argument("--buildings-points-dir", default=None,
+                   help="E-10: also write <key>.buildings.geojson (one Point per flooded building) to this dir; needs "
+                        "--buildings; refused inside web/ until Person B agrees the schema")
     w.add_argument("--routes", action="store_true",
                    help="shelters from OSM + routes + roads_cut from the graphs (E-05; else carried)")
     w.add_argument("--hand", default=None, help="hand.tif (model, from a snapshot): needed by --routes for a rural area")
