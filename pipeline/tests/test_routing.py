@@ -774,3 +774,20 @@ def test_a_bridge_on_a_later_edge_is_exempt_where_it_is(tmp_path):
     assert not RG.cut(wet, tf).any()
     wet, tf = _wet([(_X0 + 50, _Y0)])
     assert RG.cut(wet, tf).sum() == 2
+
+
+def test_cut_is_right_on_two_different_grids_with_one_graph():
+    """F6.8: cut() caches sample cells per grid. Cutting the SAME graph on grid A, then on a grid B with another origin and
+    shape, must use B's cells: A is wet under edge 0-1 only, B under edge 10-11 only."""
+    from rasterio.transform import from_origin, rowcol
+    RG = _lattice(2)
+    def edges(cut):
+        return {frozenset((RG.nodes[RG.u[i]], RG.nodes[RG.v[i]])) for i in np.nonzero(cut)[0]}
+    wa, ta = _wet([(_X0 + 150, _Y0)])                                  # 40 x 40 grid
+    tb = from_origin(_X0 - 1000, _Y0 + 700, 30, 30)
+    wb = np.zeros((60, 70), bool)
+    r, c = rowcol(tb, _X0 + 150, _Y0 - _SP)
+    wb[int(r), int(c)] = True
+    assert edges(RG.cut(wa, ta)) == {frozenset((0, 1))}
+    assert edges(RG.cut(wb, tb)) == {frozenset((10, 11))}
+    assert edges(RG.cut(wa, ta)) == {frozenset((0, 1))}               # and back again
