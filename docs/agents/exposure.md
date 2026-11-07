@@ -115,3 +115,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   put a building in every class you claim to count. A fixture that already equals the right answer (old year = manifest
   year) cannot catch carrying the wrong one; make them differ. "Downloaded this round" in EVIDENCE must mean a file under
   $RMS_DATA with its sha256, not a scratchpad copy.
+- 2026-11-07 (R6 F6.5) "Sample every 15 m along the edge" is not "every cell gets a sample": sampling at fractions of
+  the whole edge skips interior vertices, and a line can clip a cell corner between samples. Missed 2-8 % of wet edges
+  on the model floods, with every test green, because no fixture put a VERTEX or a CORNER CLIP in a wet cell. Sample every
+  vertex plus <= s m: then any wet stretch longer than s m is caught (straight between vertices), which is provable.
+  Test the exactness with a fixture that the coarser rule demonstrably misses (assert that as a precondition). At 0.5 m
+  the walk graph is 19.5 M samples: compute the bridge exemption only on edges near a bridge, never on every sample.

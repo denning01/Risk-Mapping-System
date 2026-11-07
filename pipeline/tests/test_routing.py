@@ -714,3 +714,63 @@ def test_shelter_further_than_the_snap_limit_from_any_path_is_not_chosen():
     assert s["id"] == "n22" and leg["minutes"] == 20
     s, why = rt._nearest_safe_shelter(W, o, [far], cut)
     assert s is None and "no safe shelter reachable" in why
+
+
+# ---- R6 F6.5: cut() must not miss a flooded edge (found during E-09) ----
+def test_cut_samples_every_vertex_of_the_edge_geometry():
+    """A 2-node edge whose geometry bends through one corner of a wet 30 m cell. 15 m steps at fractions of the whole
+    edge (the old sampling) put no sample in that cell (asserted below, so the fixture really is the failing case);
+    the edge must still be cut because its vertex lies in the cell."""
+    import networkx as nx
+    from rasterio.transform import rowcol
+    from shapely.geometry import LineString as L
+    a, v, b = (_X0 + 5, _Y0 - 45), (_X0 + 33, _Y0 - 27), (_X0 + 61, _Y0 - 45)    # v is 3 m inside cell (x 30-60, y -30..0)
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    G.add_node(1, x=_ll(*a)[0], y=_ll(*a)[1]); G.add_node(2, x=_ll(*b)[0], y=_ll(*b)[1])
+    geom = L([_ll(*a), _ll(*v), _ll(*b)])
+    G.add_edge(1, 2, length=66.6, travel_time=66.6, highway="residential", geometry=geom)
+    RG = rt.RoutingGraph(G, "EPSG:32736")
+    wet, tf = _wet([v])
+    line = L([a, v, b]); n = int(np.ceil(line.length / 15.0))
+    old = [line.interpolate(t, normalized=True) for t in np.linspace(0, 1, n + 1)]
+    rv, cv = rowcol(tf, *v)
+    assert all(tuple(rowcol(tf, p.x, p.y)) != (rv, cv) for p in old)       # the old sampling misses this cell
+    assert RG.cut(wet, tf).tolist() == [True]
+    assert RG.cut(np.zeros_like(wet), tf).tolist() == [False]
+
+
+def test_cut_catches_a_corner_clip_longer_than_the_sample_step():
+    """F6.5 guarantee: a STRAIGHT edge clipping a wet cell's corner with a 0.81 m chord (line x' + y' = 0.57 m through
+    the corner) must be cut. 2 m steps miss it (asserted, so the fixture really is the failing case); 0.5 m steps cannot."""
+    import networkx as nx
+    from rasterio.transform import rowcol
+    from shapely.geometry import LineString as L
+    cx, cy = _X0 + 30, _Y0 - 30                              # lower-left corner of the cell x 30..60, y -30..0
+    a, b = (cx - 100.5, cy + 101.07), (cx + 100.57, cy - 100)
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    G.add_node(1, x=_ll(*a)[0], y=_ll(*a)[1]); G.add_node(2, x=_ll(*b)[0], y=_ll(*b)[1])
+    G.add_edge(1, 2, length=284.4, travel_time=284.4, highway="residential")
+    RG = rt.RoutingGraph(G, "EPSG:32736")
+    wet, tf = _wet([(cx + 15, cy + 15)])
+    rv, cv = rowcol(tf, cx + 15, cy + 15)
+    xy2 = np.asarray(L([a, b]).segmentize(2.0).coords)
+    assert all(tuple(rowcol(tf, x, y, op=np.floor)) != (rv, cv) for x, y in xy2)   # 2 m steps miss the clip
+    assert rt.SAMPLE_STEP_M <= 0.5
+    assert RG.cut(wet, tf).tolist() == [True]
+
+
+def test_a_bridge_on_a_later_edge_is_exempt_where_it_is(tmp_path):
+    """The bridge exemption is computed on the samples of bridge-adjacent edges only; it must land on THOSE samples. The
+    bridge is edge 10-11 (bottom row), not the first edge in the sample arrays. Wet under it: not cut; wet under edge
+    0-1 (no bridge): cut."""
+    lon0, lat0 = _ll(_X0, _Y0 - _SP)
+    lon1, lat1 = _ll(_X0 + 100, _Y0 - _SP)
+    xml = tmp_path / "b.osm"
+    rt.write_osm_xml(xml, {1: (lon0, lat0), 2: (lon1, lat1)}, [(9, [1, 2], {"highway": "primary", "bridge": "yes"})])
+    RG = rt.RoutingGraph(_lattice(2).G, "EPSG:32736", rt.bridge_lines(xml))
+    first = [i for i in range(RG.n_edges) if {RG.nodes[RG.u[i]], RG.nodes[RG.v[i]]} == {10, 11}]
+    assert first and min(first) > 0 and RG.se.min() == 0     # the bridge edge is not edge 0
+    wet, tf = _wet([(_X0 + 50, _Y0 - _SP)])
+    assert not RG.cut(wet, tf).any()
+    wet, tf = _wet([(_X0 + 50, _Y0)])
+    assert RG.cut(wet, tf).sum() == 2

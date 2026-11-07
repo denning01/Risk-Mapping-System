@@ -592,9 +592,13 @@ def cmd_origins(args) -> int:
 # flood-aware routing (E-05)
 # ---------------------------------------------------------------------------------------------
 # RULES (stated; each one is a CHOICE unless a source is named):
-#  * An edge is CUT in a scenario when ANY point sampled every SAMPLE_STEP_M along its geometry lies in a flooded cell.
-#    Stricter than "midpoint flooded": a long simplified edge with one flooded end is cut. Half the 30 m cell, so every
-#    cell an edge crosses gets a sample. "Flooded" differs by mode (operator ruling 2026-11-06, part 2):
+#  * An edge is CUT in a scenario when ANY sample of its geometry lies in a flooded cell. Samples = EVERY vertex of the
+#    edge geometry plus points at most SAMPLE_STEP_M = 0.5 m apart (shapely segmentize). Between vertices the edge is
+#    straight, so ANY stretch of the edge longer than 0.5 m inside a wet cell contains a sample: the cut equals an
+#    exact-geometry cut with a 0.5 m length threshold (the exposure auditor's ROUND 6 criterion). Only a corner clip
+#    shorter than 0.5 m can be missed. Stricter than "midpoint flooded".
+#    History (R6 F6.5, found in E-09): 15 m steps at fractions of the whole edge skipped interior vertices and missed
+#    1-10 % of wet edges; a drawn commute crossed a 0.31 m cell. "Flooded" differs by mode (operator ruling 2026-11-06, part 2):
 #      WALK edges: depth > 0, ANY depth (errs safe).
 #      DRIVE edges: depth >= DRIVE_CUT_M = 0.3 m. Source: US National Weather Service, "Turn Around Don't Drown",
 #        https://www.weather.gov/safety/flood-turn-around-dont-drown : "It takes just 12 inches of rushing water to carry
@@ -613,7 +617,7 @@ def cmd_origins(args) -> int:
 #  * avoided = the named roads on the usual (unflooded) path to the SAME destination that are cut in this scenario.
 #  * A route that cannot be found is NOT written (the contract has no "unreachable" leg); it is listed in the run's
 #    routes_check.json and printed, so it is reported, never silently dropped.
-SAMPLE_STEP_M = 15.0
+SAMPLE_STEP_M = 0.5
 DRIVE_CUT_M = 0.3
 BRIDGE_TOL_M = 5.0
 MAX_DEST_SNAP_M = 500.0       # a shelter further than this from the walk graph is not routed to
@@ -691,7 +695,7 @@ class RoutingGraph:
         self.nx_, self.ny_ = to(self.lon, self.lat)
         self.tree = cKDTree(np.c_[self.nx_, self.ny_])
         self.u, self.v, self.w, self.geom, self.name, self.hwy, self.length = [], [], [], [], [], [], []
-        sx, sy, se = [], [], []
+        sx, sy, se, lines_utm = [], [], [], []
         for e, (u, v, d) in enumerate(G.edges(data=True)):
             g = d.get("geometry")
             if g is None:
@@ -703,27 +707,35 @@ class RoutingGraph:
             self.geom.append(c); self.name.append(_names(d.get("name"))); self.length.append(float(d["length"]))
             h = d.get("highway"); self.hwy.append(h if isinstance(h, str) else slowest_class(h))
             gu = LineString(np.c_[to(c[:, 0], c[:, 1])])
-            n = max(int(np.ceil(gu.length / SAMPLE_STEP_M)), 1)
-            for t in np.linspace(0, 1, n + 1):
-                p = gu.interpolate(t, normalized=True)
-                sx.append(p.x); sy.append(p.y); se.append(e)
+            lines_utm.append(gu)
+            xy = np.asarray(gu.segmentize(SAMPLE_STEP_M).coords)                   # keeps every vertex
+            sx.append(xy[:, 0]); sy.append(xy[:, 1]); se.append(np.full(len(xy), e, np.int32))
         self.u, self.v, self.w = np.array(self.u), np.array(self.v), np.array(self.w)
-        self.sx, self.sy, self.se = np.array(sx), np.array(sy), np.array(se)
+        self.sx, self.sy, self.se = (np.concatenate(a) if a else np.zeros(0) for a in (sx, sy, se))
+        self.se = self.se.astype(np.int64)
         self.n_edges = len(self.u)
         self.on_bridge = np.zeros(len(self.sx), bool)
+        self._cells = None
         if bridges:
             import shapely
-            lines = [LineString(np.c_[to(*np.array(b).T)]) for b in bridges if len(b) >= 2]
-            tree = shapely.STRtree(lines)
-            hit = tree.query(shapely.points(self.sx, self.sy), predicate="dwithin", distance=BRIDGE_TOL_M)
-            self.on_bridge[np.unique(hit[0])] = True
+            blines = [LineString(np.c_[to(*np.array(b).T)]) for b in bridges if len(b) >= 2]
+            tree = shapely.STRtree(blines)
+            # only samples of edges that come within BRIDGE_TOL_M of a bridge can be on one: test those, not all
+            near = np.unique(tree.query(lines_utm, predicate="dwithin", distance=BRIDGE_TOL_M)[0])
+            k = np.nonzero(np.isin(self.se, near))[0]
+            hit = tree.query(shapely.points(self.sx[k], self.sy[k]), predicate="dwithin", distance=BRIDGE_TOL_M)
+            self.on_bridge[k[np.unique(hit[0])]] = True
 
     def cut(self, wet: np.ndarray, transform) -> np.ndarray:
         """bool per edge: any sample in a wet cell. Samples outside the raster are dry (no information)."""
         from rasterio.transform import rowcol
-        r, c = rowcol(transform, self.sx, self.sy, op=np.floor)
-        r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
-        ok = (r >= 0) & (r < wet.shape[0]) & (c >= 0) & (c < wet.shape[1])
+        key = (tuple(transform), wet.shape)
+        if self._cells is None or self._cells[0] != key:          # every scenario shares one grid: compute once
+            r, c = rowcol(transform, self.sx, self.sy, op=np.floor)
+            r, c = np.asarray(r, np.int64), np.asarray(c, np.int64)
+            ok = (r >= 0) & (r < wet.shape[0]) & (c >= 0) & (c < wet.shape[1])
+            self._cells = (key, r, c, ok)
+        _, r, c, ok = self._cells
         hit = np.zeros(len(r), bool)
         hit[ok] = wet[r[ok], c[ok]]
         hit &= ~self.on_bridge
