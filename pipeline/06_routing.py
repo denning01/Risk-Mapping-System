@@ -292,7 +292,9 @@ def extract_places(pbf: Path, areas: dict[str, list[float]]) -> dict:
             if bb[0] <= lon <= bb[2] and bb[1] <= lat <= bb[3]:
                 out[a].append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
                                "properties": {"osm": osm, "kind": kind, "name": tags.get("name"),
-                                              "area_km2": None if geom is None else round(_area_km2(geom), 4)}})
+                                              "area_km2": None if geom is None else round(_area_km2(geom), 4),
+                                              # F16.1: the TAG, whatever kind won (a place=* market is still a market)
+                                              "marketplace": tags.get("amenity") == "marketplace"}})
 
     for obj in osmium.FileProcessor(str(pbf)).with_locations().with_areas():
         if obj.is_way() or obj.is_relation() or not len(obj.tags):
@@ -1009,6 +1011,98 @@ def _nearest_safe_shelter(W: RoutingGraph, o, shelters: list[dict], cut, flood=N
     s = safe[k]
     return s, {"minutes": _minutes(float(dist[nodes[k]]), do_, float(dd[k])), "edges": edges,
                "snap_m": [round(do_), round(float(dd[k]))], "coords": W.line(edges, start=o, end=(s["lon"], s["lat"]))}
+
+
+# ---------------------------------------------------------------------------------------------
+# E-12: graph.json, the road graph for client-side "route from anywhere" (pending Person B's schema)
+# ---------------------------------------------------------------------------------------------
+GRAPH_SIMPLIFY_M = 5.0   # CHOICE: display geometry only (Douglas-Peucker in UTM); routing and flood flags use the full geometry
+
+
+def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, cuts: dict, simplify_m: float = GRAPH_SIMPLIFY_M) -> dict:
+    """graph.json for one area. cuts: key -> (cut_walk, cut_drive), the SAME per-edge masks the published routes used
+    (RoutingGraph.cut: walk at depth > 0, drive at >= 0.3 m, bridges exempt).
+      nodes:  flat [lon, lat, ...] (5 dp), the union of walk and drive nodes by OSM id
+      walk:   edges flat [u, v, deciseconds, ...] ONE row per two-way pair (walking is symmetric); flooded[i] = bitmask
+              over `scenarios` (bit k set = closed in scenarios[k]); a pair is closed if either direction is cut
+      drive:  the same, every DIRECTED edge (one-way streets)
+      geom:   per edge, interior vertices flat [lon, lat, ...], simplified to `simplify_m` for drawing only
+    Travel time is stored in deciseconds (round(sec * 10)), so a client's minutes can differ from routes.json by
+    at most the rounding of a few 0.05 s steps."""
+    import shapely
+    from pyproj import Transformer
+    from shapely.geometry import LineString
+    assert len(keys) <= 31, "bitmask holds at most 31 scenarios"
+    osm_ids = sorted(set(W.nodes) | set(D.nodes))
+    nid = {o: i for i, o in enumerate(osm_ids)}
+    lonlat = {}
+    for RG in (W, D):
+        for i, o in enumerate(RG.nodes):
+            lonlat.setdefault(o, (RG.lon[i], RG.lat[i]))
+    nodes = [round(float(c), 5) for o in osm_ids for c in lonlat[o]]
+    to = Transformer.from_crs("EPSG:4326", W.crs, always_xy=True)
+
+    def geom(c):
+        if len(c) <= 2:
+            return []
+        x, y = to.transform(c[:, 0], c[:, 1])
+        g = shapely.simplify(LineString(np.c_[x, y]), simplify_m, preserve_topology=False)
+        lon, lat = to.transform(*np.asarray(g.coords).T, direction="INVERSE")
+        return [round(float(v), 5) for p in zip(lon[1:-1], lat[1:-1]) for v in p]
+
+    def net(RG, which, undirected):
+        bits = np.zeros(RG.n_edges, np.int64)
+        for k, key in enumerate(keys):
+            bits |= cuts[key][which].astype(np.int64) << k
+        rows, seen = [], {}
+        for e in range(RG.n_edges):
+            u, v = nid[RG.nodes[RG.u[e]]], nid[RG.nodes[RG.v[e]]]
+            if undirected:
+                pk = (min(u, v), max(u, v), round(RG.length[e], 1))
+                if pk in seen:                      # the reverse direction of a pair already written
+                    rows[seen[pk]][3] |= int(bits[e])
+                    continue
+                seen[pk] = len(rows)
+            rows.append([u, v, int(round(RG.w[e] * 10)), int(bits[e]), geom(RG.geom[e])])
+        return {"edges": [x for r in rows for x in r[:3]], "flooded": [r[3] for r in rows], "geom": [r[4] for r in rows]}
+
+    return {"area": area, "version": 1, "scenarios": list(keys), "time_unit": "deciseconds",
+            "walk_kph": WALK_KPH, "drive_cut_m": DRIVE_CUT_M, "simplify_m": simplify_m,
+            "nodes": nodes, "walk": net(W, 0, True), "drive": net(D, 1, False)}
+
+
+def graph_route(g: dict, net: str, key: str, src: int, dst: int):
+    """Reference client router (reads ONLY the exported dict): Dijkstra on `net` with every edge flooded in `key`
+    removed. Returns (seconds, [edge indices]) or (None, []) if unreachable. Walk edges are two-way."""
+    import heapq
+    k = g["scenarios"].index(key)
+    E, F = g[net]["edges"], g[net]["flooded"]
+    adj = {}
+    for i in range(len(F)):
+        if F[i] >> k & 1:
+            continue
+        u, v, t = E[3 * i], E[3 * i + 1], E[3 * i + 2]
+        adj.setdefault(u, []).append((v, t, i))
+        if net == "walk":
+            adj.setdefault(v, []).append((u, t, i))
+    dist, prev, pq = {src: 0}, {}, [(0, src)]
+    while pq:
+        d, x = heapq.heappop(pq)
+        if x == dst:
+            break
+        if d > dist.get(x, 1 << 62):
+            continue
+        for y, t, i in adj.get(x, ()):
+            if d + t < dist.get(y, 1 << 62):
+                dist[y], prev[y] = d + t, (x, i)
+                heapq.heappush(pq, (d + t, y))
+    if dst not in dist:
+        return None, []
+    path, x = [], dst
+    while x != src:
+        x, i = prev[x]
+        path.append(i)
+    return dist[dst] / 10, path[::-1]
 
 
 def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,

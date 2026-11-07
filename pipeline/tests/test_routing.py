@@ -224,6 +224,7 @@ def test_extract_places_on_handwritten_osm(tmp_path):
     body = [n(1, 35.005, -0.205, t("place", "village") + t("name", "In Village")),
             n(2, 35.50, -0.205, t("place", "village") + t("name", "Far Village")),          # outside bbox+buffer
             n(3, 35.025, -0.205, t("place", "hamlet") + t("name", "Buffer Hamlet")),        # in the 0.02 deg buffer
+            n(4, 35.004, -0.204, t("place", "informal") + t("amenity", "marketplace") + t("name", "Hazina-like")),
             n(10, 35.006, -0.207), n(11, 35.007, -0.207), n(12, 35.007, -0.206), n(13, 35.006, -0.206),
             n(20, 35.60, -0.207), n(21, 35.601, -0.207), n(22, 35.601, -0.206), n(23, 35.60, -0.206),
             sq(100, (10, 11, 12, 13, 10), t("landuse", "farmland")),
@@ -231,7 +232,10 @@ def test_extract_places_on_handwritten_osm(tmp_path):
     f = tmp_path / "p.osm"
     f.write_text('<?xml version="1.0" encoding="UTF-8"?>\n<osm version="0.6">\n' + "\n".join(body) + "\n</osm>\n")
     got = {p["properties"]["osm"]: p for p in rt.extract_places(f, {"nyando": BBOX})["nyando"]}
-    assert sorted(got) == ["n1", "n3", "w100"]
+    assert sorted(got) == ["n1", "n3", "n4", "w100"]
+    # F16.1: a place=* that is also a market keeps its place kind AND carries the market tag; nothing else does
+    assert got["n4"]["properties"]["kind"] == "place=informal" and got["n4"]["properties"]["marketplace"] is True
+    assert [k for k, v in got.items() if v["properties"]["marketplace"]] == ["n4"]
     farm = got["w100"]["properties"]
     assert farm["kind"] == "landuse=farmland" and farm["name"] is None
     assert farm["area_km2"] == pytest.approx(0.0124, rel=0.02)                 # 0.001 deg x 0.001 deg at the equator
@@ -839,3 +843,102 @@ def test_dedupe_keeps_a_named_church_inside_an_area_that_will_not_be_emitted():
                     (area("w4", name="St Paul", religion="christian"), False)]:           # same facility: dropped
         keep, dropped = rt.dedupe_shelters([a, node])
         assert ("n1" in [s["osm"] for s in keep]) is kept and dropped == (0 if kept else 1), a["osm"]
+
+
+# ---- E-12: graph.json export + the reference client router ----
+def _graph(cut_cells_by_key):
+    """4x4 lattice for both nets; per scenario key a list of UTM points that are wet (walk = drive here)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    cuts = {}
+    for k, cells in cut_cells_by_key.items():
+        wet, tf = _wet(cells)
+        cuts[k] = (W.cut(wet, tf), D.cut(wet, tf))
+    return W, D, rt.export_graph("t", list(cut_cells_by_key), W, D, cuts)
+
+
+def test_export_graph_shapes_bits_and_two_way_walk():
+    W, D, g = _graph({"a": [(_X0 + 150, _Y0)], "b": []})          # a: edge 0-1 wet at its middle; b: all dry
+    n = 16
+    assert len(g["nodes"]) == 2 * n and g["scenarios"] == ["a", "b"]
+    assert len(g["walk"]["flooded"]) == W.n_edges // 2 == 24          # one row per two-way pair
+    assert len(g["drive"]["flooded"]) == D.n_edges == 48               # every directed edge
+    E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    ids = sorted(W.nodes)
+    wet = {(ids[E[3 * i]], ids[E[3 * i + 1]]) for i in range(len(F)) if F[i]}
+    assert {frozenset(p) for p in wet} == {frozenset((0, 1))} and all(F[i] in (0, 1) for i in range(len(F)))  # bit 0 = "a"
+    assert sorted(set(g["drive"]["flooded"])) == [0, 1] and sum(g["drive"]["flooded"]) == 2                  # both directions
+    assert E[2] == 3000                                                # 300 m at 1 m/s = 300 s = 3000 ds
+
+
+def test_export_graph_closes_a_pair_if_either_direction_is_cut():
+    W, D = _lattice(2), _lattice(2, drive=True)
+    cw = np.zeros(W.n_edges, bool)
+    cw[[e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (1, 0)][0]] = True   # only 1 -> 0
+    g = rt.export_graph("t", ["a"], W, D, {"a": (cw, np.zeros(D.n_edges, bool))})
+    ids = sorted(W.nodes); E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    closed = [frozenset((ids[E[3 * i]], ids[E[3 * i + 1]])) for i in range(len(F)) if F[i]]
+    assert closed == [frozenset((0, 1))]
+
+
+def test_graph_route_never_uses_a_flooded_edge_and_matches_the_pipeline_dijkstra():
+    """Wet cell on edge 0-1: the walk from node 0 to node 1 detours 0-10-11-1 (900 s), and every edge on the path is
+    dry in that scenario; in the dry scenario it is the direct 300 s edge. Distances equal RoutingGraph.dijkstra."""
+    W, D, g = _graph({"a": [(_X0 + 150, _Y0)], "b": []})
+    ids = sorted(W.nodes); s, t = ids.index(0), ids.index(1)
+    for key, want in (("a", 900.0), ("b", 300.0)):
+        sec, path = rt.graph_route(g, "walk", key, s, t)
+        assert sec == want
+        k = g["scenarios"].index(key)
+        assert path and all(not (g["walk"]["flooded"][i] >> k & 1) for i in path)
+        cut = W.cut(*_wet([(_X0 + 150, _Y0)] if key == "a" else []))
+        assert W.dijkstra(W.idx[0], cut)[0][W.idx[1]] == pytest.approx(want, abs=0.1)
+    # a node with every edge flooded is unreachable, never routed through water
+    wet_all = [(_X0 + 150, _Y0), (_X0, _Y0 - 150)]                       # both edges at node 0
+    _, _, g2 = _graph({"a": wet_all})
+    assert rt.graph_route(g2, "walk", "a", ids.index(0), ids.index(33)) == (None, [])
+
+
+def test_export_graph_geometry_is_simplified_for_drawing_only():
+    from shapely.geometry import LineString
+    W, D = _lattice(2), _lattice(2, drive=True)
+    e = 0
+    a, b = W.geom[e][0], W.geom[e][-1]
+    mid = [(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f + (1e-6 if f == 0.5 else 0)) for f in (0.25, 0.5, 0.75)]
+    W.geom[e] = np.array([a, *mid, b])                                   # 3 interior vertices, 0.1 m off the line
+    zero = {"a": (np.zeros(W.n_edges, bool), np.zeros(D.n_edges, bool))}
+    assert rt.export_graph("t", ["a"], W, D, zero)["walk"]["geom"][0] == []          # within 5 m: dropped
+    assert len(rt.export_graph("t", ["a"], W, D, zero, simplify_m=0.0)["walk"]["geom"][0]) == 6
+
+
+def _pair_graph(ways):
+    """Nodes 0 and 1, 300 m apart; ways: list of (length m, travel_time s), each added both ways (parallel ways)."""
+    import networkx as nx
+    G = nx.MultiDiGraph(crs="EPSG:4326")
+    for i, x in enumerate((_X0, _X0 + 300)):
+        lon, lat = _ll(x, _Y0)
+        G.add_node(i, x=lon, y=lat)
+    for length, tt in ways:
+        for u, v in ((0, 1), (1, 0)):
+            G.add_edge(u, v, length=length, travel_time=tt, highway="residential")
+    return rt.RoutingGraph(G, "EPSG:32736")
+
+
+def test_export_graph_rounds_time_to_the_nearest_decisecond():
+    """F15.1(a): deciseconds = round(sec * 10), never truncated: 12.37 s -> 124 ds (int() would give 123), 12.32 -> 123."""
+    for tt, want in ((12.37, 124), (12.32, 123)):
+        W = _pair_graph([(300.0, tt)])
+        g = rt.export_graph("t", ["a"], W, W, {"a": (np.zeros(W.n_edges, bool), np.zeros(W.n_edges, bool))})
+        assert g["walk"]["edges"][2::3] == [want]
+        assert g["drive"]["edges"][2::3] == [want, want]
+
+
+def test_export_graph_keeps_parallel_walk_ways_of_different_length_apart():
+    """F15.1(b): two ways between one node pair (300 m and 420 m) stay two rows with their own time and flags; flooding
+    only the long way leaves the short one open, and the router still takes it."""
+    W = _pair_graph([(300.0, 300.0), (420.0, 420.0)])
+    long_ = np.array([W.length[e] == 420.0 for e in range(W.n_edges)])
+    g = rt.export_graph("t", ["a"], W, W, {"a": (long_, long_)})
+    E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    rows = sorted(zip(E[2::3], F))
+    assert rows == [(3000, 0), (4200, 1)]
+    assert rt.graph_route(g, "walk", "a", 0, 1)[0] == 300.0

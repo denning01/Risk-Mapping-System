@@ -150,3 +150,20 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   "not written there today": the writer refuses any --buildings-points-dir inside web/ or --data-dir, and the test
   points REPO at a fake tree so a broken guard cannot write the real web/. Run the real writer against a scratch COPY
   of web/public/data (--data-dir); `diff -rq` against the committed data then doubles as a determinism check.
+- 2026-11-07 (E-12) Prove "no route uses a flooded edge" against a SECOND geometry, not the bitmask the code wrote: the
+  proof re-cuts every edge from the full OSM geometry and the depth rasters (its own sampler), and requires 0 edges wet
+  there but unflagged (40 area x net x scenario checks). Then reproduce the PUBLISHED numbers (every routes.json minute,
+  including the walk-to-network snap legs) from the exported file alone: this catches unit and rounding bugs (seconds
+  vs deciseconds) that a self-consistent test misses. A refusal test must pin the refusal's MESSAGE (capsys), or a
+  fixture KeyError passes it vacuously.
+- 2026-11-07 (E-13) Before a new derived count goes anywhere, compare it with the number it should be bounded by. "People
+  who lose clinic access" came out 24x the people in the flood (Nyando 114,286 vs 4,720 at 50 mm): decomposed by reason
+  (snap node cut, wet snap leg, network split) and by pocket (connected component), it was snapping, pockets running
+  to the graph's edge, rain-independent channel crossings and OSM's 15 clinics, not the flood. Take that to the
+  operator with the numbers; do not tune it quietly. Held metrics leave NO code path and no files behind: the
+  first run's outputs under $RMS_DATA were deleted, and the code was taken out, not just switched off.
+- 2026-11-07 (F16.1/F16.2) A cache that stores ONE "kind" per OSM object loses every other tag: select by the TAG
+  (osm_places now carries marketplace: bool), and make a reader refuse a cache that predates the field rather than
+  under-count. My second method reused the same cache, so it agreed with the bug; the auditor read the raw PBF. Make
+  toy grids non-square (rows != cols) so a transposed lookup fails, feed names unsorted, and use a "mock" source so a
+  hard-coded "model" fails.
