@@ -1,1 +1,1 @@
-{"year":2026,"population":{"low":82118,"medium":88071,"high":92242},"buildings":10480,"flooded_area_km2":6.63,"roads_cut":["Thika Road","Kiambu Road","Murang'a Road","Uhuru Highway","Mombasa Road","Chiromo Road","Globe Roundabout","Outer Ring Road"],"source":"mock"}
+{"year":2026,"population":{"low":82118,"medium":88071,"high":92242},"buildings":10480,"flooded_area_km2":6.63,"roads_cut":["Thika Road","Kiambu Road","Murang'a Road","Uhuru Highway","Mombasa Road","Chiromo Road","Globe Roundabout","Outer Ring Road"],"source":"model"}
