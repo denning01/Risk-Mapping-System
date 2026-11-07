@@ -135,3 +135,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   when the next task changes the criterion. Move the bound to the new criterion IN THE SAME COMMIT, cite the task id
   in the assert, and fault-inject the new bound. For a re-landing, diff old entries against HEAD (64/64 old-origin routes
   identical) so "added" never hides "changed".
+- 2026-11-07 (R10 F10.1) Never put a package.json + lockfile in an ANCESTOR of a Next.js app. Next infers the workspace
+  root from the highest lockfile ("multiple lockfiles" warning), and on the first build after that root changes Turbopack
+  writes loader chunks to <new root>/<old relative path>/.next (a root .next/ at 11:45, then web/web/.next after the move
+  back). Tooling for the app goes in a SIBLING dir (e2e/package.json). My "cause unknown" was a finding I should have chased:
+  grep the build output for warnings before calling a stray directory unexplained.

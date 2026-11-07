@@ -25,10 +25,11 @@ import {
 const meta = readJson<{ mock: boolean }>("meta.json");
 
 test("the server serves every committed data file byte for byte", async ({ request }) => {
-  const rels = ["areas.json", "meta.json", ...areas().flatMap((a) => [`${a.id}/origins.json`])];
+  // F10.5: population.json (Person B's) and advice/crops.json are served too
+  const rels = ["areas.json", "meta.json", "advice/crops.json", ...areas().flatMap((a) => [`${a.id}/origins.json`, `${a.id}/population.json`])];
   for (const { area, rain, enso } of scenarios())
     for (const ext of ["geojson", "exposure.json", "shelters.json", "routes.json"]) rels.push(`${area.id}/scenarios/${rain}_${enso}.${ext}`);
-  expect(rels.length).toBe(2 + 2 + 20 * 4); // areas, meta, 2 origins, 20 scenarios x 4 files
+  expect(rels.length).toBe(3 + 4 + 20 * 4); // areas, meta, crops, 2 x (origins, population), 20 scenarios x 4 files = 87
   for (const rel of rels) {
     const res = await request.get(`/data/${rel}`);
     expect(res.status(), rel).toBe(200);
@@ -68,13 +69,20 @@ for (const { area, rain, enso } of scenarios()) {
     await openScenario(page, area, rain, enso);
     const served = (await (await routesResp).json()) as Route[];
 
-    await expectExposure(page, `${rel}.exposure.json`);
+    const exposure = await expectExposure(page, `${rel}.exposure.json`);
+    // F10.2: the roads-cut list is exposure.roads_cut, in the file's order (panels.tsx RoadsPanel)
+    const roads = card(page, "Roads likely to be cut");
+    if (exposure.roads_cut.length === 0) await expect(roads).toContainText("No main roads cut in this scenario.");
+    else await expect(roads.locator("li")).toHaveText(exposure.roads_cut);
+    // F10.2: the "N/M safe" badge counts shelters.json
     await expect(page.getByText("MOCK DATA", { exact: true })).toHaveCount(meta.mock ? 1 : 0);
 
     const origins = readJson<Origin[]>(`${area.id}/origins.json`);
     const routes = readJson<Route[]>(`${rel}.routes.json`);
     expect(served).toEqual(routes);
     const safe = card(page, safeCardTitle(area));
+    const shelters = readJson<{ safe: boolean }[]>(`${rel}.shelters.json`);
+    await expect(safe.getByText(`${shelters.filter((x) => x.safe).length}/${shelters.length} safe`, { exact: true })).toBeVisible();
     for (const o of origins) {
       await safe.locator("select#origin").selectOption(o.id);
       const r = routes.find((x) => x.origin_id === o.id);
@@ -86,6 +94,9 @@ for (const { area, rain, enso } of scenarios()) {
       expect(r.safe.geometry.type).toBe("LineString");
       expect(r.safe.geometry.coordinates.length, `${o.id} route has < 2 points`).toBeGreaterThanOrEqual(2);
       for (const line of routeLines(r)) await expect(safe, `${o.id} (${o.name})`).toContainText(line);
+      // F10.2: the route's "Avoid:" list is route.avoided, in order; absent when empty
+      if (r.avoided.length) await expect(safe, `${o.id} avoided`).toContainText(`Avoid: ${r.avoided.join(", ")}`, { useInnerText: true });
+      else await expect(safe, `${o.id} avoided`).not.toContainText("Avoid:");
     }
     expect(errors, errors.join("\n")).toEqual([]);
   });

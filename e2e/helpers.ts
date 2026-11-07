@@ -17,6 +17,7 @@ export type Route = {
   destination_name: string;
   baseline: { minutes: number } | null;
   safe: { minutes: number; geometry: { type: string; coordinates: number[][] } };
+  avoided: string[];
 };
 
 export const areas = (): Area[] => readJson("areas.json");

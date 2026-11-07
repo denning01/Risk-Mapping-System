@@ -20,8 +20,5 @@
     "test:grid-layout": "bash scripts/test-grid-layout.sh",
     "test:audit-findings": "bash scripts/test-audit-findings.sh",
     "test:e2e": "node e2e/run.mjs"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.65.0"
   }
 }

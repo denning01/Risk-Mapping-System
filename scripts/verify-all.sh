@@ -9,7 +9,7 @@
 #   4. web typecheck             web: npx tsc --noEmit
 #   5. web lint                  web: npm run lint
 #   6. production build          web: npm run build              (skip with VERIFY_FAST=1 — never for a land)
-#   7. e2e click-through         root: npm run test:e2e          (Playwright, E-14; reuses step 6's build; skipped with 6)
+#   7. e2e click-through         root: npm run test:e2e          (Playwright in e2e/, E-14; reuses step 6's build; skipped with 6)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="$ROOT/.venv/bin/python"
@@ -39,11 +39,12 @@ run "web typecheck"  "cd web && npx next typegen >/dev/null && npx tsc --noEmit"
 run "web lint"       "cd web && npm run -s lint"
 if [ "${VERIFY_FAST:-0}" = 1 ]; then results+=("SKIP  production build (VERIFY_FAST=1 — not valid for a land)")
 else run "production build" "cd web && npm run -s build"; fi
-# 7 needs step 6's .next build and the root devDependency (@playwright/test): a missing one is a FAIL, never a skip.
+# 7 needs step 6's .next build and e2e/'s devDependency (@playwright/test): a missing one is a FAIL, never a skip.
+# Playwright lives in e2e/ (a sibling of web/), never at the root: a root lockfile moves Next's workspace root (F10.1).
 if [ "${VERIFY_FAST:-0}" = 1 ]; then results+=("SKIP  e2e click-through (VERIFY_FAST=1 — not valid for a land)")
-elif [ ! -d "$ROOT/node_modules/@playwright/test" ]; then
-  echo "root node_modules/@playwright/test missing — run: npm ci (repo root), then: npx playwright install chromium-headless-shell"
-  results+=("FAIL  e2e click-through (root node_modules missing)"); fail=1
+elif [ ! -d "$ROOT/e2e/node_modules/@playwright/test" ]; then
+  echo "e2e/node_modules/@playwright/test missing — run: npm --prefix e2e ci, then: npx --prefix e2e playwright install chromium-headless-shell"
+  results+=("FAIL  e2e click-through (e2e/node_modules missing)"); fail=1
 else run "e2e click-through" "E2E_SKIP_BUILD=1 npm run -s test:e2e"; fi
 
 printf '\n\033[1m== verify:all summary\033[0m\n'; printf '  %s\n' "${results[@]}"
