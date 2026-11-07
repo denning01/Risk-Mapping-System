@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { Area, CropRule, Enso, Exposure, Origin, Population, Rain, Risk, Route, Scenario, Shelter } from "@/lib/types";
+import type { Area, CropRule, Enso, Exposure, Forecast, Meta, Origin, Population, Rain, Risk, Route, Scenario, Shelter } from "@/lib/types";
 import { RISK_COLORS } from "@/lib/types";
 import { RAIN_VALUES } from "@/lib/schema";
 import { alertText, adviceFallback, type Lang } from "@/lib/alertTemplates";
@@ -113,6 +113,25 @@ export function Legend({ arrival, maxArrival }: { arrival: boolean; maxArrival: 
 // ---------------------------------------------------------------------------
 // Exposure
 // ---------------------------------------------------------------------------
+/**
+ * Growth rate is per census unit, and an area can span several counties
+ * (Nyando covers six). Showing `units[0].r` made one county's rate look like
+ * everyone's, so show the spread when the units disagree.
+ */
+function PopulationCaption({ population }: { population: Population }) {
+  const rates = population.units.map((u) => u.r * 100);
+  const lo = Math.min(...rates);
+  const hi = Math.max(...rates);
+  const growth = hi - lo < 0.005 ? `${lo.toFixed(2)}%/yr` : `${lo.toFixed(2)}–${hi.toFixed(2)}%/yr`;
+  return (
+    <p className="mt-2 text-[11px] text-zinc-500">
+      Census base: {population.units.map((u) => u.unit).join(", ")} (KNBS 2009/2019), growth {growth}
+      {population.units.length > 1 ? " across units" : ""}
+      {population.placeholder ? " (placeholder figures)" : ""}.
+    </p>
+  );
+}
+
 export function ExposurePanel({ exposure, population, highlight }: { exposure: Exposure | null; population: Population | null; highlight?: boolean }) {
   if (!exposure) {
     return (
@@ -148,12 +167,7 @@ export function ExposurePanel({ exposure, population, highlight }: { exposure: E
           <div className="text-[11px] text-zinc-500">km² flooded</div>
         </div>
       </div>
-      {population && population.units.length > 0 && (
-        <p className="mt-2 text-[11px] text-zinc-500">
-          Census base: {population.units.map((u) => u.unit).join(", ")}, growth {(population.units[0].r * 100).toFixed(2)}%/yr
-          {population.placeholder ? " (placeholder figures)" : ""}.
-        </p>
-      )}
+      {population && population.units.length > 0 && <PopulationCaption population={population} />}
     </Card>
   );
 }
@@ -223,6 +237,20 @@ export function SafePlacesPanel(props: {
           </option>
         ))}
       </select>
+
+      {props.selectedOrigin && !route && (
+        <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-2 text-sm">
+          <div className="font-semibold text-red-800">No safe route on foot.</div>
+          <p className="mt-1 text-red-900">
+            Move to an upper floor or high ground and call for help: Kenya Red Cross toll-free{" "}
+            <a href="tel:1199" className="font-bold underline">
+              1199
+            </a>
+            .
+          </p>
+          <p className="mt-1 text-[11px] text-red-700">This starting point is inside the flood extent in this scenario, so no route leaves it on dry ground.</p>
+        </div>
+      )}
 
       {route && (
         <div className="mt-3 space-y-2 text-sm">
@@ -385,6 +413,7 @@ export function AlertPreview(props: {
     place: props.origin?.name ?? areaName,
     shelter,
     minutes: shelter ? props.route?.safe.minutes : undefined,
+    noRoute: !!props.origin && !props.route,
     avoid: props.route?.avoided ?? props.scenario.exposure.roads_cut.slice(0, 2),
   });
 
@@ -438,7 +467,7 @@ export function AlertPreview(props: {
 // ---------------------------------------------------------------------------
 // Limitations text (About modal)
 // ---------------------------------------------------------------------------
-export function LimitationsContent() {
+export function LimitationsContent({ meta }: { meta?: Meta | null }) {
   return (
     <div className="space-y-3 text-sm text-zinc-700">
       <p>
@@ -449,17 +478,101 @@ export function LimitationsContent() {
       <h3 className="font-semibold text-zinc-900">Honest limitations</h3>
       <ul className="list-disc space-y-1 pl-5">
         <li>Free elevation data (about 30 m) is not accurate to the last metre. The model uses HAND (height above nearest drainage), which tolerates elevation error, and the output is a <b>screening-level</b> risk map.</li>
-        <li>Flood extent is a calibrated approximation, not a hydraulic simulation. HEC-RAS or LISFLOOD-FP would be the next step.</li>
+        <li>
+          Flood extent is a <b>screening-level approximation</b> (terrain + rainfall-runoff, not a hydraulic model), calibrated against Sentinel-1 satellite
+          observations of the Nov 2023 Nyando flood. Nairobi uses Nyando&rsquo;s calibration. HEC-RAS or LISFLOOD-FP would be the next step.
+        </li>
+        <li>Nyando terrain is GLO-30, a surface model: on buildings it sits about 1&ndash;2 m above bare earth, so flood depth there may be understated. Nairobi uses bare-earth FABDEM.</li>
+        <li>Nairobi&rsquo;s flood model is not calibrated locally (satellite radar cannot see urban floods reliably); it uses Nyando&rsquo;s calibration.</li>
         <li>Population after 2019 is a projection with low / medium / high scenarios. Informal settlements are likely undercounted.</li>
-        <li>The rainfall slider is a <b>scenario tool, not a forecast</b>. Live forecasts (Open-Meteo, ICPAC) are on the roadmap.</li>
+        <li>The rainfall slider is a <b>scenario tool, not a forecast</b>. Any forecast shown in the app is an official outlook from ICPAC or Open-Meteo / GloFAS, not ours.</li>
         <li>Crop advice is rule-based from published guidance and needs validation by local extension officers.</li>
         <li>Anything labelled <b>Mock</b> uses placeholder data for demonstration.</li>
       </ul>
+      {meta?.notes && (
+        <>
+          <h3 className="font-semibold text-zinc-900">Status of this dataset</h3>
+          <p className="whitespace-pre-line text-xs">{meta.notes}</p>
+          {meta.generated_at && <p className="text-[11px] text-zinc-500">Generated {formatAsOf(meta.generated_at)}.</p>}
+        </>
+      )}
       <h3 className="font-semibold text-zinc-900">Data sources</h3>
+      {meta?.sources?.length ? (
+        <ul className="list-disc space-y-0.5 pl-5 text-xs">
+          {meta.sources.map((src) => (
+            <li key={src}>{src}</li>
+          ))}
+        </ul>
+      ) : null}
       <p className="text-xs">
-        OpenStreetMap, Copernicus DEM / FABDEM, CHIRPS, ESA WorldCover, WorldPop, Google Open Buildings, Sentinel-1, JRC Global Surface Water, KNBS census,
-        NOAA ONI, FAO EcoCrop, KALRO. Basemap © OpenStreetMap contributors, OpenFreeMap.
+        OpenStreetMap (Geofabrik extract of 2026-11-04), <b>FABDEM V1-2 (CC BY-NC-SA 4.0, &copy; University of Bristol / Fathom) for Nairobi</b>; Copernicus
+        GLO-30 for Nyando; CHIRPS, ESA WorldCover, WorldPop, Google Open Buildings v3, Sentinel-1, JRC Global Surface Water, KNBS census, NOAA ONI, FAO
+        EcoCrop, KALRO. Basemap &copy; OpenStreetMap contributors, OpenFreeMap.
+      </p>
+      <p className="rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
+        FABDEM V1-2 is licensed <b>CC BY-NC-SA 4.0</b>: non-commercial, share-alike. The Nairobi flood layers are derived from it and inherit that licence.
       </p>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Forecast banner (official outlooks only, never our own forecast)
+// ---------------------------------------------------------------------------
+export function ForecastBanner({ forecast, onUseScenario }: { forecast: Forecast | null; onUseScenario: (rain: Rain, enso: Enso) => void }) {
+  if (!forecast) return null;
+  const { icpac, short_range: shortRange, suggested_scenario: suggested } = forecast;
+  const asOf = formatAsOf(forecast.as_of);
+  const pct = icpac?.above_normal_pct;
+  const pctLabel = Array.isArray(pct) ? `${pct[0]}\u2013${pct[1]}%` : typeof pct === "number" ? `${pct}%` : null;
+  return (
+    <div className="rounded-xl border border-sky-300 bg-sky-50 p-2.5">
+      <div className="flex items-center gap-2">
+        <Badge tone="blue">Official outlook</Badge>
+        <span className="text-[10px] text-sky-800">Forecast snapshot as of {asOf}</span>
+      </div>
+      {icpac && (
+        <p className="mt-1.5 text-sm font-semibold text-sky-950">
+          ICPAC outlook {icpac.season}: wetter than normal{pctLabel ? ` (${pctLabel} chance of above-normal rain)` : ""}
+        </p>
+      )}
+      {shortRange && (
+        <p className="mt-0.5 text-[11px] text-sky-900">
+          Next 16 days ({shortRange.source}): wettest day {shortRange.wettest_day_mm ?? "n/a"} mm
+          {shortRange.river_discharge_m3s !== null && shortRange.river_discharge_m3s !== undefined ? ` · river ${shortRange.river_discharge_m3s} m³/s` : ""}
+        </p>
+      )}
+      {suggested ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => onUseScenario(suggested.rain, suggested.enso)}
+            className="rounded-lg bg-sky-700 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-800"
+          >
+            Show the matching scenario ({suggested.rain} mm{suggested.enso === "elnino" ? " + El Niño" : ""})
+          </button>
+          <span className="text-[10px] text-sky-800">{suggested.rule}</span>
+        </div>
+      ) : (
+        <p className="mt-1 text-[11px] font-medium text-sky-900">No flood scenario expected in the next 16 days.</p>
+      )}
+      <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-sky-700 underline">
+        {icpac?.url && (
+          <a href={icpac.url} target="_blank" rel="noreferrer">
+            {icpac.statement}
+          </a>
+        )}
+        {shortRange?.url && (
+          <a href={shortRange.url} target="_blank" rel="noreferrer">
+            {shortRange.source}
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatAsOf(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }

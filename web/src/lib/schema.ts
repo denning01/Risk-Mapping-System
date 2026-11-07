@@ -9,6 +9,20 @@ export const AREA_IDS = ["nairobi", "nyando"] as const;
 export const RAIN_VALUES = [50, 100, 150, 200, 250] as const;
 export const ENSO_VALUES = ["normal", "elnino"] as const;
 export const RISK_LEVELS = ["low", "medium", "high"] as const;
+/**
+ * Shelter categories Person A's OSM extract emits. `place_of_worship` covers
+ * mosques and temples, which would otherwise have to be mislabelled `church`
+ * (kept for the churches already tagged as such).
+ */
+export const SHELTER_TYPES = [
+  "school",
+  "church",
+  "place_of_worship",
+  "hospital",
+  "community_hall",
+  "police",
+  "high_ground",
+] as const;
 
 const LonLat = z.tuple([z.number(), z.number()]);
 const BBox = z.tuple([z.number(), z.number(), z.number(), z.number()]);
@@ -64,7 +78,7 @@ export const ExposureSchema = z.object({
 export const ShelterSchema = z.object({
   id: z.string(),
   name: z.string(),
-  type: z.enum(["school", "church", "hospital", "community_hall", "high_ground"]),
+  type: z.enum(SHELTER_TYPES),
   lon: z.number(),
   lat: z.number(),
   capacity: z.number().nullable(),
@@ -108,6 +122,40 @@ export const MetaSchema = z.object({
   generated_at: z.string(),
   sources: z.array(z.string()),
   notes: z.string(),
+});
+
+/**
+ * {area}/forecast.json — an optional snapshot of OFFICIAL outlooks, not our own
+ * forecast. Absent or malformed, the banner simply does not render: the rainfall
+ * slider stays a scenario tool and nothing else in the app depends on it.
+ */
+export const ForecastSchema = z.object({
+  as_of: z.string(),
+  icpac: z
+    .object({
+      season: z.string(),
+      statement: z.string(),
+      url: z.string(),
+      // ICPAC publishes a probability BAND per zone (e.g. 70-80%), not a point
+      // value, so a pair is allowed alongside a single number.
+      above_normal_pct: z.union([z.number(), z.tuple([z.number(), z.number()])]).nullable(),
+    })
+    .nullable(),
+  short_range: z
+    .object({
+      source: z.string(),
+      wettest_day_mm: z.number().nullable(),
+      river_discharge_m3s: z.number().nullable(),
+      url: z.string(),
+    })
+    .nullable(),
+  suggested_scenario: z
+    .object({
+      rain: z.literal(RAIN_VALUES),
+      enso: z.enum(ENSO_VALUES),
+      rule: z.string(),
+    })
+    .nullable(),
 });
 
 export const PopulationSchema = z.object({

@@ -2,6 +2,17 @@
 # Use county or sub-county level (ward boundaries changed between censuses). Record the source URL below.
 # Source: (add KNBS link here)
 # Delete the PLACEHOLDER line once the numbers are verified.
+#
+# NYANDO SPANS SIX COUNTIES, not Kisumu alone. WorldPop share of the Nyando AOI:
+#   Kisumu 47%, Kericho 40%, Homa Bay 6%, Nandi 5%, Nyamira 1.4%, Bomet 0.6%.
+# Person A's exposure numbers already use each county's KNBS totals. Uncomment the
+# five rows below and fill in the verified p2009/p2019 figures (with source URLs)
+# as soon as Person A sends them, then run `npm run population`.
+# nyando,Kericho County,county,<p2009>,<p2019>
+# nyando,Homa Bay County,county,<p2009>,<p2019>
+# nyando,Nandi County,county,<p2009>,<p2019>
+# nyando,Nyamira County,county,<p2009>,<p2019>
+# nyando,Bomet County,county,<p2009>,<p2019>
 area,unit,level,p2009,p2019
 nairobi,Nairobi County (VERIFY),county,3138369,4397073
 nyando,Kisumu County (VERIFY),county,968909,1155574

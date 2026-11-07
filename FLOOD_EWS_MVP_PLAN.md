@@ -367,7 +367,7 @@ If you fall behind, **cut in this order:** XGBoost, arrival time, user report, S
 
 1. **Problem (20 s):** floods hit the same communities every season. Forecasts exist, but people lack actionable guidance. Reference the November 2023 El Niño season and the 2024 Nairobi floods, with sources verified.
 2. **Nyando, rural (60 s):** set rain to 150 mm, enable El Niño. The flood zone grows; the panel shows people and buildings at risk (with low/high range); relocation sites appear on higher ground with an access route; open the farmer advisory for maize vs sorghum.
-3. **Nairobi, urban (60 s):** switch area. Same 100 mm gives a bigger flood footprint because of paved surfaces. Show a flooded road, the commuter reroute with extra minutes, and the nearest shelter.
+3. **Nairobi, urban (60 s):** switch area. The same 100 mm turns into about 40% more runoff in built-up Nairobi (71 vs 50 mm, 61% impervious vs under 1%), but terrain sets how much land floods: Nairobi's rivers run in narrow valleys, so the flood is narrower and faster and the river corridors take the hit. (Flooded share at 100 mm normal: Nyando 3.7% / 103 km², Nairobi 2.9% / 5.5 km². The old "bigger footprint in Nairobi" claim is **false on our model** — do not use it.) Show a flooded road, the commuter reroute with extra minutes, the nearest shelter, and the no-route message for a start point inside the flood.
 4. **Trust (30 s):** backtest slide: model vs Sentinel-1 observed floods with F1/IoU, plus the stated data limits and next steps.
 5. **Close (10 s):** roadmap: drought, IoT sensors, SMS/USSD, donations, ICPAC integration. Complements ICPAC and KMD, does not replace them.
 
@@ -378,8 +378,11 @@ Record the demo as video **before** the live pitch, as a backup.
 ## 10. Honest limitations (put on a slide)
 
 - Free DEMs (about 30 m) are not accurate to the last metre. We use HAND, which tolerates elevation error, and call the output screening-level. Higher-resolution LiDAR or drone data would plug into the same pipeline.
-- Flood extent is a calibrated approximation, not a hydraulic simulation.
-- Population after 2019 is a projection with low / medium / high scenarios; informal settlements are likely undercounted.
+- Flood extent is a screening-level approximation (terrain + rainfall-runoff, not a hydraulic model), calibrated against Sentinel-1 observations of the Nov 2023 Nyando flood. Nairobi uses Nyando's calibration.
+- Nyando terrain is GLO-30, a surface model: on buildings it sits about 1-2 m above bare earth, so flood depth there may be understated. Nairobi uses bare-earth FABDEM.
+- Nairobi's flood model is not calibrated locally (satellite radar cannot see urban floods reliably); it uses Nyando's calibration.
+- Backtest (Nyando vs Sentinel-1, Nov 2023): F1 0.19, IoU 0.10, precision 0.12, recall 0.47. A terrain-only baseline scores F1 0.18, so almost all the skill comes from terrain: terrain tells you *where* it floods, the rainfall scenarios tell you *how far* it spreads, and that part is not yet validated.
+- Population after 2019 is a projection with low / medium / high scenarios; informal settlements are likely undercounted. Nyando spans six counties, so the census base must cover all six.
 - The rainfall slider is a scenario tool, not a forecast. Live forecasts (Open-Meteo, ICPAC) are on the roadmap.
 - Crop advice is rule-based from published guidance and needs local extension validation.
 

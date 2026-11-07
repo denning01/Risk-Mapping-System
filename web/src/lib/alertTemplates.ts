@@ -14,6 +14,8 @@ export interface AlertInput {
   place: string;
   shelter?: string;
   minutes?: number;
+  /** The origin is inside the flood: there is no walking route out of it. */
+  noRoute?: boolean;
   avoid: string[];
 }
 
@@ -26,6 +28,7 @@ export function alertText(lang: Lang, a: AlertInput): string {
       `ikiwa mvua ya ${a.rain} mm itanyesha kwa saa 24${a.elnino ? " (msimu wa El Niño)" : ""}.`,
     ];
     if (a.shelter) parts.push(`Mahali salama: ${a.shelter}${a.minutes ? `, dakika ${a.minutes} kwa miguu` : ""}.`);
+    else if (a.noRoute) parts.push("Hakuna njia salama kwa miguu: panda ghorofa ya juu au eneo la juu. Msalaba Mwekundu wa Kenya, simu ya bure 1199.");
     if (a.avoid.length) parts.push(`Epuka: ${a.avoid.join(", ")}.`);
     parts.push("Fuata maagizo ya serikali ya kaunti. [MAJARIBIO]");
     return parts.join(" ");
@@ -35,6 +38,7 @@ export function alertText(lang: Lang, a: AlertInput): string {
     `if ${a.rain} mm of rain falls in 24 h${a.elnino ? " (El Niño season)" : ""}.`,
   ];
   if (a.shelter) parts.push(`Safe place: ${a.shelter}${a.minutes ? `, ${a.minutes} min on foot` : ""}.`);
+  else if (a.noRoute) parts.push("No safe route on foot: move to an upper floor or high ground. Kenya Red Cross toll-free 1199.");
   if (a.avoid.length) parts.push(`Avoid: ${a.avoid.join(", ")}.`);
   parts.push("Follow county government instructions. [TEST]");
   return parts.join(" ");
