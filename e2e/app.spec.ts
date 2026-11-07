@@ -51,12 +51,13 @@ test("routes.json covers every origin except the stated no-route cases", () => {
   expect(seen.length).toBeGreaterThan(0); // the no-route case is exercised, not vacuous
 });
 
-test("labels agree: meta.mock is true while any exposure file is still mock, and false only when all are model", () => {
+test("labels agree: meta.mock is true exactly when some exposure file is still mock", () => {
   const srcs = scenarios().map(({ area, rain, enso }) => readJson<{ source: string }>(`${area.id}/scenarios/${rain}_${enso}.exposure.json`).source);
   expect(srcs.length).toBe(20);
   for (const s of srcs) expect(["mock", "model"]).toContain(s);
-  if (srcs.includes("mock")) expect(meta.mock, "an exposure file is mock but meta.json says mock:false").toBe(true);
-  if (!meta.mock) expect(srcs.every((s) => s === "model")).toBe(true);
+  // both directions (F12.1): a mock file under mock:false hides mock data; mock:true over all-model data mislabels real output
+  const anyMock = srcs.includes("mock");
+  expect(meta.mock, anyMock ? "an exposure file is mock but meta.json says mock:false" : "all 20 exposure files are model but meta.json says mock:true").toBe(anyMock);
 });
 
 for (const { area, rain, enso } of scenarios()) {
