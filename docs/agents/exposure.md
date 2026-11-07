@@ -179,3 +179,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   drops only exactly-collinear points (same area, no new overlap) and kept the file under the 5 MiB line.
   coverage_simplify needs an edge-MATCHED coverage (merged band polygons are not one) and is area-based (tol^2): on
   a 30 m staircase it removes nothing below ~21 m and whole corners above, so it cannot match a DP size.
+- 2026-11-07 (F17.3) A property a fix exists for must be guarded where it can break: the zero-overlap rule held on a
+  toy staircase even with noding OFF the output grid, because the toy's edges were simple. Assert the property on the
+  WRITTEN output inside the writer (raise), and give the test an irregular field (seeded smooth noise) whose borders
+  fall off the grid; then inject the likely regression and see red.

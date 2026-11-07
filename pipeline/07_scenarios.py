@@ -23,6 +23,7 @@ Risk classes (contract): depth < 0.3 m = low, 0.3 <= depth <= 1.0 m = medium, de
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -204,6 +205,14 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
                 "arrival_h": None if it["abin"] < 0 else round(float(it["abin"] * arrival_bin_h), 2),
             },
         })
+    # F17.3: the property F17.1 exists for, checked on what is WRITTEN (rounded output coordinates): no two features
+    # may share any area. Cheap: at most a few features per file.
+    written = [shape(f["geometry"]) for f in feats]
+    for (i, gi), (j, gj) in itertools.combinations(enumerate(written), 2):
+        if shapely.intersects(gi, gj):
+            ov = shapely.area(shapely.intersection(gi, gj))
+            if ov > 0:
+                raise AssertionError(f"flood features {i} and {j} overlap by {ov:.3e} deg2 as written")
     order = {"low": 0, "medium": 1, "high": 2}
     feats.sort(key=lambda f: order[f["properties"]["risk"]])   # stable: keeps (band, arrival bin) order within a risk
     n = int(flooded.sum())

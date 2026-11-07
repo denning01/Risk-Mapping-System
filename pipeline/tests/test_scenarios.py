@@ -114,6 +114,21 @@ def test_bands_never_overlap_and_the_deeper_band_wins():
     assert shallow.intersection(deep).area > 0.05 * deep.area        # and the overlap moved is far larger than that
 
 
+def test_bands_never_overlap_on_an_irregular_field_off_the_output_grid():
+    """F17.3: a smooth random depth field (fixed seed, -0.3..2.7 m, 80 x 80 cells) gives all six bands with irregular
+    borders that lie OFF the 1e-5 deg output grid after reprojection. As written, no two features share any area (the
+    writer also raises if they do). Noding the outlines without grid_size (the J2 regression) puts overlap back here."""
+    import itertools
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(1)
+    d = gaussian_filter(rng.random((80, 80)), 3).astype("float32")
+    d = (d - d.min()) / (d.max() - d.min()) * 3.0 - 0.3
+    feats, _ = scen.flood_features(d, TF, CRS, simplify_m=18)
+    assert len(feats) == 6
+    g = [shape(f["geometry"]) for f in feats]
+    assert all(a.intersection(b).area == 0.0 for a, b in itertools.combinations(g, 2))
+
+
 def test_arrival_bins_split_a_class():
     d = grid()
     arr = np.full(d.shape, np.nan, dtype="float32")
