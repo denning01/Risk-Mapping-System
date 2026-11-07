@@ -791,3 +791,17 @@ def test_cut_is_right_on_two_different_grids_with_one_graph():
     assert edges(RG.cut(wa, ta)) == {frozenset((0, 1))}
     assert edges(RG.cut(wb, tb)) == {frozenset((10, 11))}
     assert edges(RG.cut(wa, ta)) == {frozenset((0, 1))}               # and back again
+    # F9.1: each HALF of the key matters. Grid D (right after A, so only the SHAPE differs): A's TRANSFORM, smaller shape (20 x 20): cells beyond column 19 are off this grid (dry), not an error.
+    wd = np.zeros((20, 20), bool)
+    r, c = rowcol(ta, _X0 + 75, _Y0)
+    wd[int(r), int(c)] = True
+    assert edges(RG.cut(wd, ta)) == {frozenset((0, 1))}
+    wd[:] = False
+    assert edges(RG.cut(wd, ta)) == set()
+    assert edges(RG.cut(wa, ta)) == {frozenset((0, 1))}               # back to A: the next grid differs only in TRANSFORM
+    # Grid C (right after A, so only the TRANSFORM differs): A's SHAPE, origin moved 300 m east (a model re-post on a moved box).
+    tc = from_origin(_X0 - 450 + 300, _Y0 + 450, 30, 30)
+    wc = np.zeros(wa.shape, bool)
+    r, c = rowcol(tc, _X0 + 150, _Y0 - _SP)
+    wc[int(r), int(c)] = True
+    assert edges(RG.cut(wc, tc)) == {frozenset((10, 11))}

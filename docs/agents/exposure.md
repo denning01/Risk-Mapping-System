@@ -121,3 +121,7 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   vertex plus <= s m: then any wet stretch longer than s m is caught (straight between vertices), which is provable.
   Test the exactness with a fixture that the coarser rule demonstrably misses (assert that as a precondition). At 0.5 m
   the walk graph is 19.5 M samples: compute the bridge exemption only on edges near a bridge, never on every sample.
+- 2026-11-07 (R9 F9.1) A cache test must change ONE half of the key at a time, straight after a call that set the other
+  half. Otherwise an intermediate call rebuilds the cache and hides a half-key bug: my first fix caught "shape only" but
+  not "transform only", and reordering flipped which one escaped. Inject every half-key fault, not just "never refreshed".
+  Quoting a list "from the graph" on a slide means the file's order and spelling; check it by script (prefix equality).

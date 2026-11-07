@@ -140,9 +140,9 @@ plausible", not "people who will be flooded".
   every list independently and found 20/20 equal. The road-cut check samples every bend point of a road plus every 0.5 m.
   The earlier check sampled too sparsely; the fix added or swapped a road in 3 of the 20 scenario exposure files (10 per
   area), all Nyando at 50 mm normal, 50 mm El Niño and 100 mm normal. The drawn routes did not change.
-- Roads cut (named, from the graph):
+- Roads cut (named, from the graph; the first six of each list, in the file's order and OSM spelling):
   - Nairobi 250 mm El Niño: Thika Road, Kiambu Road, Murang'a Road, Uhuru Highway, Chiromo Road, Mombasa Road, …
-  - Nyando 250 mm El Niño: Kisii–Kisumu Road, Kericho–Kisumu Highway, Katito–Kendu Bay–Homa Bay road, …
+  - Nyando 250 mm El Niño: Kisii-Kisumu Road, Awasi-Kapsabet, Katito-Kendu Bay-Homa Bay road, Nairobi Road, Kericho-Kisumu Highway, Chiga-Ombeyi-Kibigori, …
   - Some Thika Road / Murang'a Road cuts are shallow cells that are the F2.13 closed-depression limit (§7).
 
 ## 6. Reported impacts of the real events — what we could and could not verify
