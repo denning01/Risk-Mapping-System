@@ -172,3 +172,10 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   internal overlap 0.34-1.17 % vs 0.10-0.75 % before). Prove areas three ways (raster cells, pre-simplification
   polygons = cells, drawn polygons vs the old files) and report the shape change too. Bands must be cut ON the
   contract thresholds, with the same open/closed ends, or a band straddles two risk classes: assert it in the code.
+- 2026-11-07 (F17.1) Removing overlap by difference on a fixed-precision grid is NOT exact: snap-rounding bends the
+  other polygon's edges, so sub-metre slivers still overlap (54 m2 on a toy case). Exact: node ALL outlines together
+  in one arrangement (union_all of boundaries, grid_size), polygonize to faces, give each face to one owner; faces of
+  one arrangement share edges exactly (199 pairs, overlap 0.0). Noding adds collinear vertices (+8 %): simplify(g, 0)
+  drops only exactly-collinear points (same area, no new overlap) and kept the file under the 5 MiB line.
+  coverage_simplify needs an edge-MATCHED coverage (merged band polygons are not one) and is area-based (tol^2): on
+  a 30 m staircase it removes nothing below ~21 m and whole corners above, so it cannot match a DP size.

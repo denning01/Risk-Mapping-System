@@ -108,6 +108,17 @@ def _round_coords(obj, dp=COORD_DP):
     return obj
 
 
+def _polygonal(geom):
+    """The polygonal part of a geometry as one (Multi)Polygon, or None if nothing polygonal (or empty) is left."""
+    if geom is None or geom.is_empty:
+        return None
+    polys = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type in ("Polygon", "MultiPolygon") and not g.is_empty]
+    if not polys:
+        return None
+    out = unary_union(polys)
+    return None if out.is_empty else out
+
+
 def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None = None,
                    arrival_bin_h: float = 1.0, simplify_m: float = 15.0) -> tuple[list[dict], dict]:
     """Polygonise a depth raster into contract features, one per (depth band, arrival bin) (E-11; each band lies in
@@ -143,7 +154,7 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     for geom, val in shapes(label, mask=flooded, transform=transform, connectivity=4):
         parts.setdefault(int(val), []).append(shape(geom))
 
-    feats, poly_area, written_area = [], 0.0, 0.0
+    items, poly_area, written_area = [], 0.0, 0.0
     for i, (bd, b) in enumerate(uniq, start=1):
         geom = unary_union(parts[i])
         poly_area += geom.area
@@ -151,24 +162,46 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
         rs = np.unique(risk[sel])
         if len(rs) != 1:
             raise AssertionError(f"band {DEPTH_BANDS[bd - 1]} spans risk classes {rs.tolist()}")
-        r = int(rs[0])
         if simplify_m > 0:
             geom = geom.simplify(simplify_m, preserve_topology=True)
         written_area += geom.area
         geom = shapely.make_valid(reproject(geom, crs, "EPSG:4326"))
         geom = shapely.set_precision(geom, 10 ** -COORD_DP)
-        polys = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type in ("Polygon", "MultiPolygon")]
-        geom = unary_union(polys) if polys else None
-        if geom is None or geom.is_empty:
-            continue  # sliver collapsed by simplification/precision; its cells still count in area
+        items.append({"band": int(bd), "abin": int(b), "risk": int(rs[0]), "sel": sel, "geom": _polygonal(geom)})
+    # F17.1 (operator ruling: deeper band wins). Bands are simplified one by one, so neighbours overlap. Node ALL band
+    # outlines together on the output's 1e-5 deg grid, polygonize that one arrangement into faces (faces of one
+    # arrangement share edges exactly), and give each face to the DEEPEST band whose drawn geometry contains it. No two
+    # features then overlap, and a click finds at most one depth (the larger one). Slivers between bands (faces no band
+    # contains) stay: a known limit, measured in the round.
+    live = [it for it in items if it["geom"] is not None]
+    if len(live) > 1:
+        grid = 10 ** -COORD_DP
+        lines = shapely.union_all([shapely.boundary(it["geom"]) for it in live], grid_size=grid)
+        faces = np.array(list(shapely.get_parts(shapely.polygonize(shapely.get_parts(lines)))), dtype=object)
+        pts = shapely.point_on_surface(faces)
+        owner = np.full(len(faces), -1)
+        for k in sorted(range(len(live)), key=lambda k: (live[k]["band"], -live[k]["abin"])):   # deepest assigned last
+            shapely.prepare(live[k]["geom"])
+            owner[shapely.contains(live[k]["geom"], pts)] = k
+        for k, it in enumerate(live):
+            mine = faces[owner == k]
+            it["geom"] = _polygonal(shapely.coverage_union_all(mine)) if len(mine) else None
+    feats = []
+    for it in items:
+        geom = it["geom"]
+        if geom is None:
+            continue  # sliver collapsed by simplification/precision/a deeper band; its cells still count in area
+        # drop vertices that lie exactly on a straight edge (left by noding): same shape, same area, no new overlap;
+        # it keeps nyando 250_elnino under the 5 MiB line (5.10 -> 4.72 MiB)
+        geom = shapely.simplify(geom, 0.0, preserve_topology=True)
         gj = mapping(geom)
         feats.append({
             "type": "Feature",
             "geometry": {"type": gj["type"], "coordinates": _round_coords(gj["coordinates"])},
             "properties": {
-                "risk": RISK_NAMES[int(r)],
-                "depth_m": round(float(np.nanmean(depth[sel])), 2),
-                "arrival_h": None if b < 0 else round(float(b * arrival_bin_h), 2),
+                "risk": RISK_NAMES[it["risk"]],
+                "depth_m": round(float(np.nanmean(depth[it["sel"]])), 2),
+                "arrival_h": None if it["abin"] < 0 else round(float(it["abin"] * arrival_bin_h), 2),
             },
         })
     order = {"low": 0, "medium": 1, "high": 2}
