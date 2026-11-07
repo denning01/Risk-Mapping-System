@@ -21,7 +21,7 @@
 #
 # WHAT COUNTS AS CLOSED, set by the human 2026-10-02 (AGENTS.md § Only the auditor closes a round):
 #   * a `CLOSED` line, AND
-#   * an auditor `VERDICT: ACCEPT` written AFTER it in the log. A lead's CLOSED is a claim; the
+#   * an auditor `VERDICT: ACCEPT` written AFTER it, in an AUDITOR block for the SAME round (2026-11-07). A lead's CLOSED is a claim; the
 #     auditor's later ACCEPT is what confirms it. A CLOSED with no ACCEPT after it is still OPEN.
 #   * NOT `DECLINED`. Declining is no longer an option — every recommendation is implemented.
 #   * NOT a CLOSED that says it was "routed" or "routing". Handing a finding to someone else is how
@@ -47,14 +47,33 @@ for role in $ROLES; do
   # described its own test fixture ("a log containing `F9.1 MUST ... / F9.2 MUST ...`"). The document
   # describing findings is not a finding, exactly as the charter describing a secret is not a secret.
   declared="$(grep -oE '^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+(MUST|SHOULD)\b' "$f" 2>/dev/null | awk '{print $1}' | sort -u)"
-  # Line of the LAST auditor ACCEPT. VERDICT lines are written at column 0 by the auditor; a lead
-  # quoting one in prose indents it, so anchoring at ^ keeps a quotation from confirming anything.
-  last_accept="$(grep -nE '^VERDICT:[[:space:]]+ACCEPT\b' "$f" 2>/dev/null | tail -1 | cut -d: -f1)"
-  last_accept="${last_accept:-0}"
-  closed="$(grep -nE '^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+CLOSED\b' "$f" 2>/dev/null \
-            | grep -viE 'rout(ed|ing)' \
-            | awk -F: -v la="$last_accept" '$1 < la { sub(/^[[:space:]]*/, "", $2); split($2, a, /[[:space:]]+/); print a[1] }' \
-            | sort -u)"
+  # A CLOSED Fn.k is confirmed only by a `VERDICT: ACCEPT` that (a) comes AFTER it and (b) sits in an
+  # AUDITOR block for the SAME round n (a `ROUND n · AUDITOR ...` header naming round n). Until 2026-11-07 any later ACCEPT
+  # anywhere in the log confirmed it: exposure's ROUND 5 re-audit ACCEPT (10:01) "confirmed" ROUND 8's
+  # F8.5-F8.7 CLOSED lines, which no auditor had re-audited, and the tracker printed "exposure clear"
+  # while ROUND 8 stood REJECTED. VERDICT lines are written at column 0 by the auditor; a lead quoting
+  # one in prose indents it, so anchoring at ^ keeps a quotation from confirming anything. A LEAD or
+  # REMEDIATION header ends the auditor block, so an ACCEPT can never be attributed across one.
+  closed="$(awk '
+    # The block covers every "ROUND n" its header names: a combined re-audit is headed
+    # "ROUND 1 · AUDITOR ... (re-audit of REMEDIATION · ROUND 1 + ROUND 2 ...)" and confirms both.
+    /^ROUND [0-9]+ · AUDITOR/ {
+      cur = " "; t = $0
+      while (match(t, /ROUND [0-9]+/)) { cur = cur substr(t, RSTART + 6, RLENGTH - 6) " "; t = substr(t, RSTART + RLENGTH) }
+      next
+    }
+    /^ROUND [0-9]+ · LEAD/ || /^REMEDIATION/ { cur = ""; next }
+    /^VERDICT:[[:space:]]+ACCEPT([^A-Za-z]|$)/ {
+      if (cur != "") { k = split(cur, rr, " "); for (j = 1; j <= k; j++) last[rr[j]] = NR }
+      next
+    }
+    /^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+CLOSED([^A-Za-z]|$)/ {
+      if (tolower($0) ~ /rout(ed|ing)/) next
+      id = $1; r = id; sub(/^F/, "", r); sub(/\..*/, "", r)
+      n++; cid[n] = id; crd[n] = r; cln[n] = NR
+    }
+    END { for (i = 1; i <= n; i++) if ((crd[i] in last) && last[crd[i]] > cln[i]) print cid[i] }
+  ' "$f" 2>/dev/null | sort -u)"
   open="$(comm -23 <(echo "$declared") <(echo "$closed") 2>/dev/null | grep -E '^F' || true)"
 
   legacy=0

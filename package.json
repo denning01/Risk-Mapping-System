@@ -17,6 +17,7 @@
     "verify:all": "bash scripts/verify-all.sh",
     "test:audit-watch": "bash scripts/test-audit-watch.sh",
     "test:session-resume": "bash scripts/test-session-resume.sh",
-    "test:grid-layout": "bash scripts/test-grid-layout.sh"
+    "test:grid-layout": "bash scripts/test-grid-layout.sh",
+    "test:audit-findings": "bash scripts/test-audit-findings.sh"
   }
 }
