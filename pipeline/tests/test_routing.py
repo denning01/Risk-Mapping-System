@@ -318,11 +318,14 @@ def test_osm_points_fixture_equals_the_places_cache_when_present():
 
 
 # ---- shelter contract types: human decision (worship + police YES), gated on Person B's schema change ----
+# After the change (ROUND 13 ruling, DATA_CONTRACT.md:63): ONLY the tag religion=christian makes "church".
 @pytest.mark.parametrize("props,now,nxt", [
-    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "St Paul"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "St Paul"}, "church", "church"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "muslim", "name": "Jamia Mosque"}, None, "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "hindu", "name": "Shree Temple"}, None, "place_of_worship"),
-    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),
+    ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Kanisa la Mungu"}, "church", "place_of_worship"),   # name says church, no tag
+    ({"osm_tag": "amenity=place_of_worship", "name": "St Mary Cathedral"}, "church", "place_of_worship"),  # key absent
+    ({"osm_tag": "amenity=place_of_worship", "religion": "Christian", "name": "X"}, None, "place_of_worship"),  # OSM values are lowercase
     ({"osm_tag": "amenity=place_of_worship", "religion": None, "name": "Masjid Noor"}, None, "place_of_worship"),
     ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": None}, None, None),   # unnamed: held back
     ({"osm_tag": "amenity=place_of_worship", "religion": "christian", "name": "  "}, None, None),

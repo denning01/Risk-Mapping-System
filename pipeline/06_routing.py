@@ -158,15 +158,17 @@ def is_christian(props: dict) -> bool:
 def contract_type(props: dict, schema_next: bool | None = None) -> str | None:
     """Contract shelter type for a cached shelter candidate (its osm_tag, religion and name), or None = not emitted.
     Before the schema change: worship places are emitted as "church" ONLY if Christian (a mosque or temple is never
-    called a church); other worship places and police are held back. After it: every worship place is
-    "place_of_worship" (the real name is kept), police stations are "police"."""
+    called a church); other worship places and police are held back. After it (operator ruling 2026-11-07, following
+    DATA_CONTRACT.md:63 "church stays for places tagged as such"): religion=christian -> "church"; any other religion
+    or NO religion tag -> "place_of_worship" (the name heuristic is not used: only the tag says church). Police
+    stations are "police". The real name is kept."""
     nxt = SCHEMA_HAS_WORSHIP_POLICE if schema_next is None else schema_next
     tag = props.get("osm_tag")
     if tag == "amenity=place_of_worship":
         if not (props.get("name") or "").strip():
             return None          # operator ruling 2026-11-06: unnamed worship places are held back (no real name to keep)
         if nxt:
-            return "place_of_worship"
+            return "church" if props.get("religion") == "christian" else "place_of_worship"
         return "church" if is_christian(props) else None
     if tag == "amenity=police":
         return "police" if nxt else None
