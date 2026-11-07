@@ -67,7 +67,7 @@ awk -v n="$n" '
   }
   aud && /^VERDICT:/ {
     v = $0; sub(/^VERDICT:[[:space:]]*/, "", v); split(v, b, /[[:space:]]+/)
-    pv = b[1]; pa = last_lead; pn = ""; pending = 1
+    pv = b[1]; sub(/[,;.:]+$/, "", pv); pa = last_lead; pn = ""; pending = 1
     if (match(v, /\(at [0-9a-f]+/)) pn = substr(v, RSTART + 4, RLENGTH - 4)
   }
   END {
