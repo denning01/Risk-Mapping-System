@@ -39,14 +39,25 @@ def build(snap: dict) -> dict:
     }
 
 
-def main():
+def load_snapshot(area: str, root: Path | None = None) -> dict:
+    """The cached M-11 snapshot for <area>. Refuses one written for another area or by uncommitted code (dirty)."""
+    p = (root or data_root()) / "processed" / area / "forecast" / "forecast.json"
+    snap = json.loads(p.read_text())
+    if snap.get("area") != area:
+        raise SystemExit(f"REFUSED: {p} is for area {snap.get('area')!r}, not {area!r}")
+    prov = snap.get("provenance") or {}
+    if prov.get("dirty") is not False or not prov.get("git_commit"):
+        raise SystemExit(f"REFUSED: {p} provenance {prov} is not a clean committed run")
+    return snap
+
+
+def main(argv: list | None = None):
     ap = argparse.ArgumentParser()
     ap.add_argument("areas", nargs="+")
     ap.add_argument("--out", type=Path, default=REPO_ROOT / "web" / "public" / "data")
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
     for area in a.areas:
-        snap = json.loads((data_root() / "processed" / area / "forecast" / "forecast.json").read_text())
-        assert snap["area"] == area and not snap["provenance"]["dirty"], snap["provenance"]
+        snap = load_snapshot(area)
         dest = a.out / area / "forecast.json"
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps(build(snap), ensure_ascii=False, indent=1) + "\n")
