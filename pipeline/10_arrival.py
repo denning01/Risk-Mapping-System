@@ -446,11 +446,13 @@ Arrival on the flooded cells of three scenarios (AOI; depth > 0 in scenarios/<ke
 |---|---|---|---|---|---|
 {wet}
 
-Second method on named sub-catchments (5-49 km²; outlet = the cell nearest a named OSM river with the largest area in range):
+Second method on 5 sub-catchments of 5-49 km² (the lag method's range). Outlet = the cell within 60 m of a named OSM river
+with the largest upstream area in that range. Where the named river itself drains more than 49 km², the outlet is a TRIBUTARY
+beside it, so the name locates the sub-catchment and does not mean the river's own catchment:
 - Kirpich: TxDOT Hydraulic Design Manual eq. 4-15, SI.
 - SCS watershed lag method: NEH 630 eq. 15-4b, with mean cn.tif clamped to 50-95.
 
-| river (OSM name) | outlet lon, lat | km² | longest path km | velocity Tc h | Kirpich h | SCS lag Tc h | vel/Kirpich | vel/SCS |
+| OSM river named within 60 m of the outlet (the outlet can be a tributary beside it) | outlet lon, lat | km² | longest path km | velocity Tc h | Kirpich h | SCS lag Tc h | vel/Kirpich | vel/SCS |
 |---|---|---|---|---|---|---|---|---|
 {sub}
 
