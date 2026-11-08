@@ -183,3 +183,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   toy staircase even with noding OFF the output grid, because the toy's edges were simple. Assert the property on the
   WRITTEN output inside the writer (raise), and give the test an irregular field (seeded smooth noise) whose borders
   fall off the grid; then inject the likely regression and see red.
+- 2026-11-08 (E-16) Measure a spec'd shortcut against the exact answer on REAL data before building on it. "K=5
+  straight-line-nearest shelters" passed every toy test, but in dense Nairobi (3,029 shelters) the fastest shelter was
+  straight-line rank 15-32 for two origins: at <200 m, snap legs and network detours outweigh the crow-fly order. Report
+  the required K (rank histogram) and let the operator rule; one early-exit Dijkstra with each target's snap leg on a
+  virtual edge is exact AND stops at the first settled target, so no K is needed.

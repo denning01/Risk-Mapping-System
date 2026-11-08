@@ -545,7 +545,7 @@ def cmd_write(args) -> int:
                   "schema (write them under $RMS_DATA)", file=sys.stderr)
             return 1
         ripple_dir.mkdir(parents=True, exist_ok=True)
-    graph_cuts = {}
+    graph_cuts, graph_near, g_shel = {}, {}, None
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
@@ -701,6 +701,21 @@ def cmd_write(args) -> int:
                 raise SystemExit(f"{key}: walk flood mask differs from the risk-class mask")
             cut_w, cut_d = W.cut(wet, tf), D.cut(wet_drive, tf)
             graph_cuts[key] = (cut_w, cut_d)
+            if graph_out is not None:
+                # E-16: near-flood edges (rule in 06 NEAR_FLOOD_M) and which OSM shelters a client may route to
+                graph_near[key] = (rt.near_flood(W, wet, tf, cut_w), rt.near_flood(D, wet, tf, cut_d))
+                if g_shel is None:
+                    from pyproj import Transformer as _T
+                    gx, gy = _T.from_crs("EPSG:4326", W.crs, always_xy=True).transform(
+                        np.array([s["lon"] for s in osm_shelters]), np.array([s["lat"] for s in osm_shelters]))
+                    gd, gn = W.tree.query(np.c_[gx, gy])
+                    g_shel = [{**s, "node": int(n), "snap_m": float(dd), "usable": 0} for s, n, dd in zip(osm_shelters, gn, gd)]
+                safe = {x["id"]: x["safe"] for x in shelters}
+                live_w = W.live(cut_w)
+                for gs in g_shel:
+                    if (safe[gs["id"]] and gs["snap_m"] <= rt.MAX_DEST_SNAP_M and live_w[gs["node"]]
+                            and not W.snap_leg_wet(gs["lon"], gs["lat"], gs["node"], (wet, tf))):
+                        gs["usable"] |= 1 << scenario_keys().index(key)
             reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
                      if hand is not None else None)
             routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
@@ -762,7 +777,7 @@ def cmd_write(args) -> int:
             "scenarios": route_checks}, indent=1, ensure_ascii=False))
         print(f"route checks -> {cp}")
     if graph_out is not None:
-        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts)
+        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts, near=graph_near, shelters=g_shel)
         raw = json.dumps(g, separators=(",", ":"))
         graph_out.parent.mkdir(parents=True, exist_ok=True)
         graph_out.write_text(raw)
