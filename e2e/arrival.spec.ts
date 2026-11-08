@@ -5,7 +5,7 @@
 import { expect, test } from "@playwright/test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { arrivalBand, arrivalMinSentence, arrivalSentence, arrivalTick } from "../web/src/lib/arrival";
+import { arrivalBand, arrivalMinSentence, arrivalSentence, arrivalTick, featureBand } from "../web/src/lib/arrival";
 import type { HexRow } from "../web/src/lib/hex";
 import type { FloodCollection } from "../web/src/lib/types";
 import { areas, openScenario, readJson, watch } from "./helpers";
@@ -37,17 +37,27 @@ test("the wording: median vs minimum, minutes under 1 h, never '0 h', never NaN;
   expect(arrivalSentence(0)).toBe(MED_MIN);
   expect(arrivalSentence(0.1)).toBe(MED_MIN);
   expect(arrivalSentence(0.99)).toBe(MED_MIN);
-  expect(arrivalSentence(1)).toBe("Water could arrive within 1-3 h here (typical ~1 h), sooner in places (screening estimate)");
+  // F18.4: a published 1.0 can be a median of 0.95..1.05 -> the earlier band (minutes); 3.0 -> "1-3 h"
+  expect(arrivalSentence(1)).toBe(MED_MIN);
+  expect(arrivalSentence(1.1)).toBe("Water could arrive within 1-3 h here (typical ~1.1 h), sooner in places (screening estimate)");
   expect(arrivalSentence(2.46)).toBe("Water could arrive within 1-3 h here (typical ~2.5 h), sooner in places (screening estimate)");
-  expect(arrivalSentence(3)).toBe("Water could arrive within 3-6 h here (typical ~3 h), sooner in places (screening estimate)");
+  expect(arrivalSentence(3)).toBe("Water could arrive within 1-3 h here (typical ~3 h), sooner in places (screening estimate)");
+  expect(arrivalSentence(3.1)).toBe("Water could arrive within 3-6 h here (typical ~3.1 h), sooner in places (screening estimate)");
   expect(arrivalSentence(6)).toBe("Water could arrive within 3-6 h here (typical ~6 h), sooner in places (screening estimate)");
   expect(arrivalSentence(6.1)).toBe("Water could arrive in more than 6 h here (typical ~6.1 h), sooner in places (screening estimate)");
   expect(arrivalSentence(12.6)).toBe("Water could arrive in more than 6 h here (typical ~13 h), sooner in places (screening estimate)");
   // exposure's classify_arrival_band edges: <1 | 1<=h<3 | 3<=h<=6 | >6
   expect([0.99, 1, 2.99, 3, 6, 6.01].map(arrivalBand)).toEqual(["minutes", "1-3 h", "1-3 h", "3-6 h", "3-6 h", "more than 6 h"]);
+  // the band of a ROUNDED median = the earliest its unrounded value [h - 0.05, h + 0.05) can be in
+  expect([0.9, 1, 1.1, 2.9, 3, 3.1, 6, 6.1].map(featureBand)).toEqual(["minutes", "minutes", "1-3 h", "1-3 h", "1-3 h", "3-6 h", "3-6 h", "more than 6 h"]);
   expect(arrivalSentence(null)).toBe("No arrival estimate for this area");
   expect(arrivalMinSentence(0.5)).toBe(MIN);
   expect(arrivalMinSentence(1.06)).toBe("Water could arrive in as little as ~1 h (screening estimate)");
+  // F18.4: exposure's band of the unrounded minimum decides; without it, a value within 0.05 h of 1 h reads minutes
+  expect(arrivalMinSentence(1, "<1")).toBe(MIN);
+  expect(arrivalMinSentence(1, "1-3")).toBe("Water could arrive in as little as ~1 h (screening estimate)");
+  expect(arrivalMinSentence(1.02)).toBe(MIN);
+  expect(arrivalMinSentence(3.02, "3-6")).toBe("Water could arrive in as little as ~3 h (screening estimate)");
   expect(arrivalMinSentence(2.46)).toBe("Water could arrive in as little as ~2.4 h (screening estimate)");
   expect(arrivalMinSentence(9.99)).toBe("Water could arrive in as little as ~9.9 h (screening estimate)");
   expect(arrivalMinSentence(12.9)).toBe("Water could arrive in as little as ~12 h (screening estimate)");
@@ -60,14 +70,20 @@ test("the wording: median vs minimum, minutes under 1 h, never '0 h', never NaN;
     const [med, min, tick] = [arrivalSentence(h), arrivalMinSentence(h), arrivalTick(h)];
     for (const t of [med, min, tick]) if (/(^|[^0-9.])0 h|~0(\.0)? h|NaN/.test(t)) bad.push(`${h}: ${t}`);
     if (/as little as/.test(med)) bad.push(`${h}: a median said "as little as"`);
-    if (h >= 1 && !(shownHours(min) <= h)) bad.push(`${h}: minimum shown as ${shownHours(min)} h, later than ${h} h`);
+    // the unrounded minimum can be as low as h - 0.05: never show more than that
+    if (min !== MIN && !(shownHours(min) <= h - 0.05 + 1e-9)) bad.push(`${h}: minimum shown as ${shownHours(min)} h, later than ${h} - 0.05 h`);
+    for (const b of ["1-3", "3-6", ">6"]) {
+      const m = arrivalMinSentence(h, b);
+      const low = { "1-3": 1, "3-6": 3, ">6": 6 }[b]!;
+      if (!(shownHours(m) >= low && shownHours(m) <= Math.max(low, h - 0.05) + 1e-9)) bad.push(`${h} ${b}: ${m}`);
+    }
   }
   expect(bad).toEqual([]);
 });
 
 test("F18.1 on the PUBLISHED E-20 values: no feature says 'as little as'; every hexagon's shown minimum <= its arrival_h_min", () => {
   const bad: string[] = [];
-  const n = { features: 0, featuresHours: 0, hexes: 0, hexesHours: 0 };
+  const n = { features: 0, featuresHours: 0, hexes: 0, hexesHours: 0, bandEdge: 0 };
   for (const area of areas()) {
     const files = readdirSync(join(__dirname, "..", "web", "public", "data", area.id, "scenarios"));
     for (const f of files.filter((x) => x.endsWith(".geojson"))) {
@@ -77,8 +93,9 @@ test("F18.1 on the PUBLISHED E-20 values: no feature says 'as little as'; every 
         n.features++;
         const s = arrivalSentence(h);
         if (/as little as/.test(s)) bad.push(`${area.id}/${f}: ${s}`);
-        if (!s.includes(arrivalBand(h) === "more than 6 h" ? "in more than 6 h here" : `within ${arrivalBand(h)} here`)) bad.push(`${area.id}/${f} ${h}: band missing: ${s}`);
-        if (h >= 1) {
+        const fb = featureBand(h);
+        if (!s.includes(fb === "more than 6 h" ? "in more than 6 h here" : `within ${fb} here`)) bad.push(`${area.id}/${f} ${h}: band missing: ${s}`);
+        if (fb !== "minutes") {
           n.featuresHours++;
           if (!/sooner in places/.test(s) || Math.abs(shownHours(s) - h) > 0.051 * (h < 10 ? 1 : 10)) bad.push(`${area.id}/${f} ${h}: ${s}`);
         }
@@ -89,9 +106,15 @@ test("F18.1 on the PUBLISHED E-20 values: no feature says 'as little as'; every 
         const h = r.arrival_h_min;
         if (h === null || h === undefined) continue;
         n.hexes++;
-        if (h >= 1) {
+        const m = arrivalMinSentence(h, r.arrival_band_min);
+        // F18.4: exposure's band of the UNROUNDED minimum rules; "<1" -> minutes even where the rounded value is 1.0
+        if (r.arrival_band_min === "<1") {
+          if (!m.includes("within minutes")) bad.push(`${area.id}/${f} ${r.h3} ${h} <1: ${m}`);
+          if (h >= 1) n.bandEdge++;
+        } else if (h >= 1) {
           n.hexesHours++;
-          if (!(shownHours(arrivalMinSentence(h)) <= h)) bad.push(`${area.id}/${f} ${r.h3} ${h}: ${arrivalMinSentence(h)}`);
+          const low = { "1-3": 1, "3-6": 3, ">6": 6 }[r.arrival_band_min ?? ""] ?? 0;
+          if (!(shownHours(m) >= low && shownHours(m) <= Math.max(low, h - 0.05) + 1e-9)) bad.push(`${area.id}/${f} ${r.h3} ${h} ${r.arrival_band_min}: ${m}`);
         }
       }
     }
@@ -99,6 +122,7 @@ test("F18.1 on the PUBLISHED E-20 values: no feature says 'as little as'; every 
   expect(bad).toEqual([]);
   expect(n.featuresHours, "published features with arrival_h >= 1 h").toBeGreaterThan(50);
   expect(n.hexesHours, "published hexagons with arrival_h_min >= 1 h").toBeGreaterThan(1000);
+  expect(n.bandEdge, "published hexagons rounded to 1.0 h whose band is <1 (F18.4: 23 today)").toBe(23);
 });
 
 for (const area of areas()) {

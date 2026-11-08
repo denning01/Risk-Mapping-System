@@ -63,7 +63,7 @@ export function hexLines(r: HexRow, names: Map<string, string>): string[] {
     `People in flooded buildings: ${n(r.people_medium)} (range ${n(r.people_low)} to ${n(r.people_high)})`,
     `Buildings flooded: ${n(r.buildings_flooded)}`,
   ];
-  if (r.arrival_h_min !== undefined) lines.push(arrivalMinSentence(r.arrival_h_min ?? null)); // a true minimum (F18.1)
+  if (r.arrival_h_min !== undefined) lines.push(arrivalMinSentence(r.arrival_h_min ?? null, r.arrival_band_min)); // a true minimum (F18.1), its band (F18.4)
   if (r.walk_min !== null && r.walk_min !== undefined) lines.push(`Safe shelter reachable: ~${r.walk_min} min walk${name(r.shelter_id)}`);
   if (r.relocation_walk_min !== null && r.relocation_walk_min !== undefined)
     lines.push(`High ground reachable: ~${r.relocation_walk_min} min walk${name(r.relocation_id)}`);

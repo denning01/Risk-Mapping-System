@@ -20,26 +20,38 @@ const MINUTES = "Water could arrive within minutes (local rain or nearby stream)
 const NONE = "No arrival estimate for this area";
 
 export type ArrivalBand = "minutes" | "1-3 h" | "3-6 h" | "more than 6 h";
-/** exposure's classify_arrival_band (07_scenarios.py), on the feature's arrival_h */
+/** exposure's classify_arrival_band (07_scenarios.py) on an UNROUNDED hour value */
 export function arrivalBand(h: number): ArrivalBand {
   return h < 1 ? "minutes" : h < 3 ? "1-3 h" : h <= 6 ? "3-6 h" : "more than 6 h";
+}
+/** exposure publishes hours rounded to 0.1 h, so the true value is in [h - 0.05, h + 0.05) */
+const HALF_STEP = 0.05;
+/** F18.4: the band shown for a published (rounded) feature median: the EARLIEST band its unrounded value can be in.
+ * 1.0 -> "minutes" (0.95..1.05), 3.0 -> "1-3 h"; never a later band than the cells'. */
+export function featureBand(h: number): ArrivalBand {
+  return arrivalBand(h - HALF_STEP);
 }
 
 /** The popup sentence for a flood FEATURE's arrival_h, a median, with its band (null -> no estimate). */
 export function arrivalSentence(h: number | null): string {
   if (h === null || !Number.isFinite(h)) return NONE;
-  const band = arrivalBand(h);
+  const band = featureBand(h);
   // a median under 1 h is not printed as "~0.x h": the band says it (and never "0 h")
   if (band === "minutes") return "Water could arrive within minutes here (local rain or nearby stream; screening estimate)";
   const when = band === "more than 6 h" ? "in more than 6 h" : `within ${band}`;
   return `Water could arrive ${when} here (typical ~${fmtHours(h)} h), sooner in places (screening estimate)`;
 }
 
-/** The sentence for a true MINIMUM (a hexagon's arrival_h_min): a lower bound, shown rounded down. */
-export function arrivalMinSentence(h: number | null): string {
+const BAND_LOW: Record<string, number> = { "<1": 0, "1-3": 1, "3-6": 3, ">6": 6 };
+/** The sentence for a true MINIMUM (a hexagon's arrival_h_min, rounded to 0.1 h by exposure) with exposure's band of
+ * the UNROUNDED minimum when given (arrival_band_min). F18.4: band "<1" -> minutes whatever the rounded value; else
+ * the hours shown are max(band's lower edge, h - 0.05) rounded down, so never later than the true minimum. */
+export function arrivalMinSentence(h: number | null, band?: string | null): string {
   if (h === null || !Number.isFinite(h)) return NONE;
-  if (h < 1) return MINUTES;
-  return `Water could arrive in as little as ~${fmtHoursFloor(h)} h (screening estimate)`;
+  if (band === "<1") return MINUTES;
+  const x = Math.max(band ? (BAND_LOW[band] ?? 0) : 0, h - HALF_STEP);
+  if (x < 1) return MINUTES;
+  return `Water could arrive in as little as ~${fmtHoursFloor(x)} h (screening estimate)`;
 }
 
 /** A legend tick: "minutes" under 1 h, else "~X h" (F18.3: a non-finite value shows nothing). */
