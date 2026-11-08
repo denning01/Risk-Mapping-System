@@ -5,6 +5,9 @@ import { areas, card, expectExposure, openScenario, readJson, watch, type Origin
 import { DAILY_MM, DAILY_PROB, fixture } from "./weather-fixture";
 
 const IT = { useInnerText: true };
+/** The caption for the model cell the fixture returns (lat/lon rounded to 2 dp), as weather.tsx prints it (3 dp). */
+const cellCaption = (p: { lon: number; lat: number }) =>
+  `for the model cell at ${(Math.round(p.lat * 100) / 100).toFixed(3)}, ${(Math.round(p.lon * 100) / 100).toFixed(3)}.`;
 type Shelter = { id: string; lon: number; lat: number };
 type OriginLL = Origin & { lon: number; lat: number };
 
@@ -53,12 +56,15 @@ for (const area of areas()) {
     await expect(rows).toHaveCount(7);
     for (let i = 0; i < 7; i++) await expect(rows.nth(i)).toContainText(`${DAILY_MM[i]} mm${DAILY_PROB[i]}%`);
     await expect(rows.nth(4)).toContainText("Thu 12 Nov");
-    await expect(here).toContainText(/Open-Meteo forecast, fetched \d\d:\d\d EAT, for the model cell at/);
+    await expect(here).toContainText(/Open-Meteo forecast, fetched \d\d:\d\d EAT, for the model cell at /);
+    // F13.2: the exact cell, lat first (requested at 4 dp, so round the 4-dp value the app sent)
+    await expect(here).toContainText(cellCaption({ lon: Number(o.lon.toFixed(4)), lat: Number(o.lat.toFixed(4)) }));
 
     const going = w.locator('[data-weather-point="Where you are going"]');
     await expect(going).toContainText(`Where you are going: ${route.destination_name}`, IT);
     await expect(going).toContainText("Rain expected today: 2.2 mm", IT);
     await expect(going).toContainText("Wettest of the next 7 days: Thu 12 Nov, 12.4 mm.", IT);
+    await expect(going).toContainText(cellCaption({ lon: Number(dest.lon.toFixed(4)), lat: Number(dest.lat.toFixed(4)) }));
 
     await expect(w).toContainText("Not our forecast: live data from Open-Meteo.");
     await expect(w.getByRole("link", { name: "Weather data by Open-Meteo.com" })).toHaveAttribute("href", "https://open-meteo.com/en/licence");
