@@ -1185,3 +1185,38 @@ def test_client_answers_follow_ruling_r20_user_type_two_answers_and_safer_altern
     assert "safer" not in free["relocation"]                    # 0-10-20-30 has no near edge: no alternative
     g2 = _client_graph(W, D, shelters=[("s", 2)])
     assert list(rt.client_answers(g2, "a", *_off(0), user_type="settler")) == ["shelter"]
+
+
+def test_relocation_site_own_cell_flood_is_tested_even_when_its_node_stays_open():
+    """F20.2 (V1): a site 22 m from node 11 (snap leg off the edges) whose OWN cell is wet in scenario 1, while node 11
+    and all its edges stay dry: usable only in scenario 0. Without the own-cell test it would stay usable in both."""
+    W = _lattice(4)
+    lon, lat = _ll(_X0 + 280, _Y0 - 290)
+    sites = {"S": {"id": "S", "name": "S", "type": "high_ground", "lon": lon, "lat": lat, "kind": "relocation", "score": 0.9}}
+    dry, tf = _wet([])
+    wet1, _ = _wet([(_X0 + 285, _Y0 - 285)])
+    assert not W.cut(wet1, tf).any()                               # the wet cell touches no edge: node 11 stays live
+    floods = [(dry, tf, W.live(W.cut(dry, tf))), (wet1, tf, W.live(W.cut(wet1, tf)))]
+    out = rt.relocation_targets(W, sites, floods)
+    assert W.nodes[out[0]["node"]] == 11 and 10 < out[0]["snap_m"] < 40
+    assert out[0]["usable"] == 0b01
+
+
+def test_relocation_score_is_the_chosen_routes_TOP_candidate():
+    """F20.2 (V4): the site's score is candidates_top5[0], not any other entry of the list."""
+    sites = {}
+    ex = [{"id": "A", "name": "A", "type": "high_ground", "lon": 0.0, "lat": 0.0}]
+    top5 = [{"score": s} for s in (0.91, 0.70, 0.60, 0.50, 0.40)]
+    rt.collect_relocation_sites(sites, ex, [{"kind": "relocation", "shelter_id": "A", "candidates_top5": top5}])
+    assert sites["A"]["score"] == 0.91
+
+
+def test_export_labels_a_target_without_a_kind_as_shelter():
+    """F20.2 (V5): OSM targets are kind "shelter" in graph.json v3, whether or not the caller set it."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    z, zd = np.zeros(W.n_edges, bool), np.zeros(D.n_edges, bool)
+    sh = [{"id": "s1", "name": "s1", "type": "school", "lon": 0.0, "lat": 0.0, "node": W.idx[3], "snap_m": 0.0, "usable": 1},
+          {"id": "s2", "name": "s2", "type": "school", "kind": "shelter", "lon": 0.0, "lat": 0.0, "node": W.idx[2],
+           "snap_m": 0.0, "usable": 1}]
+    g = rt.export_graph("t", ["a"], W, D, {"a": (z, zd)}, near={"a": (z, zd)}, shelters=sh)
+    assert [s["kind"] for s in g["shelters"]] == ["shelter", "shelter"] and "rank" not in g["shelters"][0]
