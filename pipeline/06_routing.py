@@ -1016,10 +1016,52 @@ def _nearest_safe_shelter(W: RoutingGraph, o, shelters: list[dict], cut, flood=N
 # ---------------------------------------------------------------------------------------------
 # E-12: graph.json, the road graph for client-side "route from anywhere" (pending Person B's schema)
 # ---------------------------------------------------------------------------------------------
+NEAR_FLOOD_M = 30.0      # E-16 RULE: an edge is NEAR the flood in a scenario when its full geometry comes within 30 m of a
+                         # wet cell (depth > 0, AOI-masked) and it is NOT flooded under its own net's rule (walk: any
+                         # wet sample; drive: >= 0.3 m; bridges exempt). Exact geometry: wet cells polygonised and buffered.
+NEAR_PENALTY = 3.0       # E-16 RULE (client): a near edge costs 3x its travel time when CHOOSING a route; the minutes
+                         # shown are always the true travel time of the chosen path.
+CLIENT_TARGETS = "all_usable"  # E-16 RULE (client, operator ruling A): candidates = EVERY shelter usable in the scenario;
+                         # one Dijkstra, each shelter a virtual edge node -> shelter costing its snap leg; first settled wins.
 GRAPH_SIMPLIFY_M = 5.0   # CHOICE: display geometry only (Douglas-Peucker in UTM); routing and flood flags use the full geometry
 
 
-def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, cuts: dict, simplify_m: float = GRAPH_SIMPLIFY_M) -> dict:
+def near_flood(RG: RoutingGraph, wet: np.ndarray, transform, cut: np.ndarray, near_m: float = NEAR_FLOOD_M) -> np.ndarray:
+    """bool per edge: some part of the edge's FULL (unsimplified) geometry is within near_m of a wet cell, and the edge is not in `cut`."""
+    import shapely
+    from rasterio.features import shapes
+    from shapely.geometry import shape
+    if getattr(RG, "_lines_utm", None) is None:
+        from pyproj import Transformer
+        to = Transformer.from_crs("EPSG:4326", RG.crs, always_xy=True).transform
+        RG._lines_utm = np.array([shapely.linestrings(np.c_[to(c[:, 0], c[:, 1])]) for c in RG.geom], dtype=object)
+    if not wet.any():
+        return np.zeros(RG.n_edges, bool)
+    zone = shapely.union_all([shape(g) for g, v in shapes(wet.astype(np.uint8), mask=wet, transform=transform) if v == 1])
+    zone = shapely.buffer(zone, near_m)
+    shapely.prepare(zone)
+    return shapely.intersects(zone, RG._lines_utm) & ~cut
+
+
+def graph_shelters(W: RoutingGraph, osm_shelters: list[dict]) -> list[dict]:
+    """E-16: each OSM shelter with its walk node (nearest node of the full walk graph, UTM) and snap_m; usable = 0."""
+    from pyproj import Transformer
+    x, y = Transformer.from_crs("EPSG:4326", W.crs, always_xy=True).transform(
+        np.array([s["lon"] for s in osm_shelters], float), np.array([s["lat"] for s in osm_shelters], float))
+    d, n = W.tree.query(np.c_[x, y])
+    return [{**s, "node": int(i), "snap_m": float(dd), "usable": 0} for s, i, dd in zip(osm_shelters, n, d)]
+
+
+def shelter_usable(W: RoutingGraph, gs: dict, safe: bool, live: np.ndarray, flood) -> bool:
+    """E-16 RULE: a client may route to a shelter in a scenario iff it is safe (shelters.json), its snap leg is
+    <= MAX_DEST_SNAP_M, its node keeps an unflooded walk edge (live), and its straight snap leg crosses no wet cell
+    (flood = (wet, transform)) -- the pipeline's own destination rules."""
+    return bool(safe and gs["snap_m"] <= MAX_DEST_SNAP_M and live[gs["node"]]
+                and not W.snap_leg_wet(gs["lon"], gs["lat"], gs["node"], flood))
+
+
+def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, cuts: dict, simplify_m: float = GRAPH_SIMPLIFY_M,
+                 near: dict | None = None, shelters: list[dict] | None = None) -> dict:
     """graph.json for one area. cuts: key -> (cut_walk, cut_drive), the SAME per-edge masks the published routes used
     (RoutingGraph.cut: walk at depth > 0, drive at >= 0.3 m, bridges exempt).
       nodes:  flat [lon, lat, ...] (5 dp), the union of walk and drive nodes by OSM id
@@ -1052,8 +1094,11 @@ def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, c
 
     def net(RG, which, undirected):
         bits = np.zeros(RG.n_edges, np.int64)
+        nbits = np.zeros(RG.n_edges, np.int64)
         for k, key in enumerate(keys):
             bits |= cuts[key][which].astype(np.int64) << k
+            if near is not None:
+                nbits |= near[key][which].astype(np.int64) << k
         rows, seen = [], {}
         for e in range(RG.n_edges):
             u, v = nid[RG.nodes[RG.u[e]]], nid[RG.nodes[RG.v[e]]]
@@ -1061,14 +1106,25 @@ def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, c
                 pk = (min(u, v), max(u, v), round(RG.length[e], 1))
                 if pk in seen:                      # the reverse direction of a pair already written
                     rows[seen[pk]][3] |= int(bits[e])
+                    rows[seen[pk]][5] |= int(nbits[e])
                     continue
                 seen[pk] = len(rows)
-            rows.append([u, v, int(round(RG.w[e] * 10)), int(bits[e]), geom(RG.geom[e])])
-        return {"edges": [x for r in rows for x in r[:3]], "flooded": [r[3] for r in rows], "geom": [r[4] for r in rows]}
+            rows.append([u, v, int(round(RG.w[e] * 10)), int(bits[e]), geom(RG.geom[e]), int(nbits[e])])
+        out = {"edges": [x for r in rows for x in r[:3]], "flooded": [r[3] for r in rows], "geom": [r[4] for r in rows]}
+        if near is not None:
+            out["near"] = [r[5] & ~r[3] for r in rows]       # a pair closed by flood is not also "near"
+        return out
 
-    return {"area": area, "version": 1, "scenarios": list(keys), "time_unit": "deciseconds",
-            "walk_kph": WALK_KPH, "drive_cut_m": DRIVE_CUT_M, "simplify_m": simplify_m,
-            "nodes": nodes, "walk": net(W, 0, True), "drive": net(D, 1, False)}
+    g = {"area": area, "version": 1 if near is None else 2, "scenarios": list(keys), "time_unit": "deciseconds",
+         "walk_kph": WALK_KPH, "drive_cut_m": DRIVE_CUT_M, "simplify_m": simplify_m,
+         "nodes": nodes, "walk": net(W, 0, True), "drive": net(D, 1, False)}
+    if near is not None:
+        g.update({"utm_epsg": int(str(W.crs).split(":")[-1]), "near_m": NEAR_FLOOD_M, "near_penalty": NEAR_PENALTY,
+                  "client_targets": CLIENT_TARGETS, "max_dest_snap_m": MAX_DEST_SNAP_M})
+    if shelters is not None:
+        g["shelters"] = [{**{k: s[k] for k in ("id", "name", "type", "lon", "lat")}, "node": nid[W.nodes[s["node"]]],
+                          "snap_m": round(float(s["snap_m"]), 1), "usable": int(s["usable"])} for s in shelters]
+    return g
 
 
 def graph_route(g: dict, net: str, key: str, src: int, dst: int):
@@ -1103,6 +1159,69 @@ def graph_route(g: dict, net: str, key: str, src: int, dst: int):
         x, i = prev[x]
         path.append(i)
     return dist[dst] / 10, path[::-1]
+
+
+def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | None = None):
+    """E-16 reference CLIENT (reads ONLY the exported dict; what a browser would run). Walk net.
+      1. snap the point to the nearest WALK node (UTM metres); if that node has no unflooded walk edge -> no route
+      2. targets: EVERY shelter usable in `key` (shelter "usable" bit), each reached by a virtual edge from its node
+         costing its snap leg (snap_m at walking speed)
+      3. ONE Dijkstra from the snapped node, flooded edges removed, cost = deciseconds x penalty on near edges;
+         stop when the first shelter is settled: it has the lowest cost + snap leg (the tap's own snap leg is common to
+         all). Equal cost: road nodes pop before shelters, shelters by id.
+      4. minutes = ceil(TRUE seconds of that path + both snap legs at walking speed)
+    -> dict(shelter, minutes, edges, cost_s, snap_m) or dict(error=...)."""
+    import heapq
+    import math
+    from pyproj import Transformer
+    pen = g["near_penalty"] if penalty is None else penalty
+    ki = g["scenarios"].index(key)
+    to = Transformer.from_crs("EPSG:4326", f"EPSG:{g['utm_epsg']}", always_xy=True).transform
+    E, F, N = g["walk"]["edges"], g["walk"]["flooded"], g["walk"].get("near", [0] * len(g["walk"]["flooded"]))
+    walk_nodes = sorted(set(E[0::3]) | set(E[1::3]))
+    xs, ys = to(np.array([g["nodes"][2 * n] for n in walk_nodes]), np.array([g["nodes"][2 * n + 1] for n in walk_nodes]))
+    px, py = to(lon, lat)
+    j = int(np.argmin(np.hypot(xs - px, ys - py)))
+    src, snap_o = walk_nodes[j], float(np.hypot(xs[j] - px, ys[j] - py))
+    adj = {}
+    for i in range(len(F)):
+        if F[i] >> ki & 1:
+            continue
+        u, v, t = E[3 * i], E[3 * i + 1], E[3 * i + 2]
+        c = t * (pen if N[i] >> ki & 1 else 1.0)
+        adj.setdefault(u, []).append((v, c, t, i)); adj.setdefault(v, []).append((u, c, t, i))
+    if src not in adj:
+        return {"error": "nearest road/path node is cut off by the flood"}
+    v_ms = g["walk_kph"] / 3.6
+    at = {}                                                   # node -> usable shelters there
+    for s in g["shelters"]:
+        if s["usable"] >> ki & 1:
+            at.setdefault(s["node"], []).append(s)
+    if not at:
+        return {"error": "no usable safe shelter in this scenario"}
+    dist, true, prev, done = {src: 0.0}, {src: 0}, {}, set()
+    pq = [(0.0, 0, "", src)]                                  # (cost ds, 0 = road node / 1 = shelter, shelter id, node)
+    while pq:
+        c0, kind, sid, x = heapq.heappop(pq)
+        if kind == 1:                                         # first shelter settled = lowest cost + its snap leg
+            s = next(s for s in at[x] if s["id"] == sid)
+            path, y = [], x
+            while y != src:
+                y, i = prev[y]
+                path.append(i)
+            sec = true[x] / 10 + (snap_o + s["snap_m"]) / v_ms
+            return {"shelter": sid, "minutes": int(math.ceil(round(sec / 60.0, 6))), "edges": path[::-1],
+                    "cost_s": c0 / 10 + snap_o / v_ms, "snap_m": [snap_o, s["snap_m"]]}
+        if c0 > dist.get(x, math.inf) or x in done:
+            continue
+        done.add(x)
+        for s in at.get(x, ()):
+            heapq.heappush(pq, (c0 + 10 * s["snap_m"] / v_ms, 1, s["id"], x))
+        for y, c, t, i in adj.get(x, ()):
+            if c0 + c < dist.get(y, math.inf):
+                dist[y], true[y], prev[y] = c0 + c, true[x] + t, (x, i)
+                heapq.heappush(pq, (c0 + c, 0, "", y))
+    return {"error": "no usable shelter reachable"}
 
 
 def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,
