@@ -168,6 +168,38 @@ for (const area of areas()) {
     });
   }
 
+  test(`${area.id}: a GOOD switch back to Normal stays vector past the 8 s no-load timer (F14.8 a)`, async ({ page, baseURL }) => {
+    const errors = await watch(page, baseURL!);
+    await mockMap(page, { vector: true });
+    await openScenario(page, area, rain, "normal");
+    await choose(page, "terrain");
+    await expectDrawn(page, "opentopomap");
+    await choose(page, "normal");
+    await expectDrawn(page, "vector");
+    await page.waitForTimeout(9500); // past the 8 s watch: style.load must have ended it
+    await expectDrawn(page, "vector");
+    await expect(page.getByText(/Using fallback basemap|tiles unavailable/)).toHaveCount(0);
+    expect(errors, errors.join("\n")).toEqual([]);
+  });
+
+  test(`${area.id}: Satellite tiles all failing AND OpenFreeMap refused -> the raster Normal with its note, overlays redraw (F14.8 b)`, async ({ page, baseURL }) => {
+    const errors = await watch(page, baseURL!);
+    const ofmLater: { down: false | "refused" | "hangs" } = { down: false };
+    await mockMap(page, { vector: true, ofmLater, fail: { host: HOST_OF.satellite, mode: "all" } });
+    await openScenario(page, area, rain, "normal");
+    await expectDrawn(page, "vector");
+    ofmLater.down = "refused"; // the likeliest real offline case: both down
+    await choose(page, "satellite");
+    await expect(page.getByText("Using fallback basemap")).toBeVisible({ timeout: 6000 }); // the style error, before the 8 s timer
+    await expectDrawn(page, "osm-raster");
+    const rain50 = readJson<{ features: unknown[] }>(`${area.id}/scenarios/50_normal.geojson`);
+    await page.getByLabel("Rainfall in mm per 24 hours").fill("0");
+    await expect(page.getByText("Scenario: 50 mm in 24 h. Not a forecast.")).toBeVisible();
+    await expect(page.locator("[data-basemap]")).toHaveAttribute("data-flood-features", String(rain50.features.length));
+    await expect(page.locator("[data-basemap]")).toHaveAttribute("data-overlays", OVERLAYS);
+    expect(errors, errors.join("\n")).toEqual([]);
+  });
+
   test(`${area.id}: OpenFreeMap down at startup -> raster Normal with its note; switching still works`, async ({ page, baseURL }) => {
     const errors = await watch(page, baseURL!);
     await mockMap(page, { vector: false });
