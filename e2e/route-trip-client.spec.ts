@@ -197,3 +197,44 @@ test("floodNextTo: a line inside, 20 m from and 40 m from a flood square", () =>
   expect(inside?.risk).toBe("medium");
   expect(inside?.metres).toBeCloseTo(10, 0);
 });
+
+/** A tiny synthetic walk graph near Nairobi (1 m/s): nodes [lon, lat] and two-way edges [u, v, deciseconds]. */
+function tiny(nodes: [number, number][], edges: [number, number, number][]): PreparedGraph {
+  return prepareGraph(
+    checkGraph({
+      area: "test",
+      version: 2,
+      scenarios: ["50_normal"],
+      time_unit: "deciseconds",
+      walk_kph: 3.6,
+      nodes: nodes.flat(),
+      walk: { edges: edges.flat(), flooded: edges.map(() => 0), near: edges.map(() => 0), geom: edges.map(() => []) },
+      utm_epsg: 32737,
+      near_penalty: 3,
+      client_targets: "all_usable",
+      max_dest_snap_m: 500,
+      shelters: [],
+    }),
+  );
+}
+const LAT = -1.3;
+test("the third route is dropped when half or more of it is the fastest route's, kept when it is disjoint", () => {
+  // A-B-C-D straight (100 m each); a short detour B-X-C. Route 1 = A-B-C-D. With route 1's edges x2 the search goes
+  // A-B-X-C-D, which shares A-B and C-D (200 of 360 m = 0.56) -> dropped.
+  const ladder = tiny(
+    [[36.8, LAT], [36.801, LAT], [36.802, LAT], [36.803, LAT], [36.8015, LAT + 0.0005]],
+    [[0, 1, 1000], [1, 2, 1000], [2, 3, 1000], [1, 4, 800], [4, 2, 800]],
+  );
+  const r = routeBetween(ladder, "50_normal", { lon: 36.8, lat: LAT }, { lon: 36.803, lat: LAT });
+  expect(r.ok && r.alts.map((a) => a.label)).toEqual(["fastest"]);
+  // the same start and end with a fully separate way A-Y-D: kept, overlap 0
+  const two = tiny(
+    [[36.8, LAT], [36.801, LAT], [36.802, LAT], [36.803, LAT], [36.8015, LAT + 0.001]],
+    [[0, 1, 1000], [1, 2, 1000], [2, 3, 1000], [0, 4, 1600], [4, 3, 1600]],
+  );
+  const r2 = routeBetween(two, "50_normal", { lon: 36.8, lat: LAT }, { lon: 36.803, lat: LAT });
+  expect(r2.ok && r2.alts.map((a) => [a.label, a.overlap, a.extraMin])).toEqual([
+    ["fastest", 0, 0],
+    ["alternative", 0, 1],
+  ]);
+});
