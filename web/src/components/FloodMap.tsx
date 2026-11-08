@@ -126,6 +126,8 @@ export default function FloodMap(props: Props) {
   const tileErrorsRef = useRef(0);
   /** set on the first style.load; after it, the startup fallback is off (F14.2) */
   const firstLoadedRef = useRef(false);
+  /** F14.6: load the Normal map after startup; falls back to the raster if the vector style does not load */
+  const setNormalRef = useRef<(() => void) | null>(null);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
   /** M-14 test hook: the camera after each move ("lon,lat,zoom"), so e2e can turn a lon/lat into a pixel to tap */
   const [view, setView] = useState<string | null>(null);
@@ -175,6 +177,28 @@ export default function FloodMap(props: Props) {
       map.setStyle(RASTER_STYLE);
     };
     const timer = window.setTimeout(switchToFallback, 8000);
+    // F14.6: after startup, a setStyle(VECTOR_STYLE) whose style fails to fetch never fires style.load, so our layers
+    // would never come back. Watch it until its style.load: a style-level error or 8 s without a load -> the raster.
+    let vectorPending = false;
+    let vectorTimer = 0;
+    const failVector = () => {
+      if (!vectorPending) return;
+      vectorPending = false;
+      window.clearTimeout(vectorTimer);
+      vectorFailedRef.current = true;
+      setBasemapNote("Using fallback basemap");
+      map.setStyle(RASTER_STYLE, { diff: false });
+    };
+    setNormalRef.current = () => {
+      if (vectorFailedRef.current) {
+        map.setStyle(RASTER_STYLE, { diff: false });
+        return;
+      }
+      vectorPending = true;
+      window.clearTimeout(vectorTimer);
+      vectorTimer = window.setTimeout(failVector, 8000);
+      map.setStyle(VECTOR_STYLE, { diff: false });
+    };
     map.on("error", (e) => {
       const err = e.error as (Error & { type?: string }) | undefined;
       if (err?.type === "webglcontextcreationerror" || /WebGL/i.test(err?.message ?? "")) {
@@ -184,15 +208,17 @@ export default function FloodMap(props: Props) {
       }
       // style fetch failure before the first load -> raster fallback (never after: F14.2)
       if (!firstLoadedRef.current) switchToFallback();
+      const sourceId = (e as { sourceId?: string }).sourceId;
+      // F14.6: the vector style itself failed after startup (an error with no source while it is pending)
+      if (vectorPending && !sourceId) failVector();
       // M-15: the chosen Terrain / Satellite tiles keep failing -> back to Normal, with a note
       const cur = basemapRef.current;
-      const sourceId = (e as { sourceId?: string }).sourceId;
       if (sourceId && sourceId === RASTER_SOURCES[cur] && ++tileErrorsRef.current >= TILE_ERRORS_BEFORE_FALLBACK) {
         tileErrorsRef.current = 0;
         basemapRef.current = "normal";
         setBasemap("normal");
         setBasemapNote(`${BASEMAP_LABELS[cur]} tiles unavailable: showing the Normal map`);
-        map.setStyle(vectorFailedRef.current ? RASTER_STYLE : VECTOR_STYLE, { diff: false });
+        setNormalRef.current?.();
       }
       console.warn("[map]", err?.message);
     });
@@ -200,6 +226,8 @@ export default function FloodMap(props: Props) {
     map.on("style.load", () => {
       firstLoadedRef.current = true;
       window.clearTimeout(timer);
+      vectorPending = false;
+      window.clearTimeout(vectorTimer);
       addLayers(map);
       // M-15: redraw the current scenario, route and reports into the new style now, not on a later React pass, so a
       // basemap switch can never leave the overlays empty
@@ -286,6 +314,8 @@ export default function FloodMap(props: Props) {
     return () => {
       ro.disconnect();
       window.clearTimeout(timer);
+      window.clearTimeout(vectorTimer);
+      setNormalRef.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -300,9 +330,8 @@ export default function FloodMap(props: Props) {
     tileErrorsRef.current = 0;
     setBasemap(b);
     setBasemapNote(b === "normal" && vectorFailedRef.current ? "Using fallback basemap" : null);
-    map.setStyle(b === "satellite" ? SATELLITE_STYLE : b === "terrain" ? TERRAIN_STYLE : vectorFailedRef.current ? RASTER_STYLE : VECTOR_STYLE, {
-      diff: false,
-    });
+    if (b === "normal") setNormalRef.current?.();
+    else map.setStyle(b === "satellite" ? SATELLITE_STYLE : TERRAIN_STYLE, { diff: false });
   };
 
   // --- fly to the area ---

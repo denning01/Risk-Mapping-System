@@ -41,16 +41,22 @@ const LABEL: Record<string, string> = { normal: "Normal", terrain: "Terrain", sa
  * vector: serve the minimal OpenFreeMap style (else OpenFreeMap stays blocked by watch() -> startup raster fallback).
  * fail: a tile host whose tiles fail: "one" = only the first request, "all" = every request.
  */
-async function mockMap(page: Page, opts: { vector: boolean; fail?: { host: string; mode: "one" | "all" } }) {
+async function mockMap(
+  page: Page,
+  opts: { vector: boolean; fail?: { host: string; mode: "one" | "all" }; ofmLater?: { down: false | "refused" | "hangs" } },
+) {
   const asked: string[] = [];
   let failed = 0;
   if (opts.vector) {
     await page.route("https://tiles.openfreemap.org/planet/x/**", (r) =>
       r.fulfill({ status: 200, contentType: "application/x-protobuf", headers: { "access-control-allow-origin": "*" }, body: Buffer.alloc(0) }),
     );
-    await page.route("https://tiles.openfreemap.org/styles/liberty", (r) =>
-      r.fulfill({ status: 200, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(VECTOR_STYLE) }),
-    );
+    await page.route("https://tiles.openfreemap.org/styles/liberty", (r) => {
+      // F14.6: OpenFreeMap can go down after startup (ofmLater.down set by the test): refused, or never answering
+      if (opts.ofmLater?.down === "refused") return r.abort("connectionrefused");
+      if (opts.ofmLater?.down === "hangs") return; // left pending
+      return r.fulfill({ status: 200, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body: JSON.stringify(VECTOR_STYLE) });
+    });
   }
   await page.route(
     (u) => TILE_HOSTS.some((h) => u.host === h || u.host.endsWith(`.${h}`)),
@@ -134,6 +140,30 @@ for (const area of areas()) {
       await expect(page.getByText(`${LABEL[b]} tiles unavailable: showing the Normal map`)).toBeVisible();
       await expectDrawn(page, "vector"); // the VECTOR Normal, not the startup raster fallback
       await expect(page.getByText("Using fallback basemap")).toHaveCount(0);
+      expect(errors, errors.join("\n")).toEqual([]);
+    });
+  }
+
+  for (const down of ["refused", "hangs"] as const) {
+    test(`${area.id}: OpenFreeMap ${down} AFTER startup -> Normal is the raster with its note, and overlays still redraw (F14.6)`, async ({ page, baseURL }) => {
+      const errors = await watch(page, baseURL!);
+      const ofmLater: { down: false | "refused" | "hangs" } = { down: false };
+      await mockMap(page, { vector: true, ofmLater });
+      await openScenario(page, area, rain, "normal");
+      await expectDrawn(page, "vector");
+      await choose(page, "terrain");
+      await expectDrawn(page, "opentopomap");
+      ofmLater.down = down;
+      await choose(page, "normal");
+      // refused: on the style error itself, well before the 8 s no-load timer; hangs: the timer
+      await expect(page.getByText("Using fallback basemap")).toBeVisible({ timeout: down === "refused" ? 4000 : 15000 });
+      await expectDrawn(page, "osm-raster");
+      // the overlays are live on the fallback: a new scenario redraws the flood
+      const rain50 = readJson<{ features: unknown[] }>(`${area.id}/scenarios/50_normal.geojson`);
+      await page.getByLabel("Rainfall in mm per 24 hours").fill("0");
+      await expect(page.getByText("Scenario: 50 mm in 24 h. Not a forecast.")).toBeVisible();
+      await expect(page.locator("[data-basemap]")).toHaveAttribute("data-flood-features", String(rain50.features.length));
+      await expect(page.locator("[data-basemap]")).toHaveAttribute("data-overlays", OVERLAYS);
       expect(errors, errors.join("\n")).toEqual([]);
     });
   }
