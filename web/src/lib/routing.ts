@@ -274,7 +274,15 @@ export function snapStart(P: PreparedGraph, lon: number, lat: number): { node: n
 }
 
 /** client_route(): the route from (lon, lat) to the best usable shelter in scenario `key` ("<rain>_<enso>"). */
-export function clientRoute(P: PreparedGraph, key: string, lon: number, lat: number, penalty?: number): RouteResult {
+export function clientRoute(
+  P: PreparedGraph,
+  key: string,
+  lon: number,
+  lat: number,
+  penalty?: number,
+  /** Python `kinds`: only targets of these kinds (absent kind = "shelter"); undefined = every target */
+  kinds?: ReadonlySet<string>,
+): RouteResult {
   const g = P.g;
   const pen = penalty ?? g.near_penalty;
   const ki = g.scenarios.indexOf(key);
@@ -287,7 +295,7 @@ export function clientRoute(P: PreparedGraph, key: string, lon: number, lat: num
   const vms = g.walk_kph / 3.6;
   const at = new Map<number, GraphShelter[]>();
   for (const s of g.shelters) {
-    if (!((s.usable >> ki) & 1)) continue;
+    if (!((s.usable >> ki) & 1) || (kinds && !kinds.has(s.kind ?? "shelter"))) continue;
     const l = at.get(s.node);
     if (l) l.push(s);
     else at.set(s.node, [s]);
@@ -338,6 +346,170 @@ export function clientRoute(P: PreparedGraph, key: string, lon: number, lat: num
   return { ok: false, reason: "unreachable" };
 }
 
+// ---------------------------------------------------------------------------------------------
+// RULING R20: client_answers() -- what the app shows for a point (port of the Python reference at exposure e972b7e)
+// ---------------------------------------------------------------------------------------------
+/** rural households move to high ground; traders go to a shelter (Python RELOCATION_USER_TYPES) */
+export const RELOCATION_USER_TYPES: ReadonlySet<string> = new Set(["settler", "farmer"]);
+export type TargetKind = "shelter" | "relocation";
+export type Answer =
+  | { ok: true; primary: RouteOk; safer?: RouteOk & { extraMin: number } }
+  | { ok: false; reason: RouteRefusal };
+
+/**
+ * client_answers(): a preset origin passes its user type and gets ONE answer, of the kind its published card uses
+ * ("relocation" for settler/farmer when the graph has relocation targets, else "shelter"); a free tap (no user type)
+ * gets "shelter" (refuge now) and, where relocation targets exist, "relocation" (high ground).
+ * Each answer: PRIMARY = the fastest safe route (flooded edges excluded, penalty 1: the published cards); SAFER = the
+ * route with near-flood edges costed x near_penalty, only when its target or edges differ, with extraMin.
+ */
+export function clientAnswers(P: PreparedGraph, key: string, lon: number, lat: number, userType?: string): Partial<Record<TargetKind, Answer>> {
+  const hasRel = relocationTargets(P.g) > 0;
+  const wants: TargetKind[] =
+    userType !== undefined ? [RELOCATION_USER_TYPES.has(userType) && hasRel ? "relocation" : "shelter"] : hasRel ? ["shelter", "relocation"] : ["shelter"];
+  const out: Partial<Record<TargetKind, Answer>> = {};
+  for (const kind of wants) {
+    const kinds = new Set([kind]);
+    const p = clientRoute(P, key, lon, lat, 1.0, kinds);
+    if (!p.ok) {
+      out[kind] = { ok: false, reason: p.reason };
+      continue;
+    }
+    const ans: Answer = { ok: true, primary: p };
+    const s = clientRoute(P, key, lon, lat, undefined, kinds);
+    if (s.ok && (s.shelter.id !== p.shelter.id || !sameEdges(s.edges, p.edges))) ans.safer = { ...s, extraMin: s.minutes - p.minutes };
+    out[kind] = ans;
+  }
+  return out;
+}
+
+const sameEdges = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+// ---------------------------------------------------------------------------------------------
+// M-16: FROM -> TO with up to 3 alternatives (no Python card to match: checked against an independent scipy Dijkstra)
+// ---------------------------------------------------------------------------------------------
+export type TripPoint = { lon: number; lat: number; /** a graph target id: use its node and snap leg, as the answers do */ targetId?: string };
+export type AltLabel = "fastest" | "safer" | "alternative";
+export interface TripAlt {
+  label: AltLabel;
+  minutes: number;
+  /** network metres: edges (true time x walking speed) + both snap legs */
+  metres: number;
+  /** metres of the path on edges NEAR the flood in this scenario (graph near bit: within 30 m of a wet cell) */
+  nearM: number;
+  /** minutes more than the fastest */
+  extraMin: number;
+  /** share of this path's edge metres that the fastest path also uses (0 for the fastest itself) */
+  overlap: number;
+  edges: number[];
+  coords: [number, number][];
+}
+export type TripRefusal = "far_start" | "far_dest" | "cut_off_start" | "cut_off_dest" | "unreachable";
+export type TripResult = { ok: true; alts: TripAlt[]; snapM: [number, number] } | { ok: false; reason: TripRefusal };
+/** CHOICE (M-16): a third route is kept only when less than this share of its edge metres is shared with the fastest. */
+export const MAX_ALT_OVERLAP = 0.5;
+/** CHOICE (M-16): the third route = fastest safe search with the fastest route's edges costed x this. */
+export const ALT_EDGE_FACTOR = 2;
+
+/** Dijkstra from src to dst on scenario `ki`; cost = deciseconds x pen on near edges x mul[edge]; flooded edges absent. */
+function searchTo(P: PreparedGraph, ki: number, pen: number, src: number, dst: number, mul?: Map<number, number>) {
+  const A = adjacency(P, ki, pen);
+  const nn = P.g.nodes.length / 2;
+  const dist = new Float64Array(nn).fill(Infinity);
+  const tru = new Float64Array(nn);
+  const prevNode = new Int32Array(nn).fill(-1);
+  const prevEdge = new Int32Array(nn).fill(-1);
+  const done = new Uint8Array(nn);
+  dist[src] = 0;
+  const pq = new MinHeap();
+  pq.push({ c: 0, kind: 0, sid: "", node: src });
+  for (let e = pq.pop(); e; e = pq.pop()) {
+    const x = e.node;
+    if (e.c > dist[x] || done[x]) continue;
+    done[x] = 1;
+    if (x === dst) {
+      const edges: number[] = [];
+      const nodes: number[] = [x];
+      for (let y = x; y !== src; y = prevNode[y]) {
+        edges.push(prevEdge[y]);
+        nodes.push(prevNode[y]);
+      }
+      return { edges: edges.reverse(), nodes: nodes.reverse(), ds: tru[x] };
+    }
+    for (let k = A.start[x]; k < A.start[x + 1]; k++) {
+      const y = A.to[k];
+      const c = e.c + A.cost[k] * (mul?.get(A.edge[k]) ?? 1);
+      if (c < dist[y]) {
+        dist[y] = c;
+        tru[y] = tru[x] + A.t[k];
+        prevNode[y] = x;
+        prevEdge[y] = A.edge[k];
+        pq.push({ c, kind: 0, sid: "", node: y });
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * M-16 FROM -> TO on foot in scenario `key`, flooded edges never used. Up to 3 alternatives:
+ *   1. fastest: penalty 1 (RULING R20: the primary is the fastest safe route)
+ *   2. safer:   near-flood edges x near_penalty (R20's "safer" alternative), kept when its edges differ
+ *   3. alternative: penalty 1 with route 1's edges x ALT_EDGE_FACTOR, kept when it differs from 1 and 2 and shares
+ *      less than MAX_ALT_OVERLAP of its edge metres with route 1
+ * Start and destination snap to the nearest walk node (a graph target uses its own node and snap leg); further than
+ * max_dest_snap_m -> refused. Wet start / destination are checked by the caller against the flood polygons.
+ */
+export function routeBetween(P: PreparedGraph, key: string, from: TripPoint, to: TripPoint): TripResult {
+  const g = P.g;
+  const ki = g.scenarios.indexOf(key);
+  if (ki < 0) throw new Error(`graph.json has no scenario ${key}`);
+  const vms = g.walk_kph / 3.6;
+  const a = snapStart(P, from.lon, from.lat);
+  if (a.m > g.max_dest_snap_m) return { ok: false, reason: "far_start" };
+  const t = to.targetId ? g.shelters.find((s) => s.id === to.targetId) : undefined;
+  const b = t ? { node: t.node, m: t.snap_m } : snapStart(P, to.lon, to.lat);
+  if (b.m > g.max_dest_snap_m) return { ok: false, reason: "far_dest" };
+  const A1 = adjacency(P, ki, 1);
+  const open = (n: number) => A1.start[n] !== A1.start[n + 1];
+  if (!open(a.node)) return { ok: false, reason: "cut_off_start" };
+  if (!open(b.node)) return { ok: false, reason: "cut_off_dest" };
+  const { edges: E, near: N } = g.walk;
+  const edgeM = (i: number) => (E[3 * i + 2] / 10) * vms;
+  const legs = a.m + b.m;
+  const make = (label: AltLabel, r: { edges: number[]; nodes: number[]; ds: number }, base?: TripAlt): TripAlt => {
+    const sec = r.ds / 10 + legs / vms;
+    const em = r.edges.reduce((s, i) => s + edgeM(i), 0);
+    const inBase = base ? new Set(base.edges) : null;
+    const shared = inBase ? r.edges.reduce((s, i) => s + (inBase.has(i) ? edgeM(i) : 0), 0) : 0;
+    const minutes = Math.ceil(roundHalfEven(sec / 60, 6));
+    return {
+      label,
+      minutes,
+      metres: em + legs,
+      nearM: r.edges.reduce((s, i) => s + ((N[i] >> ki) & 1 ? edgeM(i) : 0), 0),
+      extraMin: base ? minutes - base.minutes : 0,
+      overlap: base && em > 0 ? shared / em : 0,
+      edges: r.edges,
+      coords: lineCoords(g, [from.lon, from.lat], r.nodes, r.edges, t ? [t.lon, t.lat] : [to.lon, to.lat]),
+    };
+  };
+  const r1 = searchTo(P, ki, 1, a.node, b.node);
+  if (!r1) return { ok: false, reason: "unreachable" };
+  const fastest = make("fastest", r1);
+  const alts = [fastest];
+  const r2 = searchTo(P, ki, g.near_penalty, a.node, b.node);
+  if (r2 && !sameEdges(r2.edges, r1.edges)) alts.push(make("safer", r2, fastest));
+  if (r1.edges.length) {
+    const r3 = searchTo(P, ki, 1, a.node, b.node, new Map(r1.edges.map((i) => [i, ALT_EDGE_FACTOR])));
+    if (r3 && alts.every((x) => !sameEdges(x.edges, r3.edges))) {
+      const alt = make("alternative", r3, fastest);
+      if (alt.overlap < MAX_ALT_OVERLAP) alts.push(alt);
+    }
+  }
+  return { ok: true, alts, snapM: [a.m, b.m] };
+}
+
 /** Python's round(x, nd) for the values used here (round-half-even on the decimal value; ties are vanishingly rare). */
 function roundHalfEven(x: number, nd: number): number {
   const f = 10 ** nd;
@@ -348,8 +520,11 @@ function roundHalfEven(x: number, nd: number): number {
 
 /** The drawn line: tap, start node, each edge's interior vertices in the direction travelled, the shelter. */
 function pathCoords(g: GraphJson, lon: number, lat: number, nodes: number[], edges: number[], s: GraphShelter): [number, number][] {
+  return lineCoords(g, [lon, lat], nodes, edges, [s.lon, s.lat]);
+}
+function lineCoords(g: GraphJson, start: [number, number], nodes: number[], edges: number[], end: [number, number]): [number, number][] {
   const pt = (n: number): [number, number] => [g.nodes[2 * n], g.nodes[2 * n + 1]];
-  const out: [number, number][] = [[lon, lat], pt(nodes[0])];
+  const out: [number, number][] = [start, pt(nodes[0])];
   edges.forEach((i, k) => {
     const a = nodes[k];
     const flat = g.walk.geom[i];
@@ -358,7 +533,7 @@ function pathCoords(g: GraphJson, lon: number, lat: number, nodes: number[], edg
     if (g.walk.edges[3 * i] !== a) pts.reverse(); // geom is oriented u -> v
     out.push(...pts, pt(nodes[k + 1]));
   });
-  out.push([s.lon, s.lat]);
+  out.push(end);
   return out;
 }
 
