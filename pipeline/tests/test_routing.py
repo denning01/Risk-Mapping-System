@@ -1113,3 +1113,55 @@ def test_client_field_gives_every_tap_the_same_answer_as_client_route():
             b = rt.client_from_field(g, field, *_off(n), cache)
             assert (a["shelter"], a["minutes"]) == (b["shelter"], b["minutes"]), (pen, n, a, b)
     assert {rt.client_from_field(g, rt.client_field(g, "a"), *_off(n))["shelter"] for n in (0, 10, 20, 31)} >= {"sA", "sC"}
+
+
+def test_v3_targets_carry_a_kind_and_the_client_routes_to_both_kinds():
+    """E-19: export v3 writes kind for every target, rank and score only for relocation sites. The client's default
+    reaches whichever target is fastest; `kinds` restricts it (used to reproduce a published route of one kind)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    z = np.zeros(W.n_edges, bool); zd = np.zeros(D.n_edges, bool)
+    sh = [{"id": "s1", "name": "s1", "type": "school", "kind": "shelter", "lon": 0.0, "lat": 0.0, "node": W.idx[3],
+           "snap_m": 0.0, "usable": 1},
+          {"id": "hg1", "name": "High ground", "type": "high_ground", "kind": "relocation", "rank": 1, "score": 0.85,
+           "lon": 0.0, "lat": 0.0, "node": W.idx[1], "snap_m": 0.0, "usable": 1}]
+    g = rt.export_graph("t", ["a"], W, D, {"a": (z, zd)}, near={"a": (z, zd)}, shelters=sh)
+    assert g["version"] == 3
+    assert [(s["kind"], s.get("rank"), s.get("score")) for s in g["shelters"]] == [("shelter", None, None), ("relocation", 1, 0.85)]
+    assert rt.client_route(g, "a", *_off(0))["shelter"] == "hg1"                       # 300 s vs 900 s
+    assert rt.client_route(g, "a", *_off(0), kinds={"shelter"})["shelter"] == "s1"
+    f = rt.client_field(g, "a", kinds={"shelter"})
+    assert rt.client_from_field(g, f, *_off(0))["shelter"] == "s1"
+    assert rt.client_from_field(g, rt.client_field(g, "a"), *_off(0))["shelter"] == "hg1"
+
+
+def test_a_relocation_site_on_a_wet_cell_is_not_usable():
+    """E-19 usable rule for a site (snap ~0): its own cell must be dry; the same site on a dry cell is usable."""
+    W = _lattice(4)
+    wet, tf = _wet([(_X0 + 300, _Y0 - 300)])                    # the cell under node 11
+    cut = W.cut(wet, tf)
+    lon, lat = _ll(_X0 + 300, _Y0 - 300)
+    s = rt.graph_shelters(W, [{"id": "hg", "lon": lon, "lat": lat}])[0]
+    assert W.nodes[s["node"]] == 11 and s["snap_m"] < 1.0
+    assert not rt.shelter_usable(W, s, True, W.live(cut), (wet, tf))
+    dry = np.zeros_like(wet)
+    assert rt.shelter_usable(W, s, True, W.live(W.cut(dry, tf)), (dry, tf))
+
+
+def test_relocation_sites_collected_from_published_choices_ranked_by_best_score_with_usable_bits():
+    """E-19 writer helpers. Two scenarios; site A chosen with score 0.90 then 0.80 (keeps 0.90), site B 0.85 once, an
+    unchosen extra C is not a target, a to_shelter row is ignored. Rank: A (0.90) then B. B's cell (node 11) is wet in
+    scenario 1 only -> usable bits A 0b11, B 0b01."""
+    W = _lattice(4)
+    ll = {n: _ll(_X0 + (n % 10) * _SP, _Y0 - (n // 10) * _SP) for n in (3, 11, 22)}
+    ex = [{"id": i, "name": i, "type": "high_ground", "lon": ll[n][0], "lat": ll[n][1]} for i, n in (("A", 3), ("B", 11), ("C", 22))]
+    sites = {}
+    rt.collect_relocation_sites(sites, ex, [{"kind": "relocation", "shelter_id": "A", "candidates_top5": [{"score": 0.90}]},
+                                            {"kind": "relocation", "shelter_id": "B", "candidates_top5": [{"score": 0.85}]},
+                                            {"kind": "to_shelter", "shelter_id": "C"}])
+    rt.collect_relocation_sites(sites, ex, [{"kind": "relocation", "shelter_id": "A", "candidates_top5": [{"score": 0.80}]}])
+    assert {k: v["score"] for k, v in sites.items()} == {"A": 0.90, "B": 0.85}
+    dry, tf = _wet([])
+    wet1, _ = _wet([(_X0 + 300, _Y0 - 300)])
+    floods = [(dry, tf, W.live(W.cut(dry, tf))), (wet1, tf, W.live(W.cut(wet1, tf)))]
+    out = rt.relocation_targets(W, sites, floods)
+    assert [(s["id"], s["rank"], s["kind"], s["usable"]) for s in out] == [("A", 1, "relocation", 0b11), ("B", 2, "relocation", 0b01)]

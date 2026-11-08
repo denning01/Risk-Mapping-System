@@ -1021,7 +1021,8 @@ NEAR_FLOOD_M = 30.0      # E-16 RULE: an edge is NEAR the flood in a scenario wh
                          # wet sample; drive: >= 0.3 m; bridges exempt). Exact geometry: wet cells polygonised and buffered.
 NEAR_PENALTY = 3.0       # E-16 RULE (client): a near edge costs 3x its travel time when CHOOSING a route; the minutes
                          # shown are always the true travel time of the chosen path.
-CLIENT_TARGETS = "all_usable"  # E-16 RULE (client, operator ruling A): candidates = EVERY shelter usable in the scenario;
+CLIENT_TARGETS = "all_usable"  # E-16 RULE (client, operator ruling A): candidates = EVERY target usable in the scenario
+                         # (E-19: OSM shelters AND relocation sites);
                          # one Dijkstra, each shelter a virtual edge node -> shelter costing its snap leg; first settled wins.
 GRAPH_SIMPLIFY_M = 5.0   # CHOICE: display geometry only (Douglas-Peucker in UTM); routing and flood flags use the full geometry
 
@@ -1058,6 +1059,30 @@ def shelter_usable(W: RoutingGraph, gs: dict, safe: bool, live: np.ndarray, floo
     (flood = (wet, transform)) -- the pipeline's own destination rules."""
     return bool(safe and gs["snap_m"] <= MAX_DEST_SNAP_M and live[gs["node"]]
                 and not W.snap_leg_wet(gs["lon"], gs["lat"], gs["node"], flood))
+
+
+def collect_relocation_sites(sites: dict, extra: list[dict], checks: list[dict]) -> None:
+    """E-19: add to `sites` (id -> site) every high-ground site a published relocation route of this scenario chose
+    (build_routes' `extra`), with score = that route's top candidate score; a site chosen again keeps its BEST score."""
+    byid = {e["id"]: e for e in extra}
+    for ck in checks:
+        if ck["kind"] == "relocation" and ck.get("shelter_id") in byid:
+            e, sc = byid[ck["shelter_id"]], ck["candidates_top5"][0]["score"]
+            if e["id"] not in sites or sc > sites[e["id"]]["score"]:
+                sites[e["id"]] = {**e, "kind": "relocation", "score": sc}
+
+
+def relocation_targets(W: RoutingGraph, sites: dict, floods: list) -> list[dict]:
+    """E-19: graph targets of kind "relocation". RULES: rank = order by best score (high first; ties: id). Usable in
+    scenario k (floods[k] = (wet, transform, live walk nodes)) by shelter_usable with safe=True: a site sits ON a walk
+    node (snap ~0), so the dry-snap-leg condition samples the site's own cell -- "safe" = its cell is dry in k."""
+    out = graph_shelters(W, sorted(sites.values(), key=lambda s: (-s["score"], s["id"])))
+    for i, s in enumerate(out):
+        s["rank"] = i + 1
+        for k, (wet, tf, live) in enumerate(floods):
+            if shelter_usable(W, s, True, live, (wet, tf)):
+                s["usable"] |= 1 << k
+    return out
 
 
 def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, cuts: dict, simplify_m: float = GRAPH_SIMPLIFY_M,
@@ -1115,14 +1140,18 @@ def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, c
             out["near"] = [r[5] & ~r[3] for r in rows]       # a pair closed by flood is not also "near"
         return out
 
-    g = {"area": area, "version": 1 if near is None else 2, "scenarios": list(keys), "time_unit": "deciseconds",
+    g = {"area": area, "version": 1 if near is None else (2 if shelters is None else 3), "scenarios": list(keys), "time_unit": "deciseconds",
          "walk_kph": WALK_KPH, "drive_cut_m": DRIVE_CUT_M, "simplify_m": simplify_m,
          "nodes": nodes, "walk": net(W, 0, True), "drive": net(D, 1, False)}
     if near is not None:
         g.update({"utm_epsg": int(str(W.crs).split(":")[-1]), "near_m": NEAR_FLOOD_M, "near_penalty": NEAR_PENALTY,
                   "client_targets": CLIENT_TARGETS, "max_dest_snap_m": MAX_DEST_SNAP_M})
     if shelters is not None:
-        g["shelters"] = [{**{k: s[k] for k in ("id", "name", "type", "lon", "lat")}, "node": nid[W.nodes[s["node"]]],
+        # v3 (E-19): every target has a kind: "shelter" (OSM, shelters.json) or "relocation" (the ranked high-ground
+        # sites the app routes rural households to; + rank, score). The client routes to ALL usable targets.
+        g["shelters"] = [{**{k: s[k] for k in ("id", "name", "type", "lon", "lat")}, "kind": s.get("kind", "shelter"),
+                          **({"rank": s["rank"], "score": s["score"]} if s.get("kind") == "relocation" else {}),
+                          "node": nid[W.nodes[s["node"]]],
                           "snap_m": round(float(s["snap_m"]), 1), "usable": int(s["usable"])} for s in shelters]
     return g
 
@@ -1161,7 +1190,7 @@ def graph_route(g: dict, net: str, key: str, src: int, dst: int):
     return dist[dst] / 10, path[::-1]
 
 
-def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | None = None):
+def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | None = None, kinds=None):
     """E-16 reference CLIENT (reads ONLY the exported dict; what a browser would run). Walk net.
       1. snap the point to the nearest WALK node (UTM metres); if that node has no unflooded walk edge -> no route
       2. targets: EVERY shelter usable in `key` (shelter "usable" bit), each reached by a virtual edge from its node
@@ -1170,6 +1199,8 @@ def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | Non
          stop when the first shelter is settled: it has the lowest cost + snap leg (the tap's own snap leg is common to
          all). Equal cost: road nodes pop before shelters, shelters by id.
       4. minutes = ceil(TRUE seconds of that path + both snap legs at walking speed)
+    `kinds`: None = every target (the client's rule); {"shelter"} / {"relocation"} only to reproduce a published
+    route of that kind (E-19 check).
     -> dict(shelter, minutes, edges, cost_s, snap_m) or dict(error=...)."""
     import heapq
     import math
@@ -1195,7 +1226,7 @@ def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | Non
     v_ms = g["walk_kph"] / 3.6
     at = {}                                                   # node -> usable shelters there
     for s in g["shelters"]:
-        if s["usable"] >> ki & 1:
+        if s["usable"] >> ki & 1 and (kinds is None or s.get("kind", "shelter") in kinds):
             at.setdefault(s["node"], []).append(s)
     if not at:
         return {"error": "no usable safe shelter in this scenario"}
@@ -1224,7 +1255,7 @@ def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | Non
     return {"error": "no usable shelter reachable"}
 
 
-def client_field(g: dict, key: str, penalty: float | None = None) -> dict:
+def client_field(g: dict, key: str, penalty: float | None = None, kinds=None) -> dict:
     """E-18: client_route for EVERY walk node at once. The walk graph is one row per two-way pair (symmetric), so a
     multi-source Dijkstra from all usable shelters -- each seeded at its node with its snap leg, labels compared as
     (cost, shelter id) -- gives each node the shelter client_route would pick from it, with the same penalised cost.
@@ -1243,7 +1274,7 @@ def client_field(g: dict, key: str, penalty: float | None = None) -> dict:
     v_ms = g["walk_kph"] / 3.6
     best, pq = {}, []
     for s in g["shelters"]:
-        if s["usable"] >> ki & 1 and s["node"] in adj:
+        if s["usable"] >> ki & 1 and s["node"] in adj and (kinds is None or s.get("kind", "shelter") in kinds):
             heapq.heappush(pq, (10 * s["snap_m"] / v_ms, s["id"], s["node"], 0, s["snap_m"]))
     while pq:
         c0, sid, x, tr, sm = heapq.heappop(pq)

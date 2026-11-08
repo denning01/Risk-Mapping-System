@@ -193,3 +193,11 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   centre often snaps to a cut-off node. Before writing a per-area field, ask what the point stands for and check who is
   behind the nulls (people in the null rows). Then use the spec's own words ("min walk" = over the hex's walk nodes).
   Also: a fault test that samples 4 cells cannot see a 15 m shift; check every cell when the rule is about borders.
+- 2026-11-08 (E-19) Never fault-inject a source file while a background run that imports it is starting: the run may
+  load the faulted code and produce a "real" output from a mutant. Stop that run and repeat it with the code frozen.
+  Also: a "keeps the best" fault survives a test that feeds the best value LAST. Order test inputs so that the naive
+  version gives the wrong answer.
+- 2026-11-08 (E-19) Kind matters when reproducing published routes. The pipeline sends rural settlers/farmers to the
+  top-SCORED high ground and traders to the nearest OSM shelter. A target-agnostic min-time client reproduces each only
+  when restricted to the route's kind (and at penalty 1). Report where the all-targets client disagrees with a
+  published card instead of hiding it.

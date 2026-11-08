@@ -546,6 +546,7 @@ def cmd_write(args) -> int:
             return 1
         ripple_dir.mkdir(parents=True, exist_ok=True)
     graph_cuts, graph_near, g_shel = {}, {}, None
+    graph_flood, reloc_sites = {}, {}           # E-19: per scenario (wet, tf, live walk nodes); relocation site id -> site
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
@@ -711,11 +712,14 @@ def cmd_write(args) -> int:
                 for gs in g_shel:
                     if rt.shelter_usable(W, gs, safe[gs["id"]], live_w, (wet, tf)):
                         gs["usable"] |= 1 << scenario_keys().index(key)
+                graph_flood[key] = (wet, tf, live_w)
             reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
                      if hand is not None else None)
             routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
                                                     places, reloc, flood=(wet, tf), flood_drive=(wet_drive, tf))
             shelters = shelters + extra
+            if graph_out is not None:                 # E-19: the high-ground sites the published relocation routes use
+                rt.collect_relocation_sites(reloc_sites, extra, checks)
             exposure["roads_cut"], full_cut = rt.roads_cut(D, cut_d, bbox)
             if ripple_dir is not None:
                 ripple = ripple_effects(key, exposure, shelters, markets, full_cut, wet, tf, crs)
@@ -772,7 +776,13 @@ def cmd_write(args) -> int:
             "scenarios": route_checks}, indent=1, ensure_ascii=False))
         print(f"route checks -> {cp}")
     if graph_out is not None:
-        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts, near=graph_near, shelters=g_shel)
+        targets = [{**s, "kind": "shelter"} for s in g_shel]
+        if reloc_sites:
+            sites = rt.relocation_targets(W, reloc_sites, [graph_flood[k] for k in scenario_keys()])
+            targets += sites
+            print(f"graph.json: {len(sites)} relocation sites as targets (kind relocation): "
+                  + ", ".join(f"#{s['rank']} {s['id']} score {s['score']} usable {bin(s['usable']).count('1')}/10" for s in sites))
+        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts, near=graph_near, shelters=targets)
         raw = json.dumps(g, separators=(",", ":"))
         graph_out.parent.mkdir(parents=True, exist_ok=True)
         graph_out.write_text(raw)
