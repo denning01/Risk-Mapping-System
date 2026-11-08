@@ -188,3 +188,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   straight-line rank 15-32 for two origins: at <200 m, snap legs and network detours outweigh the crow-fly order. Report
   the required K (rank histogram) and let the operator rule; one early-exit Dijkstra with each target's snap leg on a
   virtual edge is exact AND stops at the first settled target, so no K is needed.
+- 2026-11-08 (E-18) An aggregate's representative point can quietly decide the answer. "Shelter reachable from the hex
+  CENTRE" left 83/358 Nairobi flooded hexes unroutable, holding 44 % of the exposed people, because a flooded hex's
+  centre often snaps to a cut-off node. Before writing a per-area field, ask what the point stands for and check who is
+  behind the nulls (people in the null rows). Then use the spec's own words ("min walk" = over the hex's walk nodes).
+  Also: a fault test that samples 4 cells cannot see a 15 m shift; check every cell when the rule is about borders.

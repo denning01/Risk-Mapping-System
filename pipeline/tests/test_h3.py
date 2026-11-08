@@ -1,0 +1,163 @@
+"""E-18: H3 hexagon layer (pipeline/10_h3.py)."""
+import importlib.util
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+HERE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(HERE))
+_s = importlib.util.spec_from_file_location("h3mod", HERE / "10_h3.py")
+hm = importlib.util.module_from_spec(_s)
+_s.loader.exec_module(hm)
+_p = importlib.util.spec_from_file_location("pop05t", HERE / "05_population.py")
+pop = importlib.util.module_from_spec(_p)
+_p.loader.exec_module(pop)
+
+h3 = pytest.importorskip("h3")
+from rasterio.transform import from_origin  # noqa: E402
+from pyproj import Transformer  # noqa: E402
+
+CRS = "EPSG:32737"
+TF = from_origin(257000.0, 9857000.0, 30.0, 30.0)     # Nairobi, UTM 37S; 60 x 60 cells = 1.8 km
+SHAPE = (60, 60)
+TO_LL = Transformer.from_crs(CRS, "EPSG:4326", always_xy=True).transform
+TO_UTM = Transformer.from_crs("EPSG:4326", CRS, always_xy=True).transform
+
+
+def _centre(r, c):
+    return TO_LL(TF.c + (c + 0.5) * 30.0, TF.f - (r + 0.5) * 30.0)
+
+
+def test_each_cell_goes_to_the_one_hex_holding_its_centre_and_outside_the_mask_is_zero():
+    mask = np.zeros(SHAPE, bool)
+    mask[5:55, 3:58] = True
+    hx = hm.cell_hexes(mask, TF, CRS, 9)
+    assert (hx[~mask] == 0).all() and (hx[mask] != 0).all()
+    rr, cc = np.nonzero(mask)                            # EVERY cell (a corner-vs-centre slip moves only border cells)
+    lon, lat = TO_LL(TF.c + (cc + 0.5) * 30.0, TF.f - (rr + 0.5) * 30.0)
+    assert all(h3.int_to_str(int(hx[r, c])) == h3.latlng_to_cell(la, lo, 9) for r, c, lo, la in zip(rr, cc, lon, lat))
+    n = np.unique(hx[mask], return_counts=True)[1]
+    assert n.sum() == mask.sum()                         # every cell once
+    assert 115 < n.max() < 140 and (n > 115).sum() >= 10  # a FULL hex: ~128 cells of 900 m2 (0.116 km2); edge hexes fewer
+
+
+def test_largest_remainder_hits_the_target_and_breaks_ties_by_key():
+    v = np.array([1.5, 2.5, 0.25, 0.75])
+    out = hm.largest_remainder(v, ["d", "a", "c", "b"], 5)
+    assert out.sum() == 5 and list(out) == [1, 3, 0, 1]   # 1+2+0+0 = 3 floors; +1 to the 0.75 (b) and the 0.5 tie "a" < "d"
+    assert list(hm.largest_remainder(v, ["a", "d", "c", "b"], 5)) == [2, 2, 0, 1]
+    with pytest.raises(ValueError):
+        hm.largest_remainder(v, list("abcd"), 9)
+
+
+def test_edge_flag_is_set_only_for_a_hex_crossing_the_aoi_bbox():
+    bbox = [36.80, -1.32, 36.84, -1.28]
+    inner = h3.latlng_to_cell(-1.30, 36.82, 9)
+    assert not hm.hex_on_edge(inner, bbox)
+    on = h3.latlng_to_cell(-1.30, 36.80, 9)              # centre within ~200 m of the west edge
+    assert hm.hex_on_edge(on, bbox)
+    outside_bbox = [36.0, -1.0, 36.1, -0.9]
+    assert hm.hex_on_edge(inner, outside_bbox)
+
+
+def _buildings(points):
+    """Open-Buildings-like dict: (lon, lat, area_m2, conf) rows; threshold 0.85 for precision "85"."""
+    a = np.array(points, float)
+    return {"lon": a[:, 0], "lat": a[:, 1], "area_m2": a[:, 2], "conf": a[:, 3], "thr85": np.float64(0.85)}
+
+
+def _scene():
+    """AOI = the whole 60x60 grid; county 1 left half (factors), county 2 right half (no factors -> A). Wet: a 10x12
+    block straddling hexes, depths 0.05..1.6 m. Buildings: 6 wet (one below the confidence threshold), 3 dry."""
+    mask = np.ones(SHAPE, bool)
+    county = np.ones(SHAPE, np.int32); county[:, 30:] = 2
+    depth = np.full(SHAPE, np.nan)
+    rr, cc = np.mgrid[20:30, 24:36]
+    depth[rr, cc] = 0.05 + (rr - 20) * 0.17                  # rows 20..29 -> 0.05 .. 1.58 m
+    pts = []
+    for (r, c, area, conf) in ((21, 25, 100, 0.9), (22, 26, 50, 0.95), (28, 34, 200, 0.9), (29, 35, 80, 0.99),
+                               (25, 30, 120, 0.9), (26, 31, 60, 0.70),                 # last one: conf < 0.85
+                               (5, 5, 300, 0.9), (50, 50, 90, 0.9), (40, 10, 150, 0.9)):
+        lon, lat = TO_LL(TF.c + (c + 0.3) * 30.0, TF.f - (r + 0.6) * 30.0)
+        pts.append((lon, lat, area, conf))
+    man = {"factors_A": {"low": 1.1, "medium": 1.2, "high": 1.3},
+           "counties": [{"id": 1, "factors": {"low": 1.5, "medium": 1.6, "high": 1.7}, "worldpop_aoi_2020": 1000.0},
+                        {"id": 2, "worldpop_aoi_2020": 400.0}]}
+    return mask, county, depth, _buildings(pts), man
+
+
+def test_aggregate_sums_equal_the_exposure_functions_and_each_row_is_right():
+    mask, county, depth, b, man = _scene()
+    hexes = hm.cell_hexes(mask, TF, CRS, 9)
+    wet = np.isfinite(depth) & (depth > 0)
+    r, c, ok, ppl = hm.building_people(b, county, mask, TF, CRS, man, "B", "85")
+    target = pop.exposed_building_weighted(b, wet, county, mask, TF, CRS, man, "85")["B"]
+    nb = pop.buildings_in_wet(b, wet, TF, CRS, "85")
+    assert nb == 5
+    bbox = [*TO_LL(TF.c, TF.f - 1800), *TO_LL(TF.c + 1800, TF.f)]
+    rows = hm.aggregate(depth, hexes, 900.0, (r, c, ok), ppl, target, bbox)
+    for s in ("low", "medium", "high"):
+        assert sum(x[f"people_{s}"] for x in rows) == target[s]
+    assert sum(x["buildings_flooded"] for x in rows) == nb
+    assert sum(x["flooded_m2"] for x in rows) == int(wet.sum()) * 900
+    # every written hex has a wet cell, and every hex with a wet cell is written
+    assert {x["h3"] for x in rows} == {h3.int_to_str(int(h)) for h in np.unique(hexes[wet])}
+    # one row by hand
+    x = rows[0]
+    sel = hexes == h3.str_to_int(x["h3"])
+    dw = depth[sel & wet]
+    assert x["flooded_share"] == round(len(dw) / int(sel.sum()), 3)
+    assert x["depth_mean_m"] == round(float(dw.mean()), 2) and x["depth_max_m"] == round(float(dw.max()), 2)
+    cls = {1: "low", 2: "medium", 3: "high"}[1 if dw.max() < 0.3 else 2 if dw.max() <= 1.0 else 3]
+    assert x["risk"] == cls
+    # a high hex exists (rows 27..29 are > 1.0 m) and risk follows the hex's DEEPEST cell, not its mean
+    hi = [x for x in rows if x["risk"] == "high"]
+    assert hi and all(x["depth_max_m"] > 1.0 for x in hi) and any(x["depth_mean_m"] <= 1.0 for x in hi)
+
+
+def test_building_people_matches_the_writer_rule_before_rounding():
+    mask, county, depth, b, man = _scene()
+    wet = np.isfinite(depth) & (depth > 0)
+    r, c, ok, ppl = hm.building_people(b, county, mask, TF, CRS, man, "B", "85")
+    bw = np.zeros(len(r), bool); bw[ok] = wet[r[ok], c[ok]]
+    for mode, f1, f2 in (("B", man["counties"][0]["factors"], man["factors_A"]),):
+        # county 1: 1000 x factor x wet-area share; county 2 (no factors): 400 x A factor x share
+        a = b["area_m2"][b["conf"] >= 0.85]
+        cid = county[r, c]
+        exp_low = (1000 * f1["low"] * a[(cid == 1) & bw].sum() / a[cid == 1].sum()
+                   + 400 * f2["low"] * a[(cid == 2) & bw].sum() / a[cid == 2].sum())
+        assert ppl[bw, 0].sum() == pytest.approx(exp_low, rel=1e-12)
+    assert ppl.sum(axis=0) == pytest.approx([1000 * 1.5 + 400 * 1.1, 1000 * 1.6 + 400 * 1.2, 1000 * 1.7 + 400 * 1.3])
+
+
+def test_node_best_takes_the_lowest_minutes_over_the_hexs_walk_nodes():
+    """Two walk nodes in hex H (field: 610 s + 0 m snap -> 11 min to sB; 300 s + 120 m -> 7 min to sA) and one in hex K
+    (unreached: absent from the field). H -> (7, "sA"); K has no entry (its row would say shelter_reachable false)."""
+    g = {"walk_kph": 3.6, "nodes": [], "walk": {"edges": []}}
+    field = {0: (0.0, "sB", 6100, 0.0), 1: (0.0, "sA", 3000, 120.0), 7: (0.0, "sC", 100, 0.0)}
+    node_hex = {0: "H", 1: "H", 2: "K"}
+    assert hm.node_best(g, field, node_hex) == {"H": (7, "sA")}
+    field[0] = (0.0, "sB", 4200, 0.0)                      # 420 s = 7 min: a tie on minutes -> shelter id "sA" < "sB"
+    assert hm.node_best(g, field, node_hex)["H"] == (7, "sA")
+
+
+def test_people_integers_use_largest_remainder_not_plain_rounding():
+    """Each hex holding wet buildings gets exactly 0.4 people in all (shared by its buildings): plain rounding writes 0
+    everywhere, but the total 0.4 x hexes rounds to >= 1; the written integers must sum to that target."""
+    mask, county, depth, b, man = _scene()
+    hexes = hm.cell_hexes(mask, TF, CRS, 9)
+    r, c, ok, _ = hm.building_people(b, county, mask, TF, CRS, man, "B", "85")
+    wet = np.isfinite(depth) & (depth > 0)
+    bw = np.zeros(len(r), bool); bw[ok] = wet[r[ok], c[ok]]
+    hb = np.zeros(len(r), np.uint64); hb[bw] = hexes[r[bw], c[bw]]
+    n_in = {h: int((hb[bw] == h).sum()) for h in np.unique(hb[bw])}
+    ppl = np.array([0.4 / n_in[h] if w else 0.0 for h, w in zip(hb, bw)])[:, None] * np.ones((1, 3))
+    exact = np.full(len(n_in), 0.4)
+    assert len(n_in) >= 2
+    target = int(round(exact.sum()))
+    assert np.round(exact).sum() != target                    # precondition: plain rounding would miss
+    bbox = [*TO_LL(TF.c, TF.f - 1800), *TO_LL(TF.c + 1800, TF.f)]
+    rows = hm.aggregate(depth, hexes, 900.0, (r, c, ok), ppl, dict.fromkeys(("low", "medium", "high"), target), bbox)
+    assert sum(x["people_low"] for x in rows) == target

@@ -1224,6 +1224,61 @@ def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | Non
     return {"error": "no usable shelter reachable"}
 
 
+def client_field(g: dict, key: str, penalty: float | None = None) -> dict:
+    """E-18: client_route for EVERY walk node at once. The walk graph is one row per two-way pair (symmetric), so a
+    multi-source Dijkstra from all usable shelters -- each seeded at its node with its snap leg, labels compared as
+    (cost, shelter id) -- gives each node the shelter client_route would pick from it, with the same penalised cost.
+    -> {node: (cost_ds incl. the shelter's snap leg, shelter id, TRUE deciseconds of the path, shelter snap_m)}."""
+    import heapq
+    pen = g["near_penalty"] if penalty is None else penalty
+    ki = g["scenarios"].index(key)
+    E, F, N = g["walk"]["edges"], g["walk"]["flooded"], g["walk"].get("near", [0] * len(g["walk"]["flooded"]))
+    adj = {}
+    for i in range(len(F)):
+        if F[i] >> ki & 1:
+            continue
+        u, v, t = E[3 * i], E[3 * i + 1], E[3 * i + 2]
+        c = t * (pen if N[i] >> ki & 1 else 1.0)
+        adj.setdefault(u, []).append((v, c, t)); adj.setdefault(v, []).append((u, c, t))
+    v_ms = g["walk_kph"] / 3.6
+    best, pq = {}, []
+    for s in g["shelters"]:
+        if s["usable"] >> ki & 1 and s["node"] in adj:
+            heapq.heappush(pq, (10 * s["snap_m"] / v_ms, s["id"], s["node"], 0, s["snap_m"]))
+    while pq:
+        c0, sid, x, tr, sm = heapq.heappop(pq)
+        if x in best:
+            continue
+        best[x] = (c0, sid, tr, sm)
+        for y, c, t in adj.get(x, ()):
+            if y not in best:
+                heapq.heappush(pq, (c0 + c, sid, y, tr + t, sm))
+    return best
+
+
+def client_from_field(g: dict, field: dict, lon: float, lat: float, _cache: dict | None = None) -> dict:
+    """client_route's answer from a client_field: snap (lon, lat) to the nearest walk node exactly as client_route does
+    (no route if that node has no unflooded walk edge or no shelter is reachable from it)."""
+    import math
+    from pyproj import Transformer
+    c = _cache if _cache is not None else {}
+    if "tree" not in c:
+        from scipy.spatial import cKDTree
+        E = g["walk"]["edges"]
+        c["to"] = Transformer.from_crs("EPSG:4326", f"EPSG:{g['utm_epsg']}", always_xy=True).transform
+        c["nodes"] = sorted(set(E[0::3]) | set(E[1::3]))
+        x, y = c["to"](np.array([g["nodes"][2 * n] for n in c["nodes"]]), np.array([g["nodes"][2 * n + 1] for n in c["nodes"]]))
+        c["tree"] = cKDTree(np.c_[x, y])
+    px, py = c["to"](lon, lat)
+    d, j = c["tree"].query([px, py])
+    src = c["nodes"][int(j)]
+    if src not in field:
+        return {"error": "no shelter reachable from the nearest walk node"}
+    cost, sid, tr, sm = field[src]
+    sec = tr / 10 + (float(d) + sm) / (g["walk_kph"] / 3.6)
+    return {"shelter": sid, "minutes": int(math.ceil(round(sec / 60.0, 6))), "snap_m": [float(d), sm]}
+
+
 def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,
                  D: RoutingGraph, cut_w, cut_d, places: dict, reloc: dict | None, flood=None,
                  flood_drive=None) -> tuple[list, list, list]:

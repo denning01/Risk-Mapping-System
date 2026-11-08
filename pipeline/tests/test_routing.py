@@ -1095,3 +1095,21 @@ def test_client_matches_the_pipeline_nearest_safe_shelter():
     assert (r["shelter"], r["minutes"]) == ("sA", 11)
     # tap 23: sE (300.2 m) and sD (312 m) both take 312 s; the tie goes to the lower id, as in the pipeline
     assert rt.client_route(g, "a", *_off(23), penalty=1.0)["shelter"] == "sD"
+
+
+def test_client_field_gives_every_tap_the_same_answer_as_client_route():
+    """E-18: the multi-source field (all usable shelters at once) == client_route from each of the 16 lattice nodes,
+    with a cut, near edges under the x3 penalty, snap legs that change the order, an unusable shelter and an id tie."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    g = _client_graph(W, D, near_pairs=[(1, 2), (21, 22)], cut_pairs=[(0, 1), (11, 12)],
+                      shelters=[("sA", 1), ("sB", 12), ("sC", 30), ("sD", 33), ("sE", 22), ("sF", 3)])
+    g["shelters"][3]["snap_m"] = 140.0
+    g["shelters"][4]["snap_m"] = 60.0
+    g["shelters"][5]["usable"] = 0
+    for pen in (None, 1.0):
+        field, cache = rt.client_field(g, "a", penalty=pen), {}
+        for n in (0, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33):
+            a = rt.client_route(g, "a", *_off(n), penalty=pen)
+            b = rt.client_from_field(g, field, *_off(n), cache)
+            assert (a["shelter"], a["minutes"]) == (b["shelter"], b["minutes"]), (pen, n, a, b)
+    assert {rt.client_from_field(g, rt.client_field(g, "a"), *_off(n))["shelter"] for n in (0, 10, 20, 31)} >= {"sA", "sC"}
