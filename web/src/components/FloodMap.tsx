@@ -94,7 +94,7 @@ const FLOOD_LAYERS = ["flood-fill", "flood-arrival"] as const;
  * route from there (M-14), which then reports "no safe route" (the start point is wet). */
 const INTERACTIVE_LAYERS = [...FLOOD_LAYERS, "shelters", "hex-fill"];
 /** M-19: layers whose order e2e checks (the hexagons must stay under the routes and shelters) */
-const ORDER_LAYERS = ["flood-fill", "hex-fill", "route-alt", "route-safe", "shelters", "reports"];
+const ORDER_LAYERS = ["flood-fill", "hex-fill", "hex-line", "route-alt", "route-safe", "shelters", "reports"];
 export const HEX_NOTE = `Hexagons (H3 resolution ${HEX_RES}, about 0.12 km² each): colour = deepest water in the hexagon. Tap one for people, buildings and walking time.`;
 const esc = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 

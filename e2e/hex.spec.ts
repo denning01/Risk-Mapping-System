@@ -112,7 +112,7 @@ for (const area of areas()) {
     await expect(btn).toHaveAttribute("aria-pressed", "true");
     await expect(map).toHaveAttribute("data-hexes", String(rows.length));
     await expect(map).toHaveAttribute("data-fills", "hex-fill"); // the hexagons replace the flood fill
-    await expect(map).toHaveAttribute("data-layer-order", "flood-fill,hex-fill,route-alt,route-safe,shelters,reports");
+    await expect(map).toHaveAttribute("data-layer-order", "flood-fill,hex-fill,hex-line,route-alt,route-safe,shelters,reports");
     await expect(map).toHaveAttribute("data-shelters", String(shelters.length));
     await expect(map).toHaveAttribute("data-route-points", routePts!);
     await expect(page.locator("[data-hex-note]")).toContainText("H3 resolution 9");
@@ -168,7 +168,7 @@ for (const area of areas()) {
     await page.getByRole("radiogroup", { name: "Basemap" }).getByRole("radio", { name: "Satellite" }).click();
     await expect(map).toHaveAttribute("data-style", "eox-s2cloudless");
     await expect(map).toHaveAttribute("data-hexes", String(rows.length));
-    await expect(map).toHaveAttribute("data-layer-order", "flood-fill,hex-fill,route-alt,route-safe,shelters,reports");
+    await expect(map).toHaveAttribute("data-layer-order", "flood-fill,hex-fill,hex-line,route-alt,route-safe,shelters,reports");
 
     await btn.click();
     await expect(map).toHaveAttribute("data-hex", "off");
