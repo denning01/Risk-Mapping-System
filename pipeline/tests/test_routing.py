@@ -967,6 +967,44 @@ def test_near_flood_rule_distance_and_never_on_a_cut_edge():
     assert not rt.near_flood(W, np.zeros_like(wet), tf, np.zeros(W.n_edges, bool)).any()
 
 
+def test_shelter_usable_rule_safe_snap_limit_live_node_and_dry_snap_leg():
+    """F18.1: the writer's usable rule (rt.shelter_usable, called by 07 write). On the 4-lattice: "dry" 100 m south of
+    node 0 (dry snap leg) is usable; "wetleg" 100 m south of node 2 with a wet cell on its snap leg is not; "far" 600 m
+    east of node 3 (> MAX_DEST_SNAP_M = 500) is not; "dead" at node 11, whose four edges are all cut, is not; an unsafe
+    shelter is not."""
+    W = _lattice(4)
+    wet, tf = _wet([(_X0 + 600, _Y0 - 60), (_X0 + 300, _Y0 - 270), (_X0 + 300, _Y0 - 330),
+                    (_X0 + 270, _Y0 - 300), (_X0 + 330, _Y0 - 300)])
+    cut = W.cut(wet, tf)
+    assert {frozenset((11, x)) for x in (1, 10, 12, 21)} <= _pairs(W, cut)
+    live = W.live(cut)
+    pts = {"dry": _ll(_X0, _Y0 - 100), "wetleg": _ll(_X0 + 600, _Y0 - 100), "far": _ll(_X0 + 900 + 600, _Y0),
+           "dead": _ll(_X0 + 300 + 5, _Y0 - 300)}
+    gs = {g["id"]: g for g in rt.graph_shelters(W, [{"id": k, "lon": v[0], "lat": v[1]} for k, v in pts.items()])}
+    assert W.nodes[gs["dry"]["node"]] == 0 and gs["dry"]["snap_m"] == pytest.approx(100, abs=0.5)
+    assert W.nodes[gs["wetleg"]["node"]] == 2 and W.nodes[gs["far"]["node"]] == 3 and gs["far"]["snap_m"] > rt.MAX_DEST_SNAP_M
+    assert W.nodes[gs["dead"]["node"]] == 11
+    use = {k: rt.shelter_usable(W, g, True, live, (wet, tf)) for k, g in gs.items()}
+    assert use == {"dry": True, "wetleg": False, "far": False, "dead": False}
+    assert not rt.shelter_usable(W, gs["dry"], False, live, (wet, tf))          # unsafe in shelters.json
+    assert rt.shelter_usable(W, gs["wetleg"], True, live, None)                 # it is the wet leg that excludes it
+
+
+def test_export_clears_near_on_a_pair_cut_in_one_direction_only():
+    """F18.1/Q1: walk pairs are merged; if 0->1 is near and 1->0 is cut, the exported pair is flooded and NOT near."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    e01 = next(e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (0, 1))
+    e10 = next(e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (1, 0))
+    near, cut = np.zeros(W.n_edges, bool), np.zeros(W.n_edges, bool)
+    near[e01], cut[e10] = True, True
+    z = np.zeros(D.n_edges, bool)
+    g = rt.export_graph("t", ["a"], W, D, {"a": (cut, z)}, near={"a": (near, z)}, shelters=[])
+    E, ids = g["walk"]["edges"], sorted(W.nodes)
+    i = next(i for i in range(len(E) // 3) if {E[3 * i], E[3 * i + 1]} == {ids.index(0), ids.index(1)})
+    assert g["walk"]["flooded"][i] == 1 and g["walk"]["near"][i] == 0
+    assert sum(1 for x in g["walk"]["near"] if x) == 0
+
+
 def _client_graph(W, D, near_pairs=(), cut_pairs=(), shelters=()):
     """One scenario "a": export with given near / cut walk pairs and shelters at lattice nodes (usable in "a")."""
     near = np.array([frozenset((W.nodes[W.u[e]], W.nodes[W.v[e]])) in {frozenset(p) for p in near_pairs} for e in range(W.n_edges)])

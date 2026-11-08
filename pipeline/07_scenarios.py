@@ -705,16 +705,11 @@ def cmd_write(args) -> int:
                 # E-16: near-flood edges (rule in 06 NEAR_FLOOD_M) and which OSM shelters a client may route to
                 graph_near[key] = (rt.near_flood(W, wet, tf, cut_w), rt.near_flood(D, wet, tf, cut_d))
                 if g_shel is None:
-                    from pyproj import Transformer as _T
-                    gx, gy = _T.from_crs("EPSG:4326", W.crs, always_xy=True).transform(
-                        np.array([s["lon"] for s in osm_shelters]), np.array([s["lat"] for s in osm_shelters]))
-                    gd, gn = W.tree.query(np.c_[gx, gy])
-                    g_shel = [{**s, "node": int(n), "snap_m": float(dd), "usable": 0} for s, n, dd in zip(osm_shelters, gn, gd)]
+                    g_shel = rt.graph_shelters(W, osm_shelters)
                 safe = {x["id"]: x["safe"] for x in shelters}
                 live_w = W.live(cut_w)
                 for gs in g_shel:
-                    if (safe[gs["id"]] and gs["snap_m"] <= rt.MAX_DEST_SNAP_M and live_w[gs["node"]]
-                            and not W.snap_leg_wet(gs["lon"], gs["lat"], gs["node"], (wet, tf))):
+                    if rt.shelter_usable(W, gs, safe[gs["id"]], live_w, (wet, tf)):
                         gs["usable"] |= 1 << scenario_keys().index(key)
             reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
                      if hand is not None else None)

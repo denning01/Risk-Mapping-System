@@ -1043,6 +1043,23 @@ def near_flood(RG: RoutingGraph, wet: np.ndarray, transform, cut: np.ndarray, ne
     return shapely.intersects(zone, RG._lines_utm) & ~cut
 
 
+def graph_shelters(W: RoutingGraph, osm_shelters: list[dict]) -> list[dict]:
+    """E-16: each OSM shelter with its walk node (nearest node of the full walk graph, UTM) and snap_m; usable = 0."""
+    from pyproj import Transformer
+    x, y = Transformer.from_crs("EPSG:4326", W.crs, always_xy=True).transform(
+        np.array([s["lon"] for s in osm_shelters], float), np.array([s["lat"] for s in osm_shelters], float))
+    d, n = W.tree.query(np.c_[x, y])
+    return [{**s, "node": int(i), "snap_m": float(dd), "usable": 0} for s, i, dd in zip(osm_shelters, n, d)]
+
+
+def shelter_usable(W: RoutingGraph, gs: dict, safe: bool, live: np.ndarray, flood) -> bool:
+    """E-16 RULE: a client may route to a shelter in a scenario iff it is safe (shelters.json), its snap leg is
+    <= MAX_DEST_SNAP_M, its node keeps an unflooded walk edge (live), and its straight snap leg crosses no wet cell
+    (flood = (wet, transform)) -- the pipeline's own destination rules."""
+    return bool(safe and gs["snap_m"] <= MAX_DEST_SNAP_M and live[gs["node"]]
+                and not W.snap_leg_wet(gs["lon"], gs["lat"], gs["node"], flood))
+
+
 def export_graph(area: str, keys: list[str], W: RoutingGraph, D: RoutingGraph, cuts: dict, simplify_m: float = GRAPH_SIMPLIFY_M,
                  near: dict | None = None, shelters: list[dict] | None = None) -> dict:
     """graph.json for one area. cuts: key -> (cut_walk, cut_drive), the SAME per-edge masks the published routes used
