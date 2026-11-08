@@ -212,3 +212,5 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   buildings per hex cannot tell largest-remainder from rounding. Each needs a case built to make the two answers
   differ. A band-edge mutant (<1 -> <=1) can be equivalent when the next line overwrites that cell: call it
   equivalent, not caught.
+- 2026-11-08 (R21 ruling) WATCH: the e2e "loads" test once saw an empty safe-places panel (nyando 200_elnino, new
+  data; then it passed 6/6). If it recurs in any gate run, raise it as a finding with the trace. Do not just rerun it.
