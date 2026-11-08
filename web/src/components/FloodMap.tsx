@@ -30,6 +30,12 @@ const RASTER_STYLE: StyleSpecification = {
  * - Satellite: EOxCloudless 2025 (Sentinel-2, about 10 m), CC BY-NC-SA 4.0 for non-commercial use, attribution as
  *   cloudless.eox.at/documentation/license requires. Esri World Imagery was not used: it is under the Esri Master
  *   License Agreement, not an open licence for keyless use outside ArcGIS.
+ *   M-18 (2026-11-08) re-checked on Esri's own pages: the item (arcgis.com/sharing/rest/content/items/
+ *   10df2279f9684e4a9f6a7f08febac2a9) says "licensed under the Esri Master License Agreement"; the terms summary
+ *   (esri.com/content/dam/arcgisonline/docs/tou_summary.pdf, 21 Apr 2025) says "Use with Esri software ... If you do
+ *   not have Esri software, you must purchase an ArcGIS Online subscription"; the basemap service docs say "An ArcGIS
+ *   Location Platform or ArcGIS Online account is required". Not clearly allowed keyless -> EOX stays.
+ *   e2e/basemap-hosts.spec.ts fails if an Esri / ArcGIS tile host appears in web/src.
  */
 export type Basemap = "normal" | "terrain" | "satellite";
 export const BASEMAP_LABELS: Record<Basemap, string> = { normal: "Normal", terrain: "Terrain", satellite: "Satellite" };
