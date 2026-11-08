@@ -49,6 +49,15 @@ const SATELLITE_STYLE = rasterStyle(
   '<a href="https://cloudless.eox.at">EOxCloudless</a> https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025), <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>',
   16,
 );
+/** Identify a loaded style from its sources (F14.3: report what loaded, not what was asked for). */
+function styleIdentity(map: MLMap): { basemap: Basemap; style: string } | null {
+  const src = map.getStyle()?.sources ?? {};
+  if ("eox-s2cloudless" in src) return { basemap: "satellite", style: "eox-s2cloudless" };
+  if ("opentopomap" in src) return { basemap: "terrain", style: "opentopomap" };
+  if ("openmaptiles" in src) return { basemap: "normal", style: "vector" };
+  if ("osm" in src) return { basemap: "normal", style: "osm-raster" };
+  return null;
+}
 const RASTER_SOURCES: Partial<Record<Basemap, string>> = { terrain: "opentopomap", satellite: "eox-s2cloudless" };
 /** Tile errors from the chosen raster basemap before it falls back to Normal (one bad tile is not a failure). */
 const TILE_ERRORS_BEFORE_FALLBACK = 3;
@@ -85,7 +94,10 @@ interface Props {
 
 /** What is drawn on the map now, exposed as data-* attributes so e2e can check it (the canvas is opaque to the DOM). */
 interface Drawn {
+  /** the basemap of the style that actually LOADED, identified from its sources (styleIdentity), not the switcher */
   basemap: Basemap;
+  /** which style that is: "vector" (OpenFreeMap), "osm-raster" (fallback), "opentopomap", "eox-s2cloudless" */
+  style: string;
   overlays: string;
   floodFeatures: number;
 }
@@ -102,6 +114,8 @@ export default function FloodMap(props: Props) {
   const basemapRef = useRef<Basemap>("normal");
   const vectorFailedRef = useRef(false);
   const tileErrorsRef = useRef(0);
+  /** set on the first style.load; after it, the startup fallback is off (F14.2) */
+  const firstLoadedRef = useRef(false);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
 
   useEffect(() => {
@@ -139,7 +153,9 @@ export default function FloodMap(props: Props) {
 
     let usedFallback = false;
     const switchToFallback = () => {
-      if (usedFallback || map.isStyleLoaded()) return;
+      // F14.2: only for the FIRST style (OpenFreeMap failing at startup). After any style has loaded, isStyleLoaded()
+      // is false whenever a switched-to style's tiles are still loading, so it cannot tell startup from a later switch.
+      if (usedFallback || firstLoadedRef.current) return;
       usedFallback = true;
       vectorFailedRef.current = true;
       setBasemapNote("Using fallback basemap");
@@ -153,8 +169,8 @@ export default function FloodMap(props: Props) {
         setMapError(err?.message || "Failed to initialize WebGL");
         return;
       }
-      // style fetch failure before first load -> raster fallback
-      if (!map.isStyleLoaded()) switchToFallback();
+      // style fetch failure before the first load -> raster fallback (never after: F14.2)
+      if (!firstLoadedRef.current) switchToFallback();
       // M-15: the chosen Terrain / Satellite tiles keep failing -> back to Normal, with a note
       const cur = basemapRef.current;
       const sourceId = (e as { sourceId?: string }).sourceId;
@@ -169,6 +185,7 @@ export default function FloodMap(props: Props) {
     });
 
     map.on("style.load", () => {
+      firstLoadedRef.current = true;
       window.clearTimeout(timer);
       addLayers(map);
       // M-15: redraw the current scenario, route and reports into the new style now, not on a later React pass, so a
@@ -182,10 +199,15 @@ export default function FloodMap(props: Props) {
     map.on("idle", () => {
       const overlays = ["flood-fill", "route-safe", "shelters"].filter((l) => map.getLayer(l)).join(",");
       const src = map.getSource("flood") as GeoJSONSource | undefined;
-      if (!src) return;
+      const id = styleIdentity(map);
+      if (!src || !id) return;
       void src.getData().then((d) => {
-        const next = { basemap: basemapRef.current, overlays, floodFeatures: (d as FeatureCollection).features?.length ?? 0 };
-        setDrawn((cur) => (cur && cur.basemap === next.basemap && cur.overlays === next.overlays && cur.floodFeatures === next.floodFeatures ? cur : next));
+        const next = { ...id, overlays, floodFeatures: (d as FeatureCollection).features?.length ?? 0 };
+        setDrawn((cur) =>
+          cur && cur.basemap === next.basemap && cur.style === next.style && cur.overlays === next.overlays && cur.floodFeatures === next.floodFeatures
+            ? cur
+            : next,
+        );
       });
     });
 
@@ -348,6 +370,7 @@ export default function FloodMap(props: Props) {
         ref={containerRef}
         className={`h-full w-full ${props.reportMode ? "report-mode" : ""}`}
         data-basemap={drawn?.basemap}
+        data-style={drawn?.style}
         data-overlays={drawn?.overlays}
         data-flood-features={drawn?.floodFeatures}
       />
