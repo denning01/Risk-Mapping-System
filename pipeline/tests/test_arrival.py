@@ -142,3 +142,58 @@ def test_fast_divisor_is_the_largest_ratio_over_every_area_and_both_methods_and_
     assert F == 2.44 and at == {"area": "b", "river": "r3", "ratio": "ratio_velocity_to_kirpich"}
     slow_only = [{"area": "a", "second_method": {"rows": [row("r", 0.7, 0.9)]}}]
     assert ar.fast_divisor(slow_only)[0] == 1.0      # a faster velocity method never makes the "fast" bound slower
+
+
+def test_fast_divisor_takes_an_scs_lag_ratio_when_that_is_the_largest():
+    # F16.4 (B2): the maximum here is an SCS-lag ratio, so ignoring that method changes F
+    row = lambda name, k, s: {"name": name, "ratio_velocity_to_kirpich": k, "ratio_velocity_to_scs_lag": s}  # noqa: E731
+    reps = [{"area": "a", "second_method": {"rows": [row("r1", 1.4, 2.9), row("r2", 2.3, 1.1)]}}]
+    F, at = ar.fast_divisor(reps)
+    assert F == 2.9 and at == {"area": "a", "river": "r1", "ratio": "ratio_velocity_to_scs_lag"}
+
+
+def test_write_fast_divides_by_F_never_slower_same_nan_and_tags(tmp_path, monkeypatch):
+    # F16.4 (B3): write_fast end to end on a tiny raster; hand-off writing is captured, never touches rms-audit
+    import json
+    import rasterio
+    from rasterio.transform import from_origin
+    from pipeline.lib.rio import write
+    grid = {"transform": from_origin(500000, 9900000, 30, 30), "width": 3, "height": 2, "crs": "EPSG:32737"}
+    slow = np.array([[0.0, 1.0, 2.5], [np.nan, 9.0, 4.2]], dtype="float32")
+    row = lambda name, k, s: {"name": name, "ratio_velocity_to_kirpich": k, "ratio_velocity_to_scs_lag": s}  # noqa: E731
+    reps = {"a": [row("r1", 1.4, 0.8)], "b": [row("r2", 1.2, 2.0)]}
+    for a, rows in reps.items():
+        d = tmp_path / a
+        write(d / "arrival_h.tif", slow, grid, tags={"git_commit": "abc1234", "dirty": False})
+        (d / "arrival.json").write_text(json.dumps({"area": a, "second_method": {"rows": rows},
+                                                    "aoi": {"arrival_h_on_flooded_cells": {"50_normal": {"cells": 4, "p50": 2.0}}}}))
+    monkeypatch.setattr(ar, "model_dir", lambda a: tmp_path / a)
+    monkeypatch.setattr(ar, "provenance", lambda: {"git_commit": "abc1234", "dirty": False})
+    monkeypatch.setattr(ar.config, "load", lambda a: {"name": a})
+    notes = []
+    monkeypatch.setattr(ar, "handoff_md", lambda *a, **k: notes.append(a))
+    assert ar.write_fast(["a", "b"]) == 0
+    for a in reps:
+        with rasterio.open(tmp_path / a / "arrival_h_fast.tif") as d:
+            fast, tags = d.read(1), d.tags()
+        assert np.array_equal(np.isnan(fast), np.isnan(slow))
+        ok = ~np.isnan(slow)
+        assert np.allclose(fast[ok], slow[ok] / 2.0, atol=0, rtol=1e-7)      # F = 2.0, the SCS-lag ratio of area b
+        assert (fast[ok] <= slow[ok]).all()
+        assert tags["git_commit"] == "abc1234" and tags["dirty"] == "False" and "arrival_h / 2.0" in tags["meaning"]
+        rep = json.loads((tmp_path / a / "arrival.json").read_text())
+        assert rep["fast"]["divisor"] == 2.0 and rep["fast"]["ratio_spans"] == {"kirpich": [1.2, 1.4], "scs_lag": [0.8, 2.0]}
+        assert rep["fast"]["aoi_arrival_h_fast_on_flooded_cells"]["50_normal"] == {"cells": 4, "p50": 1.0}
+    assert [n[0] for n in notes] == ["a", "b"]
+
+
+def test_the_handoff_ratio_sentence_comes_from_the_rows():
+    # F16.5: e2b1168's hand-offs said "1.1 to 2.4 times SLOWER" (hard-coded); the rows span 0.81-2.44
+    row = lambda k, s: {"name": "r", "ratio_velocity_to_kirpich": k, "ratio_velocity_to_scs_lag": s}  # noqa: E731
+    sp = ar.ratio_spans([{"second_method": {"rows": [row(1.43, 0.81), row(2.44, 1.52)]}},
+                         {"second_method": {"rows": [row(1.6, 0.94)]}}])
+    assert sp == {"kirpich": [1.43, 2.44], "scs_lag": [0.81, 1.52]}
+    txt = ar.range_sentence(sp)
+    assert "1.43-2.44 vs Kirpich" in txt and "0.81-1.52 vs SCS lag" in txt
+    assert "SLOWER than Kirpich" in txt and "slower or faster than SCS lag" in txt
+    assert "1.1 to 2.4" not in ar.handoff_md.__code__.co_consts.__repr__()

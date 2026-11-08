@@ -380,6 +380,28 @@ def main(area: str, write_out: bool) -> int:
     return 0
 
 
+HANDOFF_DIR = REPO_ROOT.parent / "rms-audit" / "handoffs"
+
+
+def ratio_spans(reports: list[dict]) -> dict:
+    """F16.5: the span of velocity Tc / second-method Tc over every sub-catchment row of every report, per method."""
+    out = {}
+    for m in ("kirpich", "scs_lag"):
+        v = [row[f"ratio_velocity_to_{m}"] for r in reports for row in r["second_method"]["rows"]]
+        out[m] = [min(v), max(v)]
+    return out
+
+
+def range_sentence(spans: dict) -> str:
+    """F16.5: the hand-off's justification, derived from the rows (never hard-coded)."""
+    k, s = spans["kirpich"], spans["scs_lag"]
+    def side(lo, hi):
+        return "SLOWER" if lo > 1 else "FASTER" if hi < 1 else "slower or faster"
+    return (f"Overstating warning time is the dangerous error. On the named sub-catchments, velocity Tc / second-method Tc is "
+            f"{k[0]}-{k[1]} vs Kirpich and {s[0]}-{s[1]} vs SCS lag (above 1 = the velocity method is slower): "
+            f"{side(*k)} than Kirpich, {side(*s)} than SCS lag.")
+
+
 def handoff_md(area: str, cfg: dict, grid: dict, rep: dict, tif: Path, fast_tif: Path | None = None) -> Path:
     """rms-audit/handoffs/arrival-<area>.md: what exposure (E-20) needs to read arrival_h.tif."""
     import hashlib
@@ -392,8 +414,8 @@ def handoff_md(area: str, cfg: dict, grid: dict, rep: dict, tif: Path, fast_tif:
         fast_txt = f"""
 ## The RANGE and the headline (RULING M-20, product safety)
 
-Overstating warning time is the dangerous error, and the velocity method above is 1.1 to 2.4 times SLOWER than
-Kirpich / SCS lag on the named sub-catchments. Arrival is therefore a RANGE per cell:
+{range_sentence(fast['ratio_spans']) if 'ratio_spans' in fast else range_sentence(ratio_spans([rep]))} Arrival is therefore
+a RANGE per cell:
 
 - **`arrival_h_fast.tif`, the FAST bound = the app HEADLINE** ("water could arrive in as little as X h"):
   arrival_h / F, F = **{fast['divisor']}** = the largest velocity / second-method ratio over every sub-catchment of
@@ -464,7 +486,7 @@ beside it, so the name locates the sub-catchment and does not mean the river's o
 - Filled depressions take their reach's slope.
 - The time is to the cell, not the time the depth there is reached.
 """
-    out = REPO_ROOT.parent / "rms-audit" / "handoffs" / f"arrival-{area}.md"
+    out = HANDOFF_DIR / f"arrival-{area}.md"
     out.write_text(txt)
     return out
 
@@ -519,7 +541,7 @@ def write_fast(areas: list[str]) -> int:
         tags = {**src_tags, "producer": "pipeline/10_arrival.py fast", "git_commit": prov["git_commit"], "dirty": prov["dirty"],
                 "meaning": f"FAST bound: arrival_h / {F} (largest velocity/second-method ratio, {at}); NaN as arrival_h"}
         write(m / "arrival_h_fast.tif", fast, grid_of(m / "arrival_h.tif"), tags=tags)
-        rep["fast"] = {"divisor": F, "from": at, "areas": areas,
+        rep["fast"] = {"divisor": F, "from": at, "areas": areas, "ratio_spans": ratio_spans(list(reps.values())),
                        "rule": "arrival_h_fast = arrival_h / F; the app headline is the FAST bound ('water could arrive in as little as X h')",
                        "aoi_arrival_h_fast_on_flooded_cells": {k: {q: (round(v[q] / F, 2) if q != "cells" else v[q]) for q in v}
                                                                for k, v in rep["aoi"]["arrival_h_on_flooded_cells"].items()}}
