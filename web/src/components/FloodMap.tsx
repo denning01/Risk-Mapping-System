@@ -22,6 +22,37 @@ const RASTER_STYLE: StyleSpecification = {
   layers: [{ id: "osm", type: "raster", source: "osm" }],
 };
 
+/**
+ * M-15 basemaps. All keyless. Licences and attribution checked on each provider's own page (ROUND for M-15):
+ * - Normal: OpenFreeMap Liberty (OSM data, ODbL; buildings drawn from z13, 3D extrusions from z14).
+ * - Terrain: OpenTopoMap, CC-BY-SA, attribution as opentopomap.org/about asks.
+ * - Satellite: EOxCloudless 2025 (Sentinel-2, about 10 m), CC BY-NC-SA 4.0 for non-commercial use, attribution as
+ *   cloudless.eox.at/documentation/license requires. Esri World Imagery was not used: it is under the Esri Master
+ *   License Agreement, not an open licence for keyless use outside ArcGIS.
+ */
+export type Basemap = "normal" | "terrain" | "satellite";
+export const BASEMAP_LABELS: Record<Basemap, string> = { normal: "Normal", terrain: "Terrain", satellite: "Satellite" };
+const rasterStyle = (id: string, tiles: string[], attribution: string, maxzoom: number): StyleSpecification => ({
+  version: 8,
+  sources: { [id]: { type: "raster", tiles, tileSize: 256, attribution, maxzoom } },
+  layers: [{ id, type: "raster", source: id }],
+});
+const TERRAIN_STYLE = rasterStyle(
+  "opentopomap",
+  ["a", "b", "c"].map((s) => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`),
+  'Map data: © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors, SRTM | Map style: © <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>)',
+  17,
+);
+const SATELLITE_STYLE = rasterStyle(
+  "eox-s2cloudless",
+  ["https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2025_3857/default/GoogleMapsCompatible/{z}/{y}/{x}.jpg"],
+  '<a href="https://cloudless.eox.at">EOxCloudless</a> https://cloudless.eox.at by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2025), <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a>',
+  16,
+);
+const RASTER_SOURCES: Partial<Record<Basemap, string>> = { terrain: "opentopomap", satellite: "eox-s2cloudless" };
+/** Tile errors from the chosen raster basemap before it falls back to Normal (one bad tile is not a failure). */
+const TILE_ERRORS_BEFORE_FALLBACK = 3;
+
 export const ARRIVAL_COLORS = ["#7c3aed", "#2563eb", "#06b6d4", "#a5f3fc"];
 
 /** Fill layers drawn from the flood source; exactly one is visible at a time. */
@@ -52,6 +83,13 @@ interface Props {
   onReport: (lon: number, lat: number) => void;
 }
 
+/** What is drawn on the map now, exposed as data-* attributes so e2e can check it (the canvas is opaque to the DOM). */
+interface Drawn {
+  basemap: Basemap;
+  overlays: string;
+  floodFeatures: number;
+}
+
 export default function FloodMap(props: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MLMap | null>(null);
@@ -60,6 +98,11 @@ export default function FloodMap(props: Props) {
   const [styleReady, setStyleReady] = useState(0);
   const [basemapNote, setBasemapNote] = useState<string | null>(null);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [basemap, setBasemap] = useState<Basemap>("normal");
+  const basemapRef = useRef<Basemap>("normal");
+  const vectorFailedRef = useRef(false);
+  const tileErrorsRef = useRef(0);
+  const [drawn, setDrawn] = useState<Drawn | null>(null);
 
   useEffect(() => {
     propsRef.current = props;
@@ -75,6 +118,7 @@ export default function FloodMap(props: Props) {
         style: VECTOR_STYLE,
         center: [36.85, -1.275],
         zoom: 11,
+        maxZoom: 19,
         attributionControl: { compact: true },
       });
     } catch (err) {
@@ -97,6 +141,7 @@ export default function FloodMap(props: Props) {
     const switchToFallback = () => {
       if (usedFallback || map.isStyleLoaded()) return;
       usedFallback = true;
+      vectorFailedRef.current = true;
       setBasemapNote("Using fallback basemap");
       map.setStyle(RASTER_STYLE);
     };
@@ -110,13 +155,38 @@ export default function FloodMap(props: Props) {
       }
       // style fetch failure before first load -> raster fallback
       if (!map.isStyleLoaded()) switchToFallback();
+      // M-15: the chosen Terrain / Satellite tiles keep failing -> back to Normal, with a note
+      const cur = basemapRef.current;
+      const sourceId = (e as { sourceId?: string }).sourceId;
+      if (sourceId && sourceId === RASTER_SOURCES[cur] && ++tileErrorsRef.current >= TILE_ERRORS_BEFORE_FALLBACK) {
+        tileErrorsRef.current = 0;
+        basemapRef.current = "normal";
+        setBasemap("normal");
+        setBasemapNote(`${BASEMAP_LABELS[cur]} tiles unavailable: showing the Normal map`);
+        map.setStyle(vectorFailedRef.current ? RASTER_STYLE : VECTOR_STYLE, { diff: false });
+      }
       console.warn("[map]", err?.message);
     });
 
     map.on("style.load", () => {
       window.clearTimeout(timer);
       addLayers(map);
+      // M-15: redraw the current scenario, route and reports into the new style now, not on a later React pass, so a
+      // basemap switch can never leave the overlays empty
+      drawScenario(map, propsRef.current.scenario);
+      drawRoute(map, propsRef.current.route);
+      drawReports(map, propsRef.current.reports);
       setStyleReady((n) => n + 1);
+    });
+    // what is drawn, read back from the map once it is idle (all sources loaded, frame rendered)
+    map.on("idle", () => {
+      const overlays = ["flood-fill", "route-safe", "shelters"].filter((l) => map.getLayer(l)).join(",");
+      const src = map.getSource("flood") as GeoJSONSource | undefined;
+      if (!src) return;
+      void src.getData().then((d) => {
+        const next = { basemap: basemapRef.current, overlays, floodFeatures: (d as FeatureCollection).features?.length ?? 0 };
+        setDrawn((cur) => (cur && cur.basemap === next.basemap && cur.overlays === next.overlays && cur.floodFeatures === next.floodFeatures ? cur : next));
+      });
     });
 
     const floodPopup = (e: maplibregl.MapLayerMouseEvent) => {
@@ -181,6 +251,20 @@ export default function FloodMap(props: Props) {
     };
   }, []);
 
+  // --- M-15: switch basemap. setStyle drops our sources and layers; style.load re-adds them and bumps styleReady, so
+  // the data / route / arrival effects below run again and redraw the same scenario. Origin markers are DOM, unaffected.
+  const chooseBasemap = (b: Basemap) => {
+    const map = mapRef.current;
+    if (!map || b === basemapRef.current) return;
+    basemapRef.current = b;
+    tileErrorsRef.current = 0;
+    setBasemap(b);
+    setBasemapNote(b === "normal" && vectorFailedRef.current ? "Using fallback basemap" : null);
+    map.setStyle(b === "satellite" ? SATELLITE_STYLE : b === "terrain" ? TERRAIN_STYLE : vectorFailedRef.current ? RASTER_STYLE : VECTOR_STYLE, {
+      diff: false,
+    });
+  };
+
   // --- fly to the area ---
   const areaId = props.area?.id;
   useEffect(() => {
@@ -202,28 +286,14 @@ export default function FloodMap(props: Props) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    const sc = props.scenario;
-    setData(map, "flood", sc ? (sc.flood as FeatureCollection) : EMPTY);
-    setData(map, "shelters", {
-      type: "FeatureCollection",
-      features: (sc?.shelters ?? []).map((s) => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [s.lon, s.lat] },
-        properties: { ...s },
-      })),
-    });
+    drawScenario(map, props.scenario);
   }, [props.scenario, styleReady]);
 
   // --- route ---
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    const r = props.route;
-    const line = (g: { coordinates: number[][] } | undefined): FeatureCollection =>
-      g ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: g.coordinates }, properties: {} }] } : EMPTY;
-    const showBaseline = r?.baseline && r.baseline.minutes !== r.safe.minutes;
-    setData(map, "route-baseline", line(showBaseline ? r!.baseline!.geometry : undefined));
-    setData(map, "route-safe", line(r?.safe.geometry));
+    drawRoute(map, props.route);
   }, [props.route, styleReady]);
 
   // --- arrival layer toggle ---
@@ -248,10 +318,7 @@ export default function FloodMap(props: Props) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady) return;
-    setData(map, "reports", {
-      type: "FeatureCollection",
-      features: props.reports.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { id: r.id } })),
-    });
+    drawReports(map, props.reports);
   }, [props.reports, styleReady]);
 
   // --- origin markers (DOM markers so labels need no font glyphs) ---
@@ -277,7 +344,28 @@ export default function FloodMap(props: Props) {
   return (
     <div className="absolute inset-0">
       {/* maplibre's CSS forces position:relative on the container, so size it with h-full/w-full */}
-      <div ref={containerRef} className={`h-full w-full ${props.reportMode ? "report-mode" : ""}`} />
+      <div
+        ref={containerRef}
+        className={`h-full w-full ${props.reportMode ? "report-mode" : ""}`}
+        data-basemap={drawn?.basemap}
+        data-overlays={drawn?.overlays}
+        data-flood-features={drawn?.floodFeatures}
+      />
+      {!mapError && (
+        <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
+          {(Object.keys(BASEMAP_LABELS) as Basemap[]).map((b) => (
+            <button
+              key={b}
+              role="radio"
+              aria-checked={basemap === b}
+              onClick={() => chooseBasemap(b)}
+              className={`rounded-md px-2 py-0.5 text-[11px] font-semibold ${basemap === b ? "bg-zinc-900 text-white" : "text-zinc-700"}`}
+            >
+              {BASEMAP_LABELS[b]}
+            </button>
+          ))}
+        </div>
+      )}
       {mapError && (
         <div className="absolute inset-0 grid place-items-center bg-zinc-100 p-4">
           <div className="max-w-sm rounded-xl border border-zinc-200 bg-white p-4 text-center shadow-sm">
@@ -300,6 +388,33 @@ export default function FloodMap(props: Props) {
 function setData(map: MLMap, id: string, data: FeatureCollection) {
   const src = map.getSource(id) as GeoJSONSource | undefined;
   src?.setData(data);
+}
+
+function drawScenario(map: MLMap, sc: Scenario | null) {
+  setData(map, "flood", sc ? (sc.flood as FeatureCollection) : EMPTY);
+  setData(map, "shelters", {
+    type: "FeatureCollection",
+    features: (sc?.shelters ?? []).map((s) => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [s.lon, s.lat] },
+      properties: { ...s },
+    })),
+  });
+}
+
+function drawRoute(map: MLMap, r: Route | null) {
+  const line = (g: { coordinates: number[][] } | undefined): FeatureCollection =>
+    g ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: g.coordinates }, properties: {} }] } : EMPTY;
+  const showBaseline = r?.baseline && r.baseline.minutes !== r.safe.minutes;
+  setData(map, "route-baseline", line(showBaseline ? r!.baseline!.geometry : undefined));
+  setData(map, "route-safe", line(r?.safe.geometry));
+}
+
+function drawReports(map: MLMap, reports: Report[]) {
+  setData(map, "reports", {
+    type: "FeatureCollection",
+    features: reports.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { id: r.id } })),
+  });
 }
 
 function addLayers(map: MLMap) {
