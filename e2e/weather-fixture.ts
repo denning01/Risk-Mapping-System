@@ -31,6 +31,8 @@ export function fixture(lon: number, lat: number) {
     hourly_units: { time: "iso8601", precipitation: "mm", precipitation_probability: "%" },
     hourly: { time, precipitation, precipitation_probability },
     daily_units: { time: "iso8601", precipitation_sum: "mm", precipitation_probability_max: "%" },
-    daily: { time: DAYS, precipitation_sum: DAILY_MM, precipitation_probability_max: DAILY_PROB },
+    // copies: a test that corrupts its fixture must not corrupt the shared constants (that made weather.spec flaky
+    // when weather-parse.spec ran earlier in the same worker)
+    daily: { time: [...DAYS], precipitation_sum: [...DAILY_MM], precipitation_probability_max: [...DAILY_PROB] },
   };
 }

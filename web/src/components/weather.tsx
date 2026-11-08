@@ -22,7 +22,11 @@ function useWeather(p: WeatherPoint | null): State | null {
     let alive = true;
     fetchWeather(p.lon, p.lat).then(
       (data) => alive && setState({ key, status: "ok", data }),
-      () => alive && setState({ key, status: "error" }),
+      (err: unknown) => {
+        // a warning, not an error: offline or a slow network is an expected state, shown in the panel
+        console.warn("[weather]", err instanceof Error ? `${err.name}: ${err.message}` : err);
+        if (alive) setState({ key, status: "error" });
+      },
     );
     return () => {
       alive = false;
