@@ -188,3 +188,35 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   straight-line rank 15-32 for two origins: at <200 m, snap legs and network detours outweigh the crow-fly order. Report
   the required K (rank histogram) and let the operator rule; one early-exit Dijkstra with each target's snap leg on a
   virtual edge is exact AND stops at the first settled target, so no K is needed.
+- 2026-11-08 (E-18) An aggregate's representative point can quietly decide the answer. "Shelter reachable from the hex
+  CENTRE" left 83/358 Nairobi flooded hexes unroutable, holding 44 % of the exposed people, because a flooded hex's
+  centre often snaps to a cut-off node. Before writing a per-area field, ask what the point stands for and check who is
+  behind the nulls (people in the null rows). Then use the spec's own words ("min walk" = over the hex's walk nodes).
+  Also: a fault test that samples 4 cells cannot see a 15 m shift; check every cell when the rule is about borders.
+- 2026-11-08 (E-19) Never fault-inject a source file while a background run that imports it is starting: the run may
+  load the faulted code and produce a "real" output from a mutant. Stop that run and repeat it with the code frozen.
+  Also: a "keeps the best" fault survives a test that feeds the best value LAST. Order test inputs so that the naive
+  version gives the wrong answer.
+- 2026-11-08 (E-19) Kind matters when reproducing published routes. The pipeline sends rural settlers/farmers to the
+  top-SCORED high ground and traders to the nearest OSM shelter. A target-agnostic min-time client reproduces each only
+  when restricted to the route's kind (and at penalty 1). Report where the all-targets client disagrees with a
+  published card instead of hiding it.
+- 2026-11-08 E-20: an arrival_h written for the APP must be read the way the app prints it. FloodMap.tsx:127 prints
+  `~${arrival_h} h`, so a true median of 0.01 h would show as "~0.01 h", which is false precision. Operator ruling:
+  round to 0.1 h with a floor of 0.1. The true medians stay in $RMS_DATA ({key}.arrival.json, hex arrival_h_min).
+  Grep web/src for how a field is formatted before you choose its precision.
+- 2026-11-08 E-20: splitting a depth band by arrival band adds internal borders. Simplifying those borders moves the
+  DRAWN risk-polygon areas by up to 0.8 %, and drawn-vs-cells goes from -1.16 % to -1.39 % (Nyando). The cell-based
+  numbers stay byte-identical. When a check says "areas unchanged", say WHICH areas: cells (exact) or drawn (measured).
+- 2026-11-08 E-20 faults: a fixture with symmetric values cannot tell a median from a mean, and a scene with few
+  buildings per hex cannot tell largest-remainder from rounding. Each needs a case built to make the two answers
+  differ. A band-edge mutant (<1 -> <=1) can be equivalent when the next line overwrites that cell: call it
+  equivalent, not caught.
+- 2026-11-08 (R21 ruling) WATCH: the e2e "loads" test once saw an empty safe-places panel (nyando 200_elnino, new
+  data; then it passed 6/6). If it recurs in any gate run, raise it as a finding with the trace. Do not just rerun it.
+- 2026-11-08 (R22) Two process rules:
+  - Every REMEDIATION block ends with its own "COMMIT: <sha>" line. The gate binds a round only to a COMMIT: line,
+    never to a sha in a header.
+  - Before a landing round, run `git merge-tree --write-tree data HEAD` and gate the MERGED tree. My
+    tests/test_arrival.py collided (add/add) with model's test file of the same name. Name test files after the
+    script they test (test_arrival_exposure.py for 07/11 E-20).
