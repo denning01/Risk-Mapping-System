@@ -120,8 +120,33 @@ def _polygonal(geom):
     return None if out.is_empty else out
 
 
+ARRIVAL_BANDS_H = (1.0, 3.0, 6.0)    # E-20 RULING: bands <1, 1-3, 3-6, >6 h on the FAST arrival bound (the headline)
+ARRIVAL_BAND_NAMES = ("<1", "1-3", "3-6", ">6")
+ARRIVAL_H_FLOOR = 0.1    # E-20 RULING Q2: arrival_h = feature median rounded to 0.1 h, floor 0.1 ("<1" reads "~0.1 h"; never 0)
+
+
+def arrival_display_h(median_h: float) -> float:
+    """The contract arrival_h written for a banded feature: its median hours rounded to 0.1 h, at least 0.1 h.
+    The real (unrounded) medians stay in {key}.arrival.json and the H3 hexes."""
+    return max(ARRIVAL_H_FLOOR, round(float(median_h), 1))
+
+
+def classify_arrival_band(hours: np.ndarray) -> np.ndarray:
+    """int64: 0 "<1" (h < 1; includes 0-h local-rain cells), 1 "1-3" (1 <= h < 3), 2 "3-6" (3 <= h <= 6), 3 ">6" (h > 6);
+    -1 for NaN (no arrival estimate)."""
+    h = np.asarray(hours, dtype=float)
+    out = np.full(h.shape, -1, np.int64)
+    ok = np.isfinite(h)
+    out[ok & (h < 1.0)] = 0
+    out[ok & (h >= 1.0) & (h < 3.0)] = 1
+    out[ok & (h >= 3.0) & (h <= 6.0)] = 2
+    out[ok & (h > 6.0)] = 3
+    return out
+
+
 def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None = None,
-                   arrival_bin_h: float = 1.0, simplify_m: float = 15.0) -> tuple[list[dict], dict]:
+                   arrival_bin_h: float = 1.0, simplify_m: float = 15.0,
+                   arrival_bands: bool = False) -> tuple[list[dict], dict]:
     """Polygonise a depth raster into contract features, one per (depth band, arrival bin) (E-11; each band lies in
     one risk class, and depth_m is the band's mean depth).
 
@@ -137,7 +162,9 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     flooded = risk > 0
     if not np.array_equal(flooded, band > 0):
         raise AssertionError("band and risk masks differ")
-    if arrival is not None:
+    if arrival is not None and arrival_bands:
+        abin = classify_arrival_band(arrival)    # E-20: fixed bands; arrival_h below = the feature's MEDIAN hours
+    elif arrival is not None:
         abin = np.where(np.isfinite(arrival), np.round(arrival / arrival_bin_h), -1).astype(np.int64)
     else:
         abin = np.full(depth.shape, -1, dtype=np.int64)
@@ -202,7 +229,9 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
             "properties": {
                 "risk": RISK_NAMES[it["risk"]],
                 "depth_m": round(float(np.nanmean(depth[it["sel"]])), 2),
-                "arrival_h": None if it["abin"] < 0 else round(float(it["abin"] * arrival_bin_h), 2),
+                "arrival_h": (None if it["abin"] < 0 else
+                              arrival_display_h(np.median(arrival[it["sel"]])) if arrival_bands else
+                              round(float(it["abin"] * arrival_bin_h), 2)),
             },
         })
     # F17.3: the property F17.1 exists for, checked on what is WRITTEN (rounded output coordinates): no two features
@@ -430,6 +459,89 @@ def snapshot(model_dir: Path, handoff: Path, out_root: Path) -> Path:
         raise
 
 
+ARRIVAL_FILES = ("arrival_h.tif", "arrival_h_fast.tif")   # E-20: slow (velocity method) and FAST (headline) bounds
+
+
+def parse_arrival_handoff(text: str) -> dict:
+    """E-20: {"commit": str, "arrival_h.tif": (bytes, sha256), "arrival_h_fast.tif": (bytes, sha256)} from a model
+    arrival hand-off (full 64-hex sha256 values). Raises if either file or the commit is missing."""
+    import re
+    c = re.search(r"at commit ([0-9a-f]{7,40})", text)
+    slow = re.search(r"model/arrival_h\.tif` \(([\d,]+) B, sha256 `([0-9a-f]{64})`", text)
+    fast = re.search(r"`arrival_h_fast\.tif`.*?([\d,]+) B, sha256 `([0-9a-f]{64})`", text, re.S)
+    if not (c and slow and fast):
+        raise ValueError(f"arrival hand-off lacks: {[n for n, m in (('commit', c), ('arrival_h.tif', slow), ('arrival_h_fast.tif', fast)) if not m]}")
+    return {"commit": c[1], "arrival_h.tif": (int(slow[1].replace(",", "")), slow[2]),
+            "arrival_h_fast.tif": (int(fast[1].replace(",", "")), fast[2])}
+
+
+def snapshot_arrival(model_dir: Path, handoff: Path, depth_snapshot: Path) -> Path:
+    """E-20: copy arrival_h.tif + arrival_h_fast.tif into <depth snapshot>/arrival/<hand-off commit>/, verifying size and
+    FULL sha256 on the copies against the hand-off, and the grid against the depth snapshot. Raises and keeps nothing
+    on any mismatch; an existing snapshot may never change."""
+    import shutil
+    import tempfile
+    text = handoff.read_text()
+    h = parse_arrival_handoff(text)
+    out_root = depth_snapshot / "arrival"
+    out_root.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(prefix=".snap-", dir=out_root))
+    try:
+        with rasterio.open(depth_snapshot / f"{scenario_keys()[0]}_depth.tif") as ds:
+            grid = (ds.transform, str(ds.crs), ds.shape)
+        shas = {}
+        for name in ARRIVAL_FILES:
+            dst = tmp / name
+            shutil.copyfile(model_dir / name, dst)
+            sha, size = _sha256(dst), dst.stat().st_size
+            if (size, sha) != h[name]:
+                raise ValueError(f"{name}: copy is {size} B sha256 {sha[:16]}, hand-off says {h[name][0]} B "
+                                 f"{h[name][1][:16]} — the model directory changed; nothing kept")
+            with rasterio.open(dst) as ds:
+                if (ds.transform, str(ds.crs), ds.shape) != grid:
+                    raise ValueError(f"{name}: grid differs from the depth snapshot {depth_snapshot}")
+            shas[name] = sha
+        (tmp / "handoff.md").write_text(text)
+        (tmp / "snapshot.json").write_text(json.dumps({"from": str(model_dir), "handoff": str(handoff),
+                                                       "git_commit": h["commit"], "sha256": shas}, indent=1))
+        final = out_root / h["commit"]
+        if final.exists():
+            if json.loads((final / "snapshot.json").read_text())["sha256"] != shas:
+                raise ValueError(f"{final} exists with different contents")
+            shutil.rmtree(tmp)
+        else:
+            tmp.rename(final)
+        return final
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def read_arrival_snapshot(d: Path, grid) -> tuple[np.ndarray, np.ndarray]:
+    """(fast, slow) hours from an arrival snapshot, after re-checking each file's sha256 against snapshot.json and its
+    grid against `grid` = (transform, crs string, shape)."""
+    meta = json.loads((d / "snapshot.json").read_text())
+    out = {}
+    for name in ARRIVAL_FILES:
+        if _sha256(d / name) != meta["sha256"][name]:
+            raise ValueError(f"{d / name}: sha256 differs from {d / 'snapshot.json'}")
+        with rasterio.open(d / name) as ds:
+            if (ds.transform, str(ds.crs), ds.shape) != grid:
+                raise ValueError(f"{d / name}: grid differs from the depth raster")
+            out[name] = ds.read(1).astype("float64")
+    return out["arrival_h_fast.tif"], out["arrival_h.tif"]
+
+
+def cmd_snapshot_arrival(args) -> int:
+    try:
+        d = snapshot_arrival(Path(args.model_dir), Path(args.handoff), Path(args.depth_snapshot))
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    print(f"arrival snapshot {d}  (2 files: size + full sha256 match the hand-off on the copies; grid == depth)")
+    return 0
+
+
 def cmd_snapshot(args) -> int:
     out_root = rms_data() / "processed" / args.area / "exposure" / "model_snapshot"
     try:
@@ -571,6 +683,7 @@ def cmd_write(args) -> int:
     if handoff_km2:
         print(f"second method: flooded km2 compared with the hand-off table ({snap})")
     mask = grid = pop = people = bld = None
+    arr_grid = arr_fast = None
     if args.population or args.buildings:
         pop = _population_module()
     pdir = rms_data() / "processed" / args.area / "exposure"
@@ -651,12 +764,20 @@ def cmd_write(args) -> int:
         is_mock = tags.get("MOCK") == "1"
         arrival = None
         ap = depth_dir / f"{key}_arrival.tif"
-        if ap.exists():
+        if args.arrival_snapshot:                # E-20: one sha-verified arrival pair for all 20 scenarios
+            if ap.exists():
+                raise SystemExit(f"{ap} and --arrival-snapshot both given: one arrival source only")
+            if arr_grid != (tf, str(crs), depth.shape):
+                arr_fast, _slow = read_arrival_snapshot(Path(args.arrival_snapshot), (tf, str(crs), depth.shape))
+                arr_grid = (tf, str(crs), depth.shape)
+            arrival = arr_fast
+        elif ap.exists():
             arrival, atf, acrs, atags = _read(ap)
             if atf != tf or acrs != crs or arrival.shape != depth.shape:
                 raise SystemExit(f"{ap} grid differs from its depth raster")
             is_mock = is_mock or atags.get("MOCK") == "1"
-        feats, st = flood_features(depth, tf, crs, arrival, args.arrival_bin_h, args.simplify_m)
+        feats, st = flood_features(depth, tf, crs, arrival, args.arrival_bin_h, args.simplify_m,
+                                   arrival_bands=bool(args.arrival_snapshot))
 
         exp_old = json.loads((scen_dir / f"{key}.exposure.json").read_text())
         carried_mock = exp_old.get("source") != "model"
@@ -808,6 +929,11 @@ def main(argv=None) -> int:
     n.add_argument("--model-dir", required=True)
     n.add_argument("--handoff", required=True)
     n.set_defaults(fn=cmd_snapshot)
+    n = sub.add_parser("snapshot-arrival", help="E-20: copy + full-sha256-verify a model arrival hand-off pair")
+    n.add_argument("--model-dir", required=True, help="$RMS_DATA/processed/<area>/model")
+    n.add_argument("--handoff", required=True)
+    n.add_argument("--depth-snapshot", required=True, help="the audited depth snapshot the arrival pair belongs to")
+    n.set_defaults(fn=cmd_snapshot_arrival)
     w = sub.add_parser("write", help="depth rasters -> contract files for all 20 scenarios")
     w.add_argument("--area", required=True, choices=["nairobi", "nyando"])
     w.add_argument("--depth-dir", required=True)
@@ -815,6 +941,9 @@ def main(argv=None) -> int:
     w.add_argument("--source", choices=["mock", "model"], default="mock")
     w.add_argument("--simplify-m", type=float, default=15.0, help="Douglas-Peucker tolerance in metres")
     w.add_argument("--arrival-bin-h", type=float, default=1.0)
+    w.add_argument("--arrival-snapshot", default=None,
+                   help="E-20: <depth snapshot>/arrival/<commit> from snapshot-arrival; arrival_h = the FAST bound, in "
+                        "bands <1/1-3/3-6/>6 h, value = the feature's median hours")
     w.add_argument("--max-kb", type=float, default=3072, help="warn above this geojson size")
     w.add_argument("--population", action="store_true",
                    help="exposed people from 05_population.py prepare output (else carried from the existing file)")

@@ -201,3 +201,14 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   top-SCORED high ground and traders to the nearest OSM shelter. A target-agnostic min-time client reproduces each only
   when restricted to the route's kind (and at penalty 1). Report where the all-targets client disagrees with a
   published card instead of hiding it.
+- 2026-11-08 E-20: an arrival_h written for the APP must be read the way the app prints it. FloodMap.tsx:127 prints
+  `~${arrival_h} h`, so a true median of 0.01 h would show as "~0.01 h", which is false precision. Operator ruling:
+  round to 0.1 h with a floor of 0.1. The true medians stay in $RMS_DATA ({key}.arrival.json, hex arrival_h_min).
+  Grep web/src for how a field is formatted before you choose its precision.
+- 2026-11-08 E-20: splitting a depth band by arrival band adds internal borders. Simplifying those borders moves the
+  DRAWN risk-polygon areas by up to 0.8 %, and drawn-vs-cells goes from -1.16 % to -1.39 % (Nyando). The cell-based
+  numbers stay byte-identical. When a check says "areas unchanged", say WHICH areas: cells (exact) or drawn (measured).
+- 2026-11-08 E-20 faults: a fixture with symmetric values cannot tell a median from a mean, and a scene with few
+  buildings per hex cannot tell largest-remainder from rounding. Each needs a case built to make the two answers
+  differ. A band-edge mutant (<1 -> <=1) can be equivalent when the next line overwrites that cell: call it
+  equivalent, not caught.

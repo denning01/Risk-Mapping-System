@@ -209,3 +209,53 @@ def test_hex_walk_min_is_the_primary_route_at_penalty_1():
     rows = [{"h3": "H2"}]
     hm.fill_shelter_fields(rows, g, "a", nh, {"H2"})
     assert (rows[0]["walk_min"], rows[0]["shelter_id"]) == (10, "s") and "relocation_walk_min" not in rows[0]
+
+
+def test_hex_arrival_fields_earliest_fast_band_and_people_by_band():
+    """E-20: fast = column index x 0.2 h (cols 24..35 -> 4.8..7.0 h), slow = fast x 2.44. Per hex: arrival_h_min = the
+    earliest fast hours over its WET cells, arrival_band_min its band, arrival_h_min_slow = that x 2.44 (same cell),
+    people_medium_by_band sums to people_medium and holds only bands of the hex's wet buildings' cells."""
+    import importlib.util as iu
+    sp = iu.spec_from_file_location("sc07t", HERE / "07_scenarios.py"); sc = iu.module_from_spec(sp); sp.loader.exec_module(sc)
+    mask, county, depth, b, man = _scene()
+    hexes = hm.cell_hexes(mask, TF, CRS, 9)
+    r, c, ok, ppl = hm.building_people(b, county, mask, TF, CRS, man, "B", "85")
+    wet = np.isfinite(depth) & (depth > 0)
+    target = pop.exposed_building_weighted(b, wet, county, mask, TF, CRS, man, "85")["B"]
+    fast = np.tile(np.arange(SHAPE[1]) * 0.2, (SHAPE[0], 1))
+    slow = fast * 2.44
+    bbox = [*TO_LL(TF.c, TF.f - 1800), *TO_LL(TF.c + 1800, TF.f)]
+    rows = hm.aggregate(depth, hexes, 900.0, (r, c, ok), ppl, target, bbox, (fast, slow))
+    for x in rows:
+        sel = (hexes == h3.str_to_int(x["h3"])) & wet
+        assert x["arrival_h_min"] == round(float(fast[sel].min()), 2)
+        assert x["arrival_h_min_slow"] == round(float(slow[sel].min()), 2)
+        assert x["arrival_band_min"] == ("<1", "1-3", "3-6", ">6")[int(sc.classify_arrival_band(np.array([x["arrival_h_min"]]))[0])]
+        assert sum(x["people_medium_by_band"].values()) == x["people_medium"]
+    assert {k for x in rows for k, v in x["people_medium_by_band"].items() if v} <= {"3-6", ">6"}
+    assert sum(x["people_medium"] for x in rows) == target["medium"]
+    # E-20 F-A10/A11: recompute each hex's split independently: wet buildings, their FAST band (slow x2.44 would put
+    # every cell in ">6"), fractional medium people, then floors + 1 to the largest fractional parts (not plain rounding)
+    bw = ok & wet[r, c]
+    band = np.digitize(fast[r[bw], c[bw]], [1.0, 3.0, 6.0 + 1e-9])
+    names = ["<1", "1-3", "3-6", ">6"]
+    for x in rows:
+        sel = hexes[r[bw], c[bw]] == h3.str_to_int(x["h3"])
+        frac = np.array([ppl[bw][sel & (band == k), 1].sum() for k in range(4)])
+        fl = np.floor(frac).astype(int)
+        for i in sorted(range(4), key=lambda i: -(frac[i] - fl[i]))[: x["people_medium"] - fl.sum()]:
+            fl[i] += 1
+        assert [x["people_medium_by_band"].get(n, 0) for n in names] == fl.tolist(), x["h3"]
+    assert sum(x["people_medium_by_band"].get("3-6", 0) for x in rows) > 0
+
+
+def test_hex_people_by_band_is_largest_remainder_not_rounding():
+    """F-A11: one hex, three wet buildings of 0.30 / 0.45 / 0.25 people in bands <1, 1-3, 3-6; people_medium 1. Plain
+    rounding gives 0+0+0 = 0 != 1; largest remainder gives the 1 to the largest fraction (1-3)."""
+    wet = np.ones((1, 3), bool)
+    fast = np.array([[0.5, 2.0, 4.0]])
+    rows = [{"h3": "x", "people_medium": 1}]
+    hm.add_arrival_fields(rows, np.array([7]), np.zeros(3, np.int64), wet, (fast, fast * 2.44),
+                          np.zeros(3, np.int64), np.array([0.30, 0.45, 0.25]), np.zeros(3, np.int64), np.arange(3))
+    assert rows[0]["people_medium_by_band"] == {"<1": 0, "1-3": 1, "3-6": 0, ">6": 0}
+    assert rows[0]["arrival_h_min"] == 0.5 and rows[0]["arrival_band_min"] == "<1" and rows[0]["arrival_h_min_slow"] == 1.22

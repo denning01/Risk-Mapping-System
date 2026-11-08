@@ -115,9 +115,10 @@ def hex_on_edge(h: str, bbox) -> bool:
 
 
 def aggregate(depth: np.ndarray, hexes: np.ndarray, cell_m2: float, bpos, ppl: np.ndarray | None,
-              targets: dict | None, bbox) -> list[dict]:
+              targets: dict | None, bbox, arrival: tuple | None = None) -> list[dict]:
     """Rows (without the shelter fields) for every hex with >= 1 wet cell. depth: NaN outside the AOI / dry.
-    bpos = (r, c, ok) of the kept buildings; ppl their people (n, 3) or None; targets {low, medium, high} ints."""
+    bpos = (r, c, ok) of the kept buildings; ppl their people (n, 3) or None; targets {low, medium, high} ints.
+    arrival = (fast, slow) hours grids (E-20) or None -> add_arrival_fields."""
     import h3
     sc = _mod("sc07", "07_scenarios.py")
     wet = np.isfinite(depth) & (depth > 0)
@@ -147,7 +148,38 @@ def aggregate(depth: np.ndarray, hexes: np.ndarray, cell_m2: float, bpos, ppl: n
             ints = largest_remainder(v, keys, targets[s])
             for x, n in zip(rows, ints):
                 x[f"people_{s}"] = int(n)
+    if arrival is not None:
+        add_arrival_fields(rows, hx, inv, wet, arrival, bh, ppl[bw, 1] if ppl is not None else None, r[bw], c[bw])
     return rows
+
+
+def add_arrival_fields(rows, hx, inv, wet, arrival, bh, ppl_medium, br, bc) -> None:
+    """E-20 (RULING: medium projection by band in hexes). Per hex: arrival_h_min = the EARLIEST fast-bound hours over
+    its wet cells (the headline), arrival_band_min = that value's band name ("<1" is labelled "within the hour / local
+    rain", never "0 h"), arrival_h_min_slow = the same on the slow bound (NaN cells skipped; null if all NaN), and
+    people_medium_by_band = the hex's people_medium split by the band of each building's cell, integers by largest
+    remainder WITHIN the hex (so they sum to people_medium)."""
+    sc = _mod("sc07", "07_scenarios.py")
+    fast, slow = arrival
+    for name, grid in (("arrival_h_min", fast), ("arrival_h_min_slow", slow)):
+        v = grid[wet]
+        m = np.full(len(hx), np.inf)
+        ok = np.isfinite(v)
+        np.minimum.at(m, inv[ok], v[ok])
+        for x, mm in zip(rows, m):
+            x[name] = round(float(mm), 2) if np.isfinite(mm) else None
+    for x in rows:
+        h = x["arrival_h_min"]
+        x["arrival_band_min"] = None if h is None else sc.ARRIVAL_BAND_NAMES[int(sc.classify_arrival_band(np.array([h]))[0])]
+    if ppl_medium is None:
+        return
+    bb = sc.classify_arrival_band(fast[br, bc])
+    names = list(sc.ARRIVAL_BAND_NAMES) + ["unknown"]
+    for i, x in enumerate(rows):
+        sel = bh == i
+        v = np.array([float(ppl_medium[sel & (bb == k)].sum()) for k in (0, 1, 2, 3, -1)])
+        ints = largest_remainder(v, names, x["people_medium"])
+        x["people_medium_by_band"] = {n: int(k) for n, k in zip(names, ints) if k or n != "unknown"}
 
 
 NULL_RURAL = "relocation sites not yet in graph"
@@ -239,6 +271,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out-dir", required=True, help="under $RMS_DATA (never web/)")
     ap.add_argument("--res", type=int, default=RES)
     ap.add_argument("--population-mode", default="B", choices=["A", "B"])
+    ap.add_argument("--arrival-snapshot", default=None, help="E-20: <depth snapshot>/arrival/<commit>")
     a = ap.parse_args(argv)
     out = Path(a.out_dir).resolve()
     if (REPO / "web").resolve() in out.parents or out == (REPO / "web").resolve():
@@ -273,6 +306,7 @@ def main(argv=None) -> int:
             county = pop.ids_on_grid(ids, ids_tf, depth.shape, tf, crs)
             r, c, ok, ppl = building_people(bld, county, mask, tf, crs, man, a.population_mode, pop.OB_PRECISION)
             cell_m2 = abs(tf.a * tf.e)
+            arrival = (sc.read_arrival_snapshot(Path(a.arrival_snapshot), grid) if a.arrival_snapshot else None)
         depth = np.where(mask, depth, np.nan)
         exp = json.loads((data / a.area / "scenarios" / f"{key}.exposure.json").read_text())
         # the exposure.json totals, recomputed here by the writer's own functions, must match the audited file
@@ -281,7 +315,7 @@ def main(argv=None) -> int:
         nb = pop.buildings_in_wet(bld, wet, tf, crs)
         if w2 != exp["population"] or nb != exp["buildings"]:
             raise SystemExit(f"{key}: recomputed exposure {w2} / {nb} != exposure.json {exp['population']} / {exp['buildings']}")
-        rows = aggregate(depth, hexes, cell_m2, (r, c, ok), ppl, exp["population"], bbox)
+        rows = aggregate(depth, hexes, cell_m2, (r, c, ok), ppl, exp["population"], bbox, arrival)
         reason = shelter_null_reason(area_meta, g)
         if reason:
             for x in rows:
