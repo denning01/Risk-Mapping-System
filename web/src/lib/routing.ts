@@ -153,7 +153,9 @@ export class MinHeap {
     while (i > 0) {
       const p = (i - 1) >> 1;
       if (!less(h[i], h[p])) break;
-      [h[i], h[p]] = [h[p], h[i]];
+      const tmp = h[i];
+      h[i] = h[p];
+      h[p] = tmp;
       i = p;
     }
   }
@@ -172,7 +174,9 @@ export class MinHeap {
         if (l < h.length && less(h[l], h[m])) m = l;
         if (r < h.length && less(h[r], h[m])) m = r;
         if (m === i) break;
-        [h[i], h[m]] = [h[m], h[i]];
+        const tmp = h[i];
+        h[i] = h[m];
+        h[m] = tmp;
         i = m;
       }
     }
@@ -263,14 +267,17 @@ export function snapStart(P: PreparedGraph, lon: number, lat: number): { node: n
   const [px, py] = P.project(lon, lat);
   let j = 0;
   let best = Infinity;
-  for (let k = 0; k < P.walkNodes.length; k++) {
-    const d = Math.hypot(P.wx[k] - px, P.wy[k] - py);
-    if (d < best) {
-      best = d;
+  const { wx, wy } = P;
+  for (let k = 0; k < wx.length; k++) {
+    const dx = wx[k] - px;
+    const dy = wy[k] - py;
+    const d2 = dx * dx + dy * dy; // squared: same argmin (first index on a tie), no Math.hypot in the loop
+    if (d2 < best) {
+      best = d2;
       j = k;
     }
   }
-  return { node: P.walkNodes[j], m: best };
+  return { node: P.walkNodes[j], m: Math.hypot(wx[j] - px, wy[j] - py) };
 }
 
 /** client_route(): the route from (lon, lat) to the best usable shelter in scenario `key` ("<rain>_<enso>"). */
