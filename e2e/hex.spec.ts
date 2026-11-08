@@ -106,10 +106,12 @@ for (const area of areas()) {
     const routePts = await map.getAttribute("data-route-points");
     const btn = page.getByRole("button", { name: "Hexagons", exact: true });
     await expect(map).toHaveAttribute("data-hex", "off");
+    await expect(map).toHaveAttribute("data-fills", "flood-fill");
 
     await btn.click();
     await expect(btn).toHaveAttribute("aria-pressed", "true");
     await expect(map).toHaveAttribute("data-hexes", String(rows.length));
+    await expect(map).toHaveAttribute("data-fills", "hex-fill"); // the hexagons replace the flood fill
     await expect(map).toHaveAttribute("data-layer-order", "flood-fill,hex-fill,route-alt,route-safe,shelters,reports");
     await expect(map).toHaveAttribute("data-shelters", String(shelters.length));
     await expect(map).toHaveAttribute("data-route-points", routePts!);
@@ -144,6 +146,15 @@ for (const area of areas()) {
         const lines = await pop.evaluate((el) => Array.from(el.children).map((c) => c.textContent ?? ""));
         const want = [...hexLines(row, names), "Scenario estimate, not a forecast"];
         if (JSON.stringify(lines) !== JSON.stringify(want)) bad.push(`${h3}: ${JSON.stringify(lines)} vs ${JSON.stringify(want)}`);
+        // and straight from the row, not through hexLines: the numbers a reader acts on
+        const need = [
+          `Depth: mean ~${row.depth_mean_m} m, max ~${row.depth_max_m} m`,
+          `People in flooded buildings: ${row.people_medium.toLocaleString("en-US")} (range ${row.people_low.toLocaleString("en-US")} to ${row.people_high.toLocaleString("en-US")})`,
+          `Buildings flooded: ${row.buildings_flooded.toLocaleString("en-US")}`,
+          ...(row.walk_min !== null ? [`Safe shelter reachable: ~${row.walk_min} min walk`] : []),
+          ...((row.relocation_walk_min ?? null) !== null ? [`High ground reachable: ~${row.relocation_walk_min} min walk`] : []),
+        ];
+        for (const t of need) if (!lines.some((l) => l.startsWith(t))) bad.push(`${h3}: no line "${t}"`);
         if (has(row)) {
           checked.push(kind);
           break;
@@ -162,6 +173,7 @@ for (const area of areas()) {
     await btn.click();
     await expect(map).toHaveAttribute("data-hex", "off");
     await expect(map).toHaveAttribute("data-hexes", "0");
+    await expect(map).toHaveAttribute("data-fills", "flood-fill");
     await expect(page.locator("[data-hex-note]")).toHaveCount(0);
     expect(errors.filter((e) => !e.includes("open-meteo")), errors.join("\n")).toEqual([]);
   });

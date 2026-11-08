@@ -157,6 +157,8 @@ interface Drawn {
   paint3d: string;
   /** M-19: hexagons in the hex source, and the drawing order of ORDER_LAYERS (bottom first) */
   hexes: number;
+  /** M-19: which of the flood / arrival / hexagon fills is visible now (exactly one) */
+  fills: string;
   layerOrder: string;
 }
 
@@ -326,6 +328,7 @@ export default function FloodMap(props: Props) {
           paint3d: JSON.stringify(paint3d(map)),
           hexes: map.getLayoutProperty("hex-fill", "visibility") === "visible" ? (hx.features?.length ?? 0) : 0,
           layerOrder: order,
+          fills: ["flood-fill", "flood-arrival", "hex-fill"].filter((l) => map.getLayer(l) && map.getLayoutProperty(l, "visibility") !== "none").join(","),
         };
         setDrawn((cur) => (cur && JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
       });
@@ -609,6 +612,7 @@ export default function FloodMap(props: Props) {
         data-hex={showHex ? "on" : "off"}
         data-hexes={drawn?.hexes}
         data-layer-order={drawn?.layerOrder}
+        data-fills={drawn?.fills}
       />
       {!mapError && (
         <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
