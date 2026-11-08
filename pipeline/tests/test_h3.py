@@ -259,3 +259,21 @@ def test_hex_people_by_band_is_largest_remainder_not_rounding():
                           np.zeros(3, np.int64), np.array([0.30, 0.45, 0.25]), np.zeros(3, np.int64), np.arange(3))
     assert rows[0]["people_medium_by_band"] == {"<1": 0, "1-3": 1, "3-6": 0, ">6": 0}
     assert rows[0]["arrival_h_min"] == 0.5 and rows[0]["arrival_band_min"] == "<1" and rows[0]["arrival_h_min_slow"] == 1.22
+
+
+def test_relocation_only_hex_is_reachable_with_no_no_route_class():
+    """F20.4 (ruling R20-c: shelter_reachable = EITHER answer exists). The 4-lattice is cut between columns 1 and 2
+    ((1,2), (11,12), (21,22), (31,32)): node 2 reaches the high ground hg at node 3 (300 s = 5 min) but never the
+    shelter s at node 0. Its hex must be reachable with no_route null, not "shelter in place / 1199"."""
+    import importlib.util as iu
+    tsp = iu.spec_from_file_location("trt3", HERE / "tests" / "test_routing.py"); tr = iu.module_from_spec(tsp); tsp.loader.exec_module(tr)
+    W, D = tr._lattice(4), tr._lattice(4, drive=True)
+    g = tr._client_graph(W, D, cut_pairs=[(1, 2), (11, 12), (21, 22), (31, 32)], shelters=[("s", 0), ("hg", 3)])
+    g["shelters"][1]["kind"] = "relocation"
+    nh = {sorted(W.nodes).index(2): "Hrel"}
+    rows = [{"h3": "Hrel"}]
+    hm.fill_shelter_fields(rows, g, "a", nh, {"Hrel"})
+    x = rows[0]
+    assert (x["walk_min"], x["shelter_id"]) == (None, None)
+    assert (x["relocation_walk_min"], x["relocation_id"]) == (5, "hg")
+    assert x["shelter_reachable"] is True and x["no_route"] is None
