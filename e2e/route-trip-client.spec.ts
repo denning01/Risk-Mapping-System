@@ -3,6 +3,7 @@
 //      per kind, primary and safer target, minutes, edge list, extra minutes; refusals by reason.
 //  (2) routeBetween() fastest == an independent scipy Dijkstra (fixtures/trip-oracle.json): same minutes, same true
 //      walking time (deciseconds), same refusal.
+//  (2b) F17.3: ALL alternatives == the same scipy oracle, which implements the safer / third rules itself.
 //  (3) properties of every alternative: no flooded edge, a connected path from the start node to the destination node,
 //      pairwise different, the safer one never faster and never nearer the flood, the third under 50 % overlap,
 //      drawn line no longer than the walked metres.
@@ -28,7 +29,8 @@ type PyRoute = { shelter: string; minutes: number; edges: number[]; extra_min?: 
 type PyAnswer = { error?: string; primary?: PyRoute; safer?: PyRoute };
 const ANS: { oracle_commit: string; rows: { area: string; key: string; pt: string; lon: number; lat: number; user_type: string | null; answers: Record<string, PyAnswer> }[] } =
   JSON.parse(readFileSync(join(__dirname, "fixtures", "answers-oracle.json"), "utf8"));
-type TripRow = { area: string; key: string; pair: number; from: { lon: number; lat: number }; to: { lon: number; lat: number; targetId?: string }; error?: string; ds?: number; minutes?: number; snap_m?: [number, number] };
+type OracleAlt = { label: string; edges: number[]; cost: number; ds: number; minutes: number; overlap?: number };
+type TripRow = { area: string; key: string; pair: number; from: { lon: number; lat: number }; to: { lon: number; lat: number; targetId?: string }; error?: string; ds?: number; minutes?: number; snap_m?: [number, number]; alts?: OracleAlt[] };
 const TRIP: TripRow[] = JSON.parse(readFileSync(join(__dirname, "fixtures", "trip-oracle.json"), "utf8"));
 const REFUSAL: Record<string, string> = {
   "nearest road/path node is cut off by the flood": "cut_off",
@@ -112,6 +114,30 @@ test("routeBetween fastest == scipy Dijkstra on every oracle pair (minutes, true
   }
   expect(routed).toBeGreaterThan(80);
   expect(refused).toBeGreaterThan(0);
+});
+
+/** F17.3: the safer and third routes too, against the scipy oracle's own implementation of the stated rules */
+test("routeBetween: every alternative (fastest, safer x near_penalty, third with route-1 edges x2 and the overlap rule) == scipy, edge for edge", () => {
+  const bad: string[] = [];
+  const n = { trips: 0, safer: 0, alternative: 0 };
+  for (const o of TRIP) {
+    if (o.error) continue;
+    const r = routeBetween(graph(o.area), o.key, o.from, o.to);
+    const where = `${o.area} ${o.key} pair ${o.pair}`;
+    if (!r.ok) {
+      bad.push(`${where}: refused ${r.reason}`);
+      continue;
+    }
+    n.trips++;
+    const got = r.alts.map((a) => ({ label: a.label, minutes: a.minutes, edges: a.edges.join(","), overlap: a.label === "alternative" ? a.overlap.toFixed(9) : "" }));
+    const want = o.alts!.map((a) => ({ label: a.label, minutes: a.minutes, edges: a.edges.join(","), overlap: a.overlap === undefined ? "" : a.overlap.toFixed(9) }));
+    if (JSON.stringify(got) !== JSON.stringify(want)) bad.push(`${where}: got ${got.map((x) => `${x.label}/${x.minutes}`)} want ${want.map((x) => `${x.label}/${x.minutes}`)}`);
+    for (const a of o.alts!) if (a.label !== "fastest") n[a.label as "safer" | "alternative"]++;
+  }
+  expect(bad).toEqual([]);
+  expect(n.trips).toBeGreaterThan(80);
+  expect(n.safer, "oracle trips with a safer route").toBeGreaterThan(20);
+  expect(n.alternative, "oracle trips with a third route").toBeGreaterThan(50);
 });
 
 /** every oracle pair plus shelter-to-shelter trips: the alternatives' properties */
