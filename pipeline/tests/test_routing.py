@@ -942,3 +942,156 @@ def test_export_graph_keeps_parallel_walk_ways_of_different_length_apart():
     rows = sorted(zip(E[2::3], F))
     assert rows == [(3000, 0), (4200, 1)]
     assert rt.graph_route(g, "walk", "a", 0, 1)[0] == 300.0
+
+
+# ---- E-16: near-flood flags, shelter usability, the reference client ----
+def _pairs(W, mask):
+    return {frozenset((W.nodes[W.u[e]], W.nodes[W.v[e]])) for e in np.nonzero(mask)[0]}
+
+
+def _off(n, dy=12.0):
+    """A tap point 12 m north of lattice node n (r*10+c), in lon/lat. graph.json stores nodes to 5 dp (~1.1 m), so a tap
+    ON a node could round a whole-minute total either way; 12 m keeps every total in these tests off a minute boundary."""
+    return _ll(_X0 + (n % 10) * _SP, _Y0 - (n // 10) * _SP + dy)
+
+
+def test_near_flood_rule_distance_and_never_on_a_cut_edge():
+    """A wet cell 30 m off edge 0-1 (not on it) makes 0-1 NEAR at near_m=45 but not at 25; a wet cell ON edge 1-2 cuts
+    it, and a cut edge is never also near (1-2 is within 45 m of both cells). Nothing else is within 45 m."""
+    W = _lattice(4)
+    wet, tf = _wet([(_X0 + 150, _Y0 - 45), (_X0 + 450, _Y0 - 5)])
+    cut = W.cut(wet, tf)
+    assert _pairs(W, cut) == {frozenset((1, 2))}
+    assert _pairs(W, rt.near_flood(W, wet, tf, cut, near_m=45)) == {frozenset((0, 1))}
+    assert _pairs(W, rt.near_flood(W, wet, tf, cut, near_m=25)) == set()
+    assert not rt.near_flood(W, np.zeros_like(wet), tf, np.zeros(W.n_edges, bool)).any()
+
+
+def test_shelter_usable_rule_safe_snap_limit_live_node_and_dry_snap_leg():
+    """F18.1: the writer's usable rule (rt.shelter_usable, called by 07 write). On the 4-lattice: "dry" 100 m south of
+    node 0 (dry snap leg) is usable; "wetleg" 100 m south of node 2 with a wet cell on its snap leg is not; "far" 600 m
+    east of node 3 (> MAX_DEST_SNAP_M = 500) is not; "dead" at node 11, whose four edges are all cut, is not; an unsafe
+    shelter is not."""
+    W = _lattice(4)
+    wet, tf = _wet([(_X0 + 600, _Y0 - 60), (_X0 + 300, _Y0 - 270), (_X0 + 300, _Y0 - 330),
+                    (_X0 + 270, _Y0 - 300), (_X0 + 330, _Y0 - 300)])
+    cut = W.cut(wet, tf)
+    assert {frozenset((11, x)) for x in (1, 10, 12, 21)} <= _pairs(W, cut)
+    live = W.live(cut)
+    pts = {"dry": _ll(_X0, _Y0 - 100), "wetleg": _ll(_X0 + 600, _Y0 - 100), "far": _ll(_X0 + 900 + 600, _Y0),
+           "dead": _ll(_X0 + 300 + 5, _Y0 - 300)}
+    gs = {g["id"]: g for g in rt.graph_shelters(W, [{"id": k, "lon": v[0], "lat": v[1]} for k, v in pts.items()])}
+    assert W.nodes[gs["dry"]["node"]] == 0 and gs["dry"]["snap_m"] == pytest.approx(100, abs=0.5)
+    assert W.nodes[gs["wetleg"]["node"]] == 2 and W.nodes[gs["far"]["node"]] == 3 and gs["far"]["snap_m"] > rt.MAX_DEST_SNAP_M
+    assert W.nodes[gs["dead"]["node"]] == 11
+    use = {k: rt.shelter_usable(W, g, True, live, (wet, tf)) for k, g in gs.items()}
+    assert use == {"dry": True, "wetleg": False, "far": False, "dead": False}
+    assert not rt.shelter_usable(W, gs["dry"], False, live, (wet, tf))          # unsafe in shelters.json
+    assert rt.shelter_usable(W, gs["wetleg"], True, live, None)                 # it is the wet leg that excludes it
+
+
+def test_export_clears_near_on_a_pair_cut_in_one_direction_only():
+    """F18.1/Q1: walk pairs are merged; if 0->1 is near and 1->0 is cut, the exported pair is flooded and NOT near."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    e01 = next(e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (0, 1))
+    e10 = next(e for e in range(W.n_edges) if (W.nodes[W.u[e]], W.nodes[W.v[e]]) == (1, 0))
+    near, cut = np.zeros(W.n_edges, bool), np.zeros(W.n_edges, bool)
+    near[e01], cut[e10] = True, True
+    z = np.zeros(D.n_edges, bool)
+    g = rt.export_graph("t", ["a"], W, D, {"a": (cut, z)}, near={"a": (near, z)}, shelters=[])
+    E, ids = g["walk"]["edges"], sorted(W.nodes)
+    i = next(i for i in range(len(E) // 3) if {E[3 * i], E[3 * i + 1]} == {ids.index(0), ids.index(1)})
+    assert g["walk"]["flooded"][i] == 1 and g["walk"]["near"][i] == 0
+    assert sum(1 for x in g["walk"]["near"] if x) == 0
+
+
+def _client_graph(W, D, near_pairs=(), cut_pairs=(), shelters=()):
+    """One scenario "a": export with given near / cut walk pairs and shelters at lattice nodes (usable in "a")."""
+    near = np.array([frozenset((W.nodes[W.u[e]], W.nodes[W.v[e]])) in {frozenset(p) for p in near_pairs} for e in range(W.n_edges)])
+    cut = np.array([frozenset((W.nodes[W.u[e]], W.nodes[W.v[e]])) in {frozenset(p) for p in cut_pairs} for e in range(W.n_edges)])
+    z = np.zeros(D.n_edges, bool)
+    sh = [{"id": sid, "name": sid, "type": "school", "lon": float(W.lon[W.idx[n]]), "lat": float(W.lat[W.idx[n]]),
+           "node": W.idx[n], "snap_m": 0.0, "usable": 1} for sid, n in shelters]
+    return rt.export_graph("t", ["a"], W, D, {"a": (cut, z)}, near={"a": (near & ~cut, z)}, shelters=sh)
+
+
+def test_client_never_uses_a_flooded_edge():
+    """(1) Edge 0-1 is flooded: the client walks round it (0-10-11-1, 900 s + 12 m) and no edge on its path is flagged."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    g = _client_graph(W, D, cut_pairs=[(0, 1)], shelters=[("s1", 1)])
+    r = rt.client_route(g, "a", *_off(0))
+    assert r["shelter"] == "s1" and r["minutes"] == 16 and len(r["edges"]) == 3          # 912 s
+    assert all(not (g["walk"]["flooded"][i] & 1) for i in r["edges"])
+
+
+def test_client_skips_a_shelter_not_usable_in_the_scenario():
+    """A shelter whose usable bit is clear (unsafe / unreachable in this scenario) is never a destination, even when it is
+    the nearest and fastest: s1 at node 1 (6 min) is unusable, so the client goes to s2 at node 2 (612 s = 11 min)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    g = _client_graph(W, D, shelters=[("s1", 1), ("s2", 2)])
+    assert rt.client_route(g, "a", *_off(0))["shelter"] == "s1"
+    g["shelters"][0]["usable"] = 0
+    r = rt.client_route(g, "a", *_off(0))
+    assert r["shelter"] == "s2" and r["minutes"] == 11
+    g["shelters"][1]["usable"] = 0
+    assert "error" in rt.client_route(g, "a", *_off(0))
+
+
+def test_client_targets_every_usable_shelter_and_counts_its_snap_leg():
+    """Operator ruling A: no K cutoff. Seven shelters nearer in straight line than s3 (node 3, 900 s) each carry a 2 km
+    snap leg, so s3 (the 8th nearest) is the fastest and must win. Then the snap leg alone decides: sA at node 1
+    (300 s + 500 m snap) loses to sB at node 2 (600 s, snap 0) because the virtual edge carries the snap leg."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    near = [1, 10, 11, 2, 20, 12, 21]
+    g = _client_graph(W, D, shelters=[(f"n{n}", n) for n in near] + [("s3", 3)])
+    for s in g["shelters"][:-1]:
+        s["snap_m"] = 2000.0
+    r = rt.client_route(g, "a", *_off(0))
+    assert r["shelter"] == "s3" and len(r["edges"]) == 3
+    g = _client_graph(W, D, shelters=[("sA", 1), ("sB", 2)])
+    g["shelters"][0]["snap_m"] = 500.0
+    assert rt.client_route(g, "a", *_off(0))["shelter"] == "sB"
+    g["shelters"][0]["snap_m"] = 0.0
+    assert rt.client_route(g, "a", *_off(0))["shelter"] == "sA"
+
+
+def test_client_near_penalty_takes_a_dry_detour_only_when_it_costs_under_3x():
+    """(2) 0 -> 2 straight is 600 s with both edges NEAR; the dry detour 0-10-11-12-2 is 1,200 s < 3 x 600: with the
+    x3 penalty the client takes the detour (and shows its TRUE time, 1,212 s = 21 min); without it, the straight
+    612 s = 11 min. Then 0 -> 1 on a near edge (300 s) with the detour's 10-11 flooded: the shortest dry detour is
+    1,500 s > 3 x 300, so the client stays on the near edge (true 312 s = 6 min, cost 900 + 12 s)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    g = _client_graph(W, D, near_pairs=[(0, 1), (1, 2)], shelters=[("s2", 2)])
+    on = lambda r: {frozenset((g["walk"]["edges"][3 * i], g["walk"]["edges"][3 * i + 1])) for i in r["edges"]}
+    ids = sorted(W.nodes)
+    straight = {frozenset((ids.index(0), ids.index(1))), frozenset((ids.index(1), ids.index(2)))}
+    r3, r1 = rt.client_route(g, "a", *_off(0)), rt.client_route(g, "a", *_off(0), penalty=1.0)
+    assert r3["minutes"] == 21 and not (on(r3) & straight) and all(not (g["walk"]["near"][i] & 1) for i in r3["edges"])
+    assert r1["minutes"] == 11 and on(r1) == straight
+    g2 = _client_graph(W, D, near_pairs=[(0, 1)], cut_pairs=[(10, 11)], shelters=[("s1", 1)])
+    r = rt.client_route(g2, "a", *_off(0))
+    assert r["minutes"] == 6 and r["cost_s"] == pytest.approx(912.0, abs=1.0)
+
+
+def test_client_matches_the_pipeline_nearest_safe_shelter():
+    """(3) On a flooded lattice with five shelters, the client (penalty 1, all usable shelters) picks the same shelter with the same
+    minutes as the pipeline's _nearest_safe_shelter from several taps, including one whose straight-line-nearest
+    shelter is NOT the fastest (tap 3) and a time tie broken by id (tap 23)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    wet, tf = _wet([(_X0 + 150, _Y0), (_X0 + 450, _Y0 - 300)])         # cuts 0-1 and 11-12
+    cut = W.cut(wet, tf)
+    nodes = {"sA": 1, "sB": 12, "sC": 30, "sD": 33, "sE": 22}
+    sh = [{"id": k, "name": k, "type": "school", "lon": float(W.lon[W.idx[n]]), "lat": float(W.lat[W.idx[n]]),
+           "capacity": None, "safe": True} for k, n in nodes.items()]
+    gs = [{**s, "node": W.idx[nodes[s["id"]]], "snap_m": 0.0, "usable": 1} for s in sh]
+    z = np.zeros(D.n_edges, bool)
+    g = rt.export_graph("t", ["a"], W, D, {"a": (cut, z)}, near={"a": (np.zeros(W.n_edges, bool), z)}, shelters=gs)
+    for o in (0, 10, 2, 21, 3, 23):
+        s, leg = rt._nearest_safe_shelter(W, _off(o), sh, cut, (wet, tf))
+        r = rt.client_route(g, "a", *_off(o), penalty=1.0)
+        assert (r["shelter"], r["minutes"]) == (s["id"], leg["minutes"]), o
+    # tap 3: sB (node 12, 433 m) is the straight-line nearest but 11-12 is cut; the fastest is sA (node 1), 11 min
+    r = rt.client_route(g, "a", *_off(3), penalty=1.0)
+    assert (r["shelter"], r["minutes"]) == ("sA", 11)
+    # tap 23: sE (300.2 m) and sD (312 m) both take 312 s; the tie goes to the lower id, as in the pipeline
+    assert rt.client_route(g, "a", *_off(23), penalty=1.0)["shelter"] == "sD"

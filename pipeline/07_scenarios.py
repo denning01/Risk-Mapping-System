@@ -545,7 +545,7 @@ def cmd_write(args) -> int:
                   "schema (write them under $RMS_DATA)", file=sys.stderr)
             return 1
         ripple_dir.mkdir(parents=True, exist_ok=True)
-    graph_cuts = {}
+    graph_cuts, graph_near, g_shel = {}, {}, None
     print(f"write {args.area}: depth from {depth_dir} -> {scen_dir}  (source={args.source})")
     print(f"{'scenario':<12}{'feat':>5}{'low/med/high cells':>22}{'px km2':>9}{'poly km2':>9}{'drawn km2':>10}"
           f"{'safe/shel':>10}{'geojson KiB':>12}")
@@ -701,6 +701,16 @@ def cmd_write(args) -> int:
                 raise SystemExit(f"{key}: walk flood mask differs from the risk-class mask")
             cut_w, cut_d = W.cut(wet, tf), D.cut(wet_drive, tf)
             graph_cuts[key] = (cut_w, cut_d)
+            if graph_out is not None:
+                # E-16: near-flood edges (rule in 06 NEAR_FLOOD_M) and which OSM shelters a client may route to
+                graph_near[key] = (rt.near_flood(W, wet, tf, cut_w), rt.near_flood(D, wet, tf, cut_d))
+                if g_shel is None:
+                    g_shel = rt.graph_shelters(W, osm_shelters)
+                safe = {x["id"]: x["safe"] for x in shelters}
+                live_w = W.live(cut_w)
+                for gs in g_shel:
+                    if rt.shelter_usable(W, gs, safe[gs["id"]], live_w, (wet, tf)):
+                        gs["usable"] |= 1 << scenario_keys().index(key)
             reloc = ({"wet": wet, "wet_tf": tf, "hand": hand, "hand_tf": hand_tf, "built": built, "slope_pct": slope_pct}
                      if hand is not None else None)
             routes, extra, checks = rt.build_routes(args.area, area_meta, origins, shelters, W, D, cut_w, cut_d,
@@ -762,7 +772,7 @@ def cmd_write(args) -> int:
             "scenarios": route_checks}, indent=1, ensure_ascii=False))
         print(f"route checks -> {cp}")
     if graph_out is not None:
-        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts)
+        g = rt.export_graph(args.area, scenario_keys(), W, D, graph_cuts, near=graph_near, shelters=g_shel)
         raw = json.dumps(g, separators=(",", ":"))
         graph_out.parent.mkdir(parents=True, exist_ok=True)
         graph_out.write_text(raw)
