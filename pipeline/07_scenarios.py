@@ -23,6 +23,7 @@ Risk classes (contract): depth < 0.3 m = low, 0.3 <= depth <= 1.0 m = medium, de
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -81,6 +82,25 @@ def classify_risk(depth: np.ndarray) -> np.ndarray:
     return out
 
 
+# E-11 (operator 2026-11-07): depth BANDS for click-anywhere depth. Edges follow the contract's risk thresholds
+# exactly (low < 0.3, medium 0.3..1.0 inclusive, high > 1.0), so every band lies inside one risk class.
+DEPTH_BANDS = ("0-0.1", "0.1-0.3", "0.3-0.5", "0.5-1.0", "1.0-2.0", ">2.0")
+
+
+def classify_band(depth: np.ndarray) -> np.ndarray:
+    """uint8: 0 dry; 1 (0, 0.1), 2 [0.1, 0.3), 3 [0.3, 0.5), 4 [0.5, 1.0], 5 (1.0, 2.0], 6 > 2.0 m."""
+    d = np.where(np.isfinite(depth), depth, 0.0)
+    out = np.zeros(d.shape, dtype=np.uint8)
+    wet = d > 0
+    out[wet & (d < 0.1)] = 1
+    out[wet & (d >= 0.1) & (d < LOW_MAX_M)] = 2
+    out[wet & (d >= LOW_MAX_M) & (d < 0.5)] = 3
+    out[wet & (d >= 0.5) & (d <= MED_MAX_M)] = 4
+    out[wet & (d > MED_MAX_M) & (d <= 2.0)] = 5
+    out[wet & (d > 2.0)] = 6
+    return out
+
+
 def _round_coords(obj, dp=COORD_DP):
     if isinstance(obj, (list, tuple)):
         if obj and isinstance(obj[0], (int, float)):
@@ -89,9 +109,21 @@ def _round_coords(obj, dp=COORD_DP):
     return obj
 
 
+def _polygonal(geom):
+    """The polygonal part of a geometry as one (Multi)Polygon, or None if nothing polygonal (or empty) is left."""
+    if geom is None or geom.is_empty:
+        return None
+    polys = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type in ("Polygon", "MultiPolygon") and not g.is_empty]
+    if not polys:
+        return None
+    out = unary_union(polys)
+    return None if out.is_empty else out
+
+
 def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None = None,
                    arrival_bin_h: float = 1.0, simplify_m: float = 15.0) -> tuple[list[dict], dict]:
-    """Polygonise a depth raster into contract features, one per (risk, arrival bin).
+    """Polygonise a depth raster into contract features, one per (depth band, arrival bin) (E-11; each band lies in
+    one risk class, and depth_m is the band's mean depth).
 
     Returns (features, stats). stats: flooded_cells, pixel_area_m2, flooded_area_m2,
     polygon_area_m2 (dissolved, before simplification, in the raster CRS), written_area_m2 (after simplification,
@@ -101,14 +133,17 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     if not crs.is_projected or crs.axis_info[0].unit_name not in ("metre", "meter"):
         raise ValueError(f"depth raster must be in a projected CRS in metres, got {crs.to_string()}")
     risk = classify_risk(depth)
+    band = classify_band(depth)
     flooded = risk > 0
+    if not np.array_equal(flooded, band > 0):
+        raise AssertionError("band and risk masks differ")
     if arrival is not None:
         abin = np.where(np.isfinite(arrival), np.round(arrival / arrival_bin_h), -1).astype(np.int64)
     else:
         abin = np.full(depth.shape, -1, dtype=np.int64)
     abin = np.where(abin < -1, -1, abin)  # negative hours make no sense; treat as unknown
-    # one integer label per (risk, arrival bin) among flooded cells; 0 = dry
-    keys = np.stack([risk[flooded].astype(np.int64), abin[flooded]], axis=1)
+    # one integer label per (depth band, arrival bin) among flooded cells; 0 = dry
+    keys = np.stack([band[flooded].astype(np.int64), abin[flooded]], axis=1)
     label = np.zeros(depth.shape, dtype=np.int32)
     uniq = np.empty((0, 2), dtype=np.int64)
     if keys.size:
@@ -120,32 +155,66 @@ def flood_features(depth: np.ndarray, transform, crs, arrival: np.ndarray | None
     for geom, val in shapes(label, mask=flooded, transform=transform, connectivity=4):
         parts.setdefault(int(val), []).append(shape(geom))
 
-    feats, poly_area, written_area = [], 0.0, 0.0
-    for i, (r, b) in enumerate(uniq, start=1):
+    items, poly_area, written_area = [], 0.0, 0.0
+    for i, (bd, b) in enumerate(uniq, start=1):
         geom = unary_union(parts[i])
         poly_area += geom.area
         sel = label == i
+        rs = np.unique(risk[sel])
+        if len(rs) != 1:
+            raise AssertionError(f"band {DEPTH_BANDS[bd - 1]} spans risk classes {rs.tolist()}")
         if simplify_m > 0:
             geom = geom.simplify(simplify_m, preserve_topology=True)
         written_area += geom.area
         geom = shapely.make_valid(reproject(geom, crs, "EPSG:4326"))
         geom = shapely.set_precision(geom, 10 ** -COORD_DP)
-        polys = [g for g in getattr(geom, "geoms", [geom]) if g.geom_type in ("Polygon", "MultiPolygon")]
-        geom = unary_union(polys) if polys else None
-        if geom is None or geom.is_empty:
-            continue  # sliver collapsed by simplification/precision; its cells still count in area
+        items.append({"band": int(bd), "abin": int(b), "risk": int(rs[0]), "sel": sel, "geom": _polygonal(geom)})
+    # F17.1 (operator ruling: deeper band wins). Bands are simplified one by one, so neighbours overlap. Node ALL band
+    # outlines together on the output's 1e-5 deg grid, polygonize that one arrangement into faces (faces of one
+    # arrangement share edges exactly), and give each face to the DEEPEST band whose drawn geometry contains it. No two
+    # features then overlap, and a click finds at most one depth (the larger one). Slivers between bands (faces no band
+    # contains) stay: a known limit, measured in the round.
+    live = [it for it in items if it["geom"] is not None]
+    if len(live) > 1:
+        grid = 10 ** -COORD_DP
+        lines = shapely.union_all([shapely.boundary(it["geom"]) for it in live], grid_size=grid)
+        faces = np.array(list(shapely.get_parts(shapely.polygonize(shapely.get_parts(lines)))), dtype=object)
+        pts = shapely.point_on_surface(faces)
+        owner = np.full(len(faces), -1)
+        for k in sorted(range(len(live)), key=lambda k: (live[k]["band"], -live[k]["abin"])):   # deepest assigned last
+            shapely.prepare(live[k]["geom"])
+            owner[shapely.contains(live[k]["geom"], pts)] = k
+        for k, it in enumerate(live):
+            mine = faces[owner == k]
+            it["geom"] = _polygonal(shapely.coverage_union_all(mine)) if len(mine) else None
+    feats = []
+    for it in items:
+        geom = it["geom"]
+        if geom is None:
+            continue  # sliver collapsed by simplification/precision/a deeper band; its cells still count in area
+        # drop vertices that lie exactly on a straight edge (left by noding): same shape, same area, no new overlap;
+        # it keeps nyando 250_elnino under the 5 MiB line (5.10 -> 4.72 MiB)
+        geom = shapely.simplify(geom, 0.0, preserve_topology=True)
         gj = mapping(geom)
         feats.append({
             "type": "Feature",
             "geometry": {"type": gj["type"], "coordinates": _round_coords(gj["coordinates"])},
             "properties": {
-                "risk": RISK_NAMES[int(r)],
-                "depth_m": round(float(np.nanmean(depth[sel])), 2),
-                "arrival_h": None if b < 0 else round(float(b * arrival_bin_h), 2),
+                "risk": RISK_NAMES[it["risk"]],
+                "depth_m": round(float(np.nanmean(depth[it["sel"]])), 2),
+                "arrival_h": None if it["abin"] < 0 else round(float(it["abin"] * arrival_bin_h), 2),
             },
         })
+    # F17.3: the property F17.1 exists for, checked on what is WRITTEN (rounded output coordinates): no two features
+    # may share any area. Cheap: at most a few features per file.
+    written = [shape(f["geometry"]) for f in feats]
+    for (i, gi), (j, gj) in itertools.combinations(enumerate(written), 2):
+        if shapely.intersects(gi, gj):
+            ov = shapely.area(shapely.intersection(gi, gj))
+            if ov > 0:
+                raise AssertionError(f"flood features {i} and {j} overlap by {ov:.3e} deg2 as written")
     order = {"low": 0, "medium": 1, "high": 2}
-    feats.sort(key=lambda f: (order[f["properties"]["risk"]], f["properties"]["arrival_h"] or -1))
+    feats.sort(key=lambda f: order[f["properties"]["risk"]])   # stable: keeps (band, arrival bin) order within a risk
     n = int(flooded.sum())
     stats = {"flooded_cells": n, "pixel_area_m2": px_area, "flooded_area_m2": n * px_area,
              "polygon_area_m2": poly_area, "written_area_m2": written_area,

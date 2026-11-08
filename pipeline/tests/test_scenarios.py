@@ -55,6 +55,80 @@ def test_three_classes_known_area():
     assert 34.9 < lon < 35.2 and -0.3 < lat < -0.1
 
 
+def test_classify_band_edges_follow_the_risk_thresholds():
+    """E-11: band edges are exactly the contract thresholds plus 0.1/0.5/2.0; 0.3 opens medium, 1.0 closes it."""
+    d = np.array([np.nan, 0.0, 0.05, 0.1, 0.2999, 0.3, 0.4999, 0.5, 1.0, 1.0001, 2.0, 2.0001, 7], dtype="float32")
+    assert scen.classify_band(d).tolist() == [0, 0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6]
+    bands, risks = scen.classify_band(d), scen.classify_risk(d)
+    for b in range(1, 7):                                   # every band lies inside ONE risk class
+        assert len(set(risks[bands == b].tolist())) == 1
+    assert scen.DEPTH_BANDS == ("0-0.1", "0.1-0.3", "0.3-0.5", "0.5-1.0", "1.0-2.0", ">2.0")
+
+
+def test_flood_features_one_feature_per_band_with_band_mean_depth():
+    """E-11: six separate 2-cell blocks, one per band (means 0.05 / 0.15 / 0.36 / 0.75 / 1.5 / 3.0); the boundary values
+    0.1, 0.3, 0.5 and 1.0 open or close their bands as the contract says. Features: one per band, risk from the thresholds, depth_m = that band's mean, ordered
+    low -> high and shallow -> deep, areas = the band's cells; risk totals equal the 3-class cell counts."""
+    d = np.full((12, 12), np.nan, dtype="float32")
+    d[0, 0:2] = (0.04, 0.06)                 # band 1 (0, 0.1): mean 0.05
+    d[2, 0:2] = (0.1, 0.2)                   # band 2 [0.1, 0.3): 0.1 opens it, mean 0.15
+    d[4, 0:2] = (0.3, 0.42)                  # band 3 [0.3, 0.5): 0.3 is medium, mean 0.36
+    d[6, 0:2] = (0.5, 1.0)                   # band 4 [0.5, 1.0]: 1.0 is medium, mean 0.75
+    d[8, 0:2] = (1.2, 1.8)                   # band 5 (1.0, 2.0]: mean 1.5
+    d[10, 0:2] = (2.5, 3.5)                  # band 6 > 2.0: mean 3.0
+    feats, st = scen.flood_features(d, TF, CRS, simplify_m=0)
+    props = [(f["properties"]["risk"], f["properties"]["depth_m"]) for f in feats]
+    assert props == [("low", 0.05), ("low", 0.15), ("medium", 0.36), ("medium", 0.75), ("high", 1.5), ("high", 3.0)]
+    for f in feats:                          # 2 cells = 1,800 m2; 5-dp coordinates (~1.1 m) on a 180 m perimeter
+        assert scen.reproject(shape(f["geometry"]), "EPSG:4326", CRS).area == pytest.approx(2 * 900, abs=250)
+    assert st["cells_by_risk"] == {"low": 4, "medium": 4, "high": 4}
+    assert st["polygon_area_m2"] == pytest.approx(12 * 900) == st["flooded_area_m2"]
+
+
+def test_bands_never_overlap_and_the_deeper_band_wins():
+    """F17.1 (operator ruling): a staircase of deep cells inside a shallow block, simplified at 40 m, makes the two
+    separately simplified bands overlap. As written: no two features share any area, and the DEEP feature keeps its
+    whole simplified geometry (deeper wins), so the shallow one lost exactly the overlap."""
+    import itertools
+    import shapely
+    from rasterio.features import shapes
+    from shapely.ops import unary_union
+    d = np.full((14, 14), 0.05, dtype="float32")
+    for r in range(2, 12):
+        d[r, 2:2 + (r - 1)] = 0.6
+    feats, _ = scen.flood_features(d, TF, CRS, simplify_m=40)
+    g = [shape(f["geometry"]) for f in feats]
+    assert [f["properties"]["risk"] for f in feats] == ["low", "medium"]
+    assert all(a.intersection(b).area == 0.0 for a, b in itertools.combinations(g, 2))
+    deep = unary_union([shape(p) for p, v in shapes((d == np.float32(0.6)).astype(np.uint8), transform=TF) if v == 1])
+    deep = shapely.set_precision(shapely.make_valid(scen.reproject(deep.simplify(40, preserve_topology=True), CRS, "EPSG:4326")),
+                                 1e-5)
+    shallow = unary_union([shape(p) for p, v in shapes((d == np.float32(0.05)).astype(np.uint8), transform=TF) if v == 1])
+    shallow = shapely.set_precision(shapely.make_valid(scen.reproject(shallow.simplify(40, preserve_topology=True), CRS, "EPSG:4326")),
+                                    1e-5)
+    assert shallow.intersection(deep).area > 0                       # the fixture really overlaps when simplified alone
+    # deep keeps what it drew and the shallow band loses the overlap, up to the 1e-5 deg (~1.1 m) output grid: noding on
+    # the grid moves shared edges by under one grid step (here ~50 m2 on a 160 x 280 m shape)
+    assert g[1].area == pytest.approx(deep.area, rel=5e-3)
+    assert g[0].area == pytest.approx(shallow.difference(deep).area, rel=5e-3)
+    assert shallow.intersection(deep).area > 0.05 * deep.area        # and the overlap moved is far larger than that
+
+
+def test_bands_never_overlap_on_an_irregular_field_off_the_output_grid():
+    """F17.3: a smooth random depth field (fixed seed, -0.3..2.7 m, 80 x 80 cells) gives all six bands with irregular
+    borders that lie OFF the 1e-5 deg output grid after reprojection. As written, no two features share any area (the
+    writer also raises if they do). Noding the outlines without grid_size (the J2 regression) puts overlap back here."""
+    import itertools
+    from scipy.ndimage import gaussian_filter
+    rng = np.random.default_rng(1)
+    d = gaussian_filter(rng.random((80, 80)), 3).astype("float32")
+    d = (d - d.min()) / (d.max() - d.min()) * 3.0 - 0.3
+    feats, _ = scen.flood_features(d, TF, CRS, simplify_m=18)
+    assert len(feats) == 6
+    g = [shape(f["geometry"]) for f in feats]
+    assert all(a.intersection(b).area == 0.0 for a, b in itertools.combinations(g, 2))
+
+
 def test_arrival_bins_split_a_class():
     d = grid()
     arr = np.full(d.shape, np.nan, dtype="float32")

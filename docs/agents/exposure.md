@@ -167,3 +167,19 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   under-count. My second method reused the same cache, so it agreed with the bug; the auditor read the raw PBF. Make
   toy grids non-square (rows != cols) so a transposed lookup fails, feed names unsorted, and use a "mock" source so a
   hard-coded "model" fails.
+- 2026-11-07 (E-11) Splitting a layer into more polygons keeps the AREAS (cells, and drawn area to 0.04 %) but not the
+  SHAPES: each band is simplified on its own, so shared borders move (symmetric difference up to 5.3 % of a class,
+  internal overlap 0.34-1.17 % vs 0.10-0.75 % before). Prove areas three ways (raster cells, pre-simplification
+  polygons = cells, drawn polygons vs the old files) and report the shape change too. Bands must be cut ON the
+  contract thresholds, with the same open/closed ends, or a band straddles two risk classes: assert it in the code.
+- 2026-11-07 (F17.1) Removing overlap by difference on a fixed-precision grid is NOT exact: snap-rounding bends the
+  other polygon's edges, so sub-metre slivers still overlap (54 m2 on a toy case). Exact: node ALL outlines together
+  in one arrangement (union_all of boundaries, grid_size), polygonize to faces, give each face to one owner; faces of
+  one arrangement share edges exactly (199 pairs, overlap 0.0). Noding adds collinear vertices (+8 %): simplify(g, 0)
+  drops only exactly-collinear points (same area, no new overlap) and kept the file under the 5 MiB line.
+  coverage_simplify needs an edge-MATCHED coverage (merged band polygons are not one) and is area-based (tol^2): on
+  a 30 m staircase it removes nothing below ~21 m and whole corners above, so it cannot match a DP size.
+- 2026-11-07 (F17.3) A property a fix exists for must be guarded where it can break: the zero-overlap rule held on a
+  toy staircase even with noding OFF the output grid, because the toy's edges were simple. Assert the property on the
+  WRITTEN output inside the writer (raise), and give the test an irregular field (seeded smooth noise) whose borders
+  fall off the grid; then inject the likely regression and see red.
