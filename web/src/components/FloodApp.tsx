@@ -505,6 +505,7 @@ export default function FloodApp() {
             route={tripRoute ?? route}
             altRoutes={tripAlts}
             destPoint={tripDest ? { lon: tripDest.lon, lat: tripDest.lat, label: tripDest.name } : null}
+            scenarioKey={scenarioKey}
             showArrival={showArrival && hasArrival}
             maxArrival={maxArrival}
             reportMode={reportMode}

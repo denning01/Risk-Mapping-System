@@ -7,6 +7,7 @@ import type { FeatureCollection } from "geojson";
 import type { Area, Origin, Route, Scenario, Shelter } from "@/lib/types";
 import { arrivalSentence } from "@/lib/arrival";
 import { THREE_D_NOTE, TERRAIN_X, WATER_X } from "@/lib/threeD";
+import { HEX_RES, hexFeatures, hexLines, type HexRow } from "@/lib/hex";
 import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
 
 const VECTOR_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -91,7 +92,11 @@ export const ARRIVAL_COLORS = ["#7c3aed", "#2563eb", "#06b6d4", "#a5f3fc"];
 const FLOOD_LAYERS = ["flood-fill", "flood-arrival"] as const;
 /** Layers that answer a click with a popup. A tap on a shelter is only a query; a tap on the flood also starts a
  * route from there (M-14), which then reports "no safe route" (the start point is wet). */
-const INTERACTIVE_LAYERS = [...FLOOD_LAYERS, "shelters"];
+const INTERACTIVE_LAYERS = [...FLOOD_LAYERS, "shelters", "hex-fill"];
+/** M-19: layers whose order e2e checks (the hexagons must stay under the routes and shelters) */
+const ORDER_LAYERS = ["flood-fill", "hex-fill", "route-alt", "route-safe", "shelters", "reports"];
+export const HEX_NOTE = `Hexagons (H3 resolution ${HEX_RES}, about 0.12 km² each): colour = deepest water in the hexagon. Tap one for people, buildings and walking time.`;
+const esc = (t: string) => t.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const EMPTY: FeatureCollection = { type: "FeatureCollection", features: [] };
 
@@ -122,6 +127,8 @@ interface Props {
   altRoutes?: [number, number][][];
   /** M-16: the trip's destination */
   destPoint?: { lon: number; lat: number; label: string } | null;
+  /** M-19: "area/rain_enso" of the scenario on screen, to fetch its .h3.json */
+  scenarioKey?: string | null;
 }
 
 /** What is drawn on the map now, exposed as data-* attributes so e2e can check it (the canvas is opaque to the DOM). */
@@ -146,6 +153,9 @@ interface Drawn {
   pitch: number;
   /** M-17: the 3D layers present: "flood-3d" and the building extrusion layer's id */
   layers3d: string;
+  /** M-19: hexagons in the hex source, and the drawing order of ORDER_LAYERS (bottom first) */
+  hexes: number;
+  layerOrder: string;
 }
 
 export default function FloodMap(props: Props) {
@@ -172,6 +182,10 @@ export default function FloodMap(props: Props) {
   /** M-17: 2D is the default */
   const [threeD, setThreeD] = useState(false);
   const threeDRef = useRef(false);
+  /** M-19: the hexagon layer (off by default) and the rows last drawn, for a redraw after a basemap switch */
+  const [showHex, setShowHex] = useState(false);
+  const hexDataRef = useRef<FeatureCollection>(EMPTY);
+  const [hexNote, setHexNote] = useState<string | null>(null);
 
   useEffect(() => {
     propsRef.current = props;
@@ -277,6 +291,7 @@ export default function FloodMap(props: Props) {
       drawRoute(map, propsRef.current.route);
       drawAlts(map, propsRef.current.altRoutes);
       drawReports(map, propsRef.current.reports);
+      setData(map, "hex", hexDataRef.current);
       setStyleReady((n) => n + 1);
     });
     // what is drawn, read back from the map once it is idle (all sources loaded, frame rendered)
@@ -287,7 +302,8 @@ export default function FloodMap(props: Props) {
       if (!src || !id) return;
       const read = (sid: string) =>
         (map.getSource(sid) as GeoJSONSource | undefined)?.getData().then((x) => x as FeatureCollection) ?? Promise.resolve(EMPTY);
-      void Promise.all([src.getData(), read("shelters"), read("route-safe"), read("route-alt")]).then(([d, sh, rt, alt]) => {
+      const order = (map.getStyle()?.layers ?? []).map((l) => l.id).filter((l) => ORDER_LAYERS.includes(l)).join(",");
+      void Promise.all([src.getData(), read("shelters"), read("route-safe"), read("route-alt"), read("hex")]).then(([d, sh, rt, alt, hx]) => {
         const shelters = (sh.features ?? []) as { properties: { type?: string } | null }[];
         const line = rt.features?.[0]?.geometry;
         const terrain = map.getTerrain();
@@ -305,6 +321,8 @@ export default function FloodMap(props: Props) {
           elevation: el === null ? null : Math.round(el / ex),
           pitch: Math.round(map.getPitch()),
           layers3d: ["flood-3d", BUILDINGS_LAYER, "building-3d"].filter((l) => map.getLayer(l)).join(","),
+          hexes: map.getLayoutProperty("hex-fill", "visibility") === "visible" ? (hx.features?.length ?? 0) : 0,
+          layerOrder: order,
         };
         setDrawn((cur) => (cur && JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
       });
@@ -326,6 +344,24 @@ export default function FloodMap(props: Props) {
     };
     // both fill layers share the popup: only one of them is visible at a time
     for (const layer of FLOOD_LAYERS) map.on("click", layer, floodPopup);
+    // M-19: a hexagon's popup (the flood fill is hidden while hexagons show, so only one popup opens)
+    map.on("click", "hex-fill", (e) => {
+      if (propsRef.current.reportMode) return;
+      const f = e.features?.[0];
+      if (!f) return;
+      const h3 = (f.properties as { h3: string }).h3;
+      const row = (hexDataRef.current.features.find((x) => (x.properties as HexRow).h3 === h3)?.properties ?? null) as HexRow | null;
+      if (!row) return;
+      const names = new Map((propsRef.current.scenario?.shelters ?? []).map((s) => [s.id, s.name]));
+      new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+        .setLngLat(e.lngLat)
+        .setHTML(
+          `<div data-hex-popup="${esc(h3)}" style="font:13px system-ui">${hexLines(row, names)
+            .map((l, i) => (i === 0 ? `<b>${esc(l)}</b>` : `<div>${esc(l)}</div>`))
+            .join("")}<i style="color:#666">Scenario estimate, not a forecast</i></div>`,
+        )
+        .addTo(map);
+    });
     map.on("click", "shelters", (e) => {
       if (propsRef.current.reportMode) return;
       const f = e.features?.[0];
@@ -437,8 +473,10 @@ export default function FloodMap(props: Props) {
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !styleReady || !map.getLayer("flood-arrival")) return;
-    map.setLayoutProperty("flood-arrival", "visibility", props.showArrival ? "visible" : "none");
-    map.setLayoutProperty("flood-fill", "visibility", props.showArrival ? "none" : "visible");
+    // M-19: while the hexagons show, they replace both flood fills
+    map.setLayoutProperty("flood-arrival", "visibility", props.showArrival && !showHex ? "visible" : "none");
+    map.setLayoutProperty("flood-fill", "visibility", props.showArrival || showHex ? "none" : "visible");
+    for (const l of ["hex-fill", "hex-line"]) map.setLayoutProperty(l, "visibility", showHex ? "visible" : "none");
     // M-17: the 3D water is coloured by risk; it steps aside while the arrival colours are shown
     if (map.getLayer("flood-3d")) map.setLayoutProperty("flood-3d", "visibility", props.showArrival ? "none" : "visible");
     const m = Math.max(props.maxArrival, 1);
@@ -451,7 +489,41 @@ export default function FloodMap(props: Props) {
       (2 * m) / 3, ARRIVAL_COLORS[2],
       m, ARRIVAL_COLORS[3],
     ]);
-  }, [props.showArrival, props.maxArrival, styleReady]);
+  }, [props.showArrival, props.maxArrival, styleReady, showHex]);
+
+  // --- M-19: the scenario's hexagons, fetched when the layer is on ---
+  const hexKey = showHex ? (props.scenarioKey ?? null) : null;
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    if (!hexKey) {
+      hexDataRef.current = EMPTY;
+      setData(map, "hex", EMPTY);
+      return;
+    }
+    let alive = true;
+    const [area, key] = hexKey.split("/");
+    fetch(`/data/${area}/scenarios/${key}.h3.json`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<HexRow[]>;
+      })
+      .then((rows) => {
+        if (!alive) return;
+        hexDataRef.current = hexFeatures(rows);
+        setData(map, "hex", hexDataRef.current);
+        setHexNote(null);
+      })
+      .catch((e: Error) => {
+        if (!alive) return;
+        hexDataRef.current = EMPTY;
+        setData(map, "hex", EMPTY);
+        setHexNote(`Hexagon layer unavailable for this scenario (${e.message})`);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [hexKey, styleReady]);
 
   // --- user reports (mock) ---
   useEffect(() => {
@@ -530,6 +602,9 @@ export default function FloodMap(props: Props) {
         data-elevation={drawn?.elevation ?? undefined}
         data-pitch={drawn?.pitch}
         data-layers-3d={drawn?.layers3d}
+        data-hex={showHex ? "on" : "off"}
+        data-hexes={drawn?.hexes}
+        data-layer-order={drawn?.layerOrder}
       />
       {!mapError && (
         <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
@@ -552,6 +627,19 @@ export default function FloodMap(props: Props) {
           >
             3D
           </button>
+          <button
+            onClick={() => setShowHex((v) => !v)}
+            aria-pressed={showHex}
+            title="Show the flood as H3 hexagons: tap one for people, buildings and walking time"
+            className={`ml-0.5 rounded-md border-l border-zinc-200 px-2 py-0.5 text-[11px] font-semibold ${showHex ? "bg-zinc-900 text-white" : "text-zinc-700"}`}
+          >
+            Hexagons
+          </button>
+        </div>
+      )}
+      {showHex && !mapError && (
+        <div data-hex-note className={`absolute left-12 ${threeD ? "top-16" : "top-9"} max-w-[280px] rounded bg-white/95 px-2 py-0.5 text-[11px] font-medium text-zinc-700 shadow`}>
+          {hexNote ?? HEX_NOTE}
         </div>
       )}
       {threeD && !mapError && (
@@ -671,7 +759,7 @@ function apply3D(map: MLMap, on: boolean, showArrival: boolean) {
 }
 
 function addLayers(map: MLMap) {
-  for (const id of ["flood", "shelters", "route-baseline", "route-alt", "route-safe", "reports"]) {
+  for (const id of ["flood", "hex", "shelters", "route-baseline", "route-alt", "route-safe", "reports"]) {
     if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: EMPTY });
   }
   map.addLayer({
@@ -702,6 +790,24 @@ function addLayers(map: MLMap) {
       "fill-opacity": 0.6,
       "fill-antialias": false,
     },
+  });
+  // M-19: hexagons above the flood fills, below every route, shelter and report
+  map.addLayer({
+    id: "hex-fill",
+    type: "fill",
+    source: "hex",
+    layout: { visibility: "none" },
+    paint: {
+      "fill-color": ["match", ["get", "risk"], "high", RISK_COLORS.high, "medium", RISK_COLORS.medium, RISK_COLORS.low],
+      "fill-opacity": 0.6,
+    },
+  });
+  map.addLayer({
+    id: "hex-line",
+    type: "line",
+    source: "hex",
+    layout: { visibility: "none" },
+    paint: { "line-color": "#ffffff", "line-width": 0.6, "line-opacity": 0.8 },
   });
   map.addLayer({
     id: "route-baseline",

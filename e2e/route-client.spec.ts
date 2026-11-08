@@ -22,6 +22,9 @@ type Oracle = {
   cost_s?: number;
   snap_m?: [number, number];
 };
+/** The M-14 oracle and the published to_shelter routes were made on the v2 targets, which v3 keeps as kind "shelter"
+ * (exposure ROUND 20 check A: v3 OSM targets == v2). With v3 in, those comparisons run on that kind. */
+const SHELTERS: ReadonlySet<string> = new Set(["shelter"]);
 const ORACLE: Oracle[] = JSON.parse(readFileSync(join(__dirname, "fixtures", "route-oracle.json"), "utf8"));
 const REFUSAL: Record<string, string> = {
   "nearest road/path node is cut off by the flood": "cut_off",
@@ -58,10 +61,13 @@ test("the binary heap pops in (cost, kind, shelter id, node) order", () => {
 });
 
 for (const area of areas()) {
-  test(`${area.id}: graph.json is v2 for this area with every scenario`, () => {
+  test(`${area.id}: graph.json is v3 for this area with every scenario; every target has a kind (M-19: v3 copied in)`, () => {
     const g = graph(area.id).g;
     expect(g.area).toBe(area.id);
-    expect(g.version).toBe(2);
+    expect(g.version).toBe(3);
+    const kinds = g.shelters.map((t) => (t as { kind?: string }).kind);
+    expect(kinds.every((k) => k === "shelter" || k === "relocation")).toBe(true);
+    expect(kinds.filter((k) => k === "relocation").length).toBe(area.id === "nyando" ? 6 : 0);
     expect(g.client_targets).toBe("all_usable");
     expect([...g.scenarios].sort()).toEqual(RAINS.flatMap((r) => ENSOS.map((e) => `${r}_${e}`)).sort());
   });
@@ -73,7 +79,7 @@ for (const area of areas()) {
     let routed = 0;
     let refused = 0;
     for (const o of rows) {
-      const r = clientRoute(P, o.key, o.lon, o.lat);
+      const r = clientRoute(P, o.key, o.lon, o.lat, undefined, SHELTERS);
       const where = `${o.key} ${o.tap} (${o.lon}, ${o.lat})`;
       if (o.error) {
         expect(r.ok, where).toBe(false);
@@ -112,7 +118,7 @@ test("the JS client reproduces every published to_shelter route from its preset 
         );
         for (const row of routes.filter((x) => x.kind === "to_shelter")) {
           const o = origins.find((x) => x.id === row.origin_id)!;
-          const r = clientRoute(P, key, o.lon, o.lat);
+          const r = clientRoute(P, key, o.lon, o.lat, undefined, SHELTERS);
           const where = `${area.id} ${key} ${o.id}`;
           expect(r.ok, where).toBe(true);
           if (!r.ok) continue;
@@ -130,7 +136,7 @@ test("every edge of a client path is open in its scenario, and consecutive edges
   for (const o of ORACLE.filter((x) => !x.error)) {
     const P = graph(o.area);
     const ki = P.g.scenarios.indexOf(o.key);
-    const r = clientRoute(P, o.key, o.lon, o.lat);
+    const r = clientRoute(P, o.key, o.lon, o.lat, undefined, SHELTERS);
     if (!r.ok) throw new Error("oracle routed, client did not");
     const E = P.g.walk.edges;
     for (let k = 0; k < r.edges.length; k++) {
@@ -154,7 +160,7 @@ test("the drawn line follows each edge in the direction travelled (drawn length 
     const P = graph(o.area);
     expect(P.g.walk_kph).toBe(3.6);
     const proj = utmProjector(P.g.utm_epsg);
-    const r = clientRoute(P, o.key, o.lon, o.lat);
+    const r = clientRoute(P, o.key, o.lon, o.lat, undefined, SHELTERS);
     if (!r.ok) throw new Error("oracle routed, client did not");
     let at = 1; // coords[1] = the start node
     for (const i of r.edges) {

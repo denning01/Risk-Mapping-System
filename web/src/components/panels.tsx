@@ -75,14 +75,14 @@ export function Legend({ arrival, maxArrival }: { arrival: boolean; maxArrival: 
     <div className="pointer-events-auto rounded-lg bg-white/95 p-1.5 text-[10px] shadow-md sm:p-2 sm:text-[11px]">
       {arrival ? (
         <>
-          <div className="mb-1 font-semibold text-zinc-700">Water could arrive in as little as</div>
+          <div className="mb-1 font-semibold text-zinc-700">Typical arrival time (sooner in places)</div>
           <div className="h-2 w-32 rounded" style={{ background: "linear-gradient(90deg,#7c3aed,#2563eb,#06b6d4,#a5f3fc)" }} />
           <div className="flex w-32 justify-between text-zinc-500" data-arrival-legend>
             <span>{arrivalTick(0)}</span>
             <span>{arrivalTick(maxArrival / 2)}</span>
             <span>{arrivalTick(maxArrival)}</span>
           </div>
-          <div className="text-zinc-400">screening estimate</div>
+          <div className="text-zinc-400" data-arrival-caveat>screening estimate</div>
         </>
       ) : (
         <>
