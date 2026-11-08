@@ -258,6 +258,73 @@ for (const area of areas()) {
   });
 }
 
+// F15.7: the boundary itself. A dry tap 500-560 m from the nearest walk node gets "far"; one 440-490 m away is routed.
+// A behaviour change that keeps the note's "500 m" text (e.g. the rule acting at 700 m) fails here.
+/** Dry points of the bbox (241x241 grid) whose distance to the nearest walk node is in [lo, hi], nearest the box
+ * centre first (least panning). */
+function bandPoints(area: string, key: string, lo: number, hi: number, P = graph(area)): [number, number][] {
+  const a = areas().find((x) => x.id === area)! as Area & { bbox: [number, number, number, number] };
+  const [w, so, e, n] = a.bbox;
+  const cx = (w + e) / 2, cy = (so + n) / 2;
+  const flood = readJson<FloodCollection>(`${area}/scenarios/${key}.geojson`);
+  const out: { p: [number, number]; c: number }[] = [];
+  for (let i = 0; i <= 240; i++)
+    for (let j = 0; j <= 240; j++) {
+      const lon = Math.round((w + ((e - w) * i) / 240) * 1e6) / 1e6;
+      const lat = Math.round((so + ((n - so) * j) / 240) * 1e6) / 1e6;
+      const d = snapStart(P, lon, lat).m;
+      if (d >= lo && d <= hi && !riskAt(flood, lon, lat)) out.push({ p: [lon, lat], c: Math.hypot(lon - cx, lat - cy) });
+    }
+  return out.sort((x, y) => x.c - y.c).map((x) => x.p);
+}
+for (const area of areas()) {
+  test(`${area.id}: the 500 m boundary: 500-560 m from a path -> far; 440-490 m -> routed (F15.7)`, async ({ page, baseURL }) => {
+    const v3 = RURAL.has(area.id);
+    test.skip(v3 && !existsSync(V3_PATH[area.id]), `v3 export not on this machine (${RMS_DATA})`);
+    const errors = await watch(page, baseURL!);
+    await mockOpenMeteo(page);
+    await page.route(
+      (u) => u.host.endsWith("tile.openstreetmap.org"),
+      (r) => r.fulfill({ status: 200, contentType: "image/png", headers: { "access-control-allow-origin": "*" }, body: PNG_1X1 }),
+    );
+    if (v3) await page.route(`**/data/${area.id}/graph.json`, (r) => r.fulfill({ status: 200, contentType: "application/json", body: readFileSync(V3_PATH[area.id]) }));
+    await openScenario(page, area, 50, "normal");
+    const P = v3 ? prepareGraph(checkGraph(JSON.parse(readFileSync(V3_PATH[area.id], "utf8")))) : graph(area.id);
+    if (v3) graphs.set(area.id, P);
+    const c = card(page, safeCardTitle(area));
+    const map = page.locator(".maplibregl-map");
+    try {
+      // tap candidates in the band until the point the app RECEIVED is in the band too (a click lands within ~2 px)
+      const tapBand = async (lo: number, hi: number, want: (e: ReturnType<typeof expected>) => boolean) => {
+        for (const [lon, lat] of bandPoints(area.id, "50_normal", lo, hi, P).slice(0, 12)) {
+          if (!(await panTo(page, lon, lat))) continue;
+          const got = await tapAt(page, lon, lat);
+          if (!got) continue;
+          const d = snapStart(P, got[0], got[1]).m;
+          const e = expected(area.id, 50, "normal", got[0], got[1], P);
+          if (d >= lo && d <= hi && want(e)) return { d, e };
+        }
+        return null;
+      };
+      const outside = await tapBand(500.5, 560, () => true);
+      expect(outside, "a tap received 500-560 m from the nearest walk node").not.toBeNull();
+      expect(outside!.e, `received ${outside!.d.toFixed(1)} m from a path`).toEqual({ ok: false, reason: "far" });
+      await expectRouteCard(page, area, outside!.e, "Tapped point");
+      await expect(map).toHaveAttribute("data-route-points", "0");
+      const inside = await tapBand(440, 490, (e) => e.ok);
+      expect(inside, "a routable tap received 440-490 m from the nearest walk node").not.toBeNull();
+      const r = inside!.e;
+      if (!r.ok) throw new Error("expected a route");
+      await expectRouteCard(page, area, r, "Tapped point");
+      await expect(c).not.toContainText("more than 500 m");
+      await expect(map).toHaveAttribute("data-route-points", String(r.coords.length));
+    } finally {
+      graphs.delete(area.id);
+    }
+    expect(errors, errors.join("\n")).toEqual([]);
+  });
+}
+
 // F15.3 + RULING R20 in the app: Nyando with the real graph.json v3 -> a free tap is routed, with TWO answers (nearest
 // safe shelter = the default drawn route; nearest high ground one click away).
 test("nyando with graph.json v3: a free tap shows the nearest safe shelter (drawn) AND the nearest high ground (F15.3, R20)", async ({ page, baseURL }) => {

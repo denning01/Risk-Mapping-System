@@ -138,3 +138,6 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   looked like a hang; the same body with a plain assert took 6 s. Aggregate inside a loop and assert once per item.
   Also: `Math.hypot` in a 55k-node nearest-node loop plus destructuring swaps in the heap cost ~20x together (not
   measured apart); compare squared distances, swap with a temporary.
+- 2026-11-08 (F15.7): an injection script that rebuilds per fault leaves `.next` built with its LAST fault after it
+  restores the source. The next `E2E_SKIP_BUILD=1` run then tests the faulty app: here a route through flooded paths
+  (171 min against 576) looked like a test bug. Rebuild after every injection script (`node e2e/run.mjs` without the skip).
