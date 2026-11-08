@@ -214,3 +214,9 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   equivalent, not caught.
 - 2026-11-08 (R21 ruling) WATCH: the e2e "loads" test once saw an empty safe-places panel (nyando 200_elnino, new
   data; then it passed 6/6). If it recurs in any gate run, raise it as a finding with the trace. Do not just rerun it.
+- 2026-11-08 (R22) Two process rules:
+  - Every REMEDIATION block ends with its own "COMMIT: <sha>" line. The gate binds a round only to a COMMIT: line,
+    never to a sha in a header.
+  - Before a landing round, run `git merge-tree --write-tree data HEAD` and gate the MERGED tree. My
+    tests/test_arrival.py collided (add/add) with model's test file of the same name. Name test files after the
+    script they test (test_arrival_exposure.py for 07/11 E-20).
