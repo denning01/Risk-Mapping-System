@@ -277,3 +277,16 @@ def test_relocation_only_hex_is_reachable_with_no_no_route_class():
     assert (x["walk_min"], x["shelter_id"]) == (None, None)
     assert (x["relocation_walk_min"], x["relocation_id"]) == (5, "hg")
     assert x["shelter_reachable"] is True and x["no_route"] is None
+
+
+def test_hex_band_comes_from_the_unrounded_minimum():
+    """F21.1: earliest wet cell 0.996 h -> displayed arrival_h_min 1.0 (2 dp) but band "<1" (under one hour), never
+    "1-3" (the unsafe side). A 6.004 h hex displays 6.0 and is ">6"."""
+    wet = np.ones((1, 4), bool)
+    fast = np.array([[0.996, 1.5, 6.004, 7.0]])
+    inv = np.array([0, 0, 1, 1])
+    rows = [{"h3": "a", "people_medium": 0}, {"h3": "b", "people_medium": 0}]
+    hm.add_arrival_fields(rows, np.array([1, 2]), inv, wet, (fast, fast * 2.44), np.zeros(0, np.int64), None,
+                          np.zeros(0, np.int64), np.zeros(0, np.int64))
+    assert (rows[0]["arrival_h_min"], rows[0]["arrival_band_min"]) == (1.0, "<1")
+    assert (rows[1]["arrival_h_min"], rows[1]["arrival_band_min"]) == (6.0, ">6")

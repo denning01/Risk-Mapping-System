@@ -161,16 +161,19 @@ def add_arrival_fields(rows, hx, inv, wet, arrival, bh, ppl_medium, br, bc) -> N
     remainder WITHIN the hex (so they sum to people_medium)."""
     sc = _mod("sc07", "07_scenarios.py")
     fast, slow = arrival
+    raw = {}
     for name, grid in (("arrival_h_min", fast), ("arrival_h_min_slow", slow)):
         v = grid[wet]
         m = np.full(len(hx), np.inf)
         ok = np.isfinite(v)
         np.minimum.at(m, inv[ok], v[ok])
+        raw[name] = m
         for x, mm in zip(rows, m):
             x[name] = round(float(mm), 2) if np.isfinite(mm) else None
-    for x in rows:
-        h = x["arrival_h_min"]
-        x["arrival_band_min"] = None if h is None else sc.ARRIVAL_BAND_NAMES[int(sc.classify_arrival_band(np.array([h]))[0])]
+    # F21.1: the band comes from the UNROUNDED earliest hours (0.996 h is "<1", though it displays as 1.0)
+    bands = sc.classify_arrival_band(np.where(np.isfinite(raw["arrival_h_min"]), raw["arrival_h_min"], np.nan))
+    for x, b in zip(rows, bands):
+        x["arrival_band_min"] = None if b < 0 else sc.ARRIVAL_BAND_NAMES[int(b)]
     if ppl_medium is None:
         return
     bb = sc.classify_arrival_band(fast[br, bc])
