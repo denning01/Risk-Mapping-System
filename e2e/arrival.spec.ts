@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 import { arrivalSentence, arrivalTick } from "../web/src/lib/arrival";
 import type { FloodCollection } from "../web/src/lib/types";
 import { areas, openScenario, readJson, watch } from "./helpers";
-import { clickAt, wetPoints } from "./map-helpers";
+import { clickAt, settledView, wetPoints } from "./map-helpers";
 
 test("the wording: minutes under 1 h, '~X h' above, never '0 h', never NaN", () => {
   expect(arrivalSentence(0)).toBe("Water could arrive within minutes (local rain or nearby stream)");
@@ -25,14 +25,16 @@ test("the wording: minutes under 1 h, '~X h' above, never '0 h', never NaN", () 
 
 for (const area of areas()) {
   test(`${area.id}: popup and legend use the arrival wording (minutes / ~X h), no "0 h"`, async ({ page, baseURL }) => {
+    test.slow(); // two page loads and up to two popups per area
     const errors = await watch(page, baseURL!);
     await page.route("https://api.open-meteo.com/**", (r) => r.fulfill({ status: 503, body: "" }));
     const flood = readJson<FloodCollection>(`${area.id}/scenarios/250_elnino.geojson`);
     // 1. at the opening view, which features have points that stay inside them 3 px around (safe to click)?
     await openScenario(page, area, 250, "elnino");
     const clickable: { k: number; pts: [number, number][] }[] = [];
+    const { zoom } = await settledView(page);
     for (let k = 0; k < flood.features.length; k++) {
-      const pts = await wetPoints(page, { ...flood, features: [flood.features[k]] });
+      const pts = await wetPoints(page, { ...flood, features: [flood.features[k]] }, zoom);
       if (pts.length) clickable.push({ k, pts });
     }
     expect(clickable.length, "features with clickable interior points").toBeGreaterThanOrEqual(2);

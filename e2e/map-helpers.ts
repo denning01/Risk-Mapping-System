@@ -63,9 +63,9 @@ export async function tapAt(page: Page, lon: number, lat: number): Promise<[numb
 
 /** Up to 40 interior points of flood polygons that stay wet 3 px around at the current zoom (a click lands within a
  * pixel or two); every polygon of every feature, largest rings first. */
-export async function wetPoints(page: Page, flood: FloodCollection): Promise<[number, number][]> {
-  const v = await settledView(page);
-  const d = (3 * 360) / (512 * 2 ** v.zoom);
+export async function wetPoints(page: Page, flood: FloodCollection, zoom?: number): Promise<[number, number][]> {
+  const z = zoom ?? (await settledView(page)).zoom; // pass the zoom when calling in a loop: settling takes >= 0.8 s
+  const d = (3 * 360) / (512 * 2 ** z);
   const wetAround = (lon: number, lat: number) =>
     [[0, 0], [d, 0], [-d, 0], [0, d], [0, -d]].every(([dx, dy]) => riskAt(flood, lon + dx, lat + dy));
   const wet: [number, number][] = [];
