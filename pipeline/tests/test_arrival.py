@@ -132,3 +132,13 @@ def test_main_refuses_to_write_from_a_dirty_tree(monkeypatch):
     monkeypatch.setattr(ar.config, "load", no_data)
     with pytest.raises(SystemExit, match="REFUSED"):
         ar.main("nyando", write_out=True)
+
+
+def test_fast_divisor_is_the_largest_ratio_over_every_area_and_both_methods_and_never_below_one():
+    row = lambda name, k, s: {"name": name, "ratio_velocity_to_kirpich": k, "ratio_velocity_to_scs_lag": s}  # noqa: E731
+    reps = [{"area": "a", "second_method": {"rows": [row("r1", 1.4, 0.8), row("r2", 2.3, 1.1)]}},
+            {"area": "b", "second_method": {"rows": [row("r3", 2.44, 1.5), row("r4", 1.9, 2.0)]}}]
+    F, at = ar.fast_divisor(reps)
+    assert F == 2.44 and at == {"area": "b", "river": "r3", "ratio": "ratio_velocity_to_kirpich"}
+    slow_only = [{"area": "a", "second_method": {"rows": [row("r", 0.7, 0.9)]}}]
+    assert ar.fast_divisor(slow_only)[0] == 1.0      # a faster velocity method never makes the "fast" bound slower

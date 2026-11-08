@@ -380,10 +380,35 @@ def main(area: str, write_out: bool) -> int:
     return 0
 
 
-def handoff_md(area: str, cfg: dict, grid: dict, rep: dict, tif: Path) -> Path:
+def handoff_md(area: str, cfg: dict, grid: dict, rep: dict, tif: Path, fast_tif: Path | None = None) -> Path:
     """rms-audit/handoffs/arrival-<area>.md: what exposure (E-20) needs to read arrival_h.tif."""
     import hashlib
     sha = hashlib.sha256(tif.read_bytes()).hexdigest()
+    fast = rep.get("fast")
+    if fast and fast_tif is not None:
+        fsha = hashlib.sha256(fast_tif.read_bytes()).hexdigest()
+        fw = "\n".join(f"| {k} | {v['cells']:,} | {v['p10']} | {v['p50']} | {v['p90']} | {v['max']} |"
+                        for k, v in fast["aoi_arrival_h_fast_on_flooded_cells"].items())
+        fast_txt = f"""
+## The RANGE and the headline (RULING M-20, product safety)
+
+Overstating warning time is the dangerous error, and the velocity method above is 1.1 to 2.4 times SLOWER than
+Kirpich / SCS lag on the named sub-catchments. Arrival is therefore a RANGE per cell:
+
+- **`arrival_h_fast.tif`, the FAST bound = the app HEADLINE** ("water could arrive in as little as X h"):
+  arrival_h / F, F = **{fast['divisor']}** = the largest velocity / second-method ratio over every sub-catchment of
+  {', '.join(fast['areas'])} ({fast['from']['ratio'].replace('ratio_velocity_to_', 'vs ')}, {fast['from']['river']},
+  {fast['from']['area']}). {fast_tif.stat().st_size:,} B, sha256 `{fsha}`. Same grid, units and NaN as arrival_h.tif.
+- **`arrival_h.tif`, the velocity-method value** = the slow end of the range.
+
+Fast bound on flooded cells (AOI):
+
+| scenario | cells | p10 h | p50 h | p90 h | max h |
+|---|---|---|---|---|---|
+{fw}
+"""
+    else:
+        fast_txt = ""
     c, a, s2 = rep["choices"], rep["aoi"], rep["sanity"]
     wet = "\n".join(f"| {k} | {v['cells']:,} | {v['p10']} | {v['p50']} | {v['p90']} | {v['max']} |"
                      for k, v in a["arrival_h_on_flooded_cells"].items())
@@ -429,6 +454,7 @@ Second method on named sub-catchments (5-49 km²; outlet = the cell nearest a na
 |---|---|---|---|---|---|---|---|---|
 {sub}
 
+{fast_txt}
 **Known limits:**
 - No sheet-flow segment.
 - One n and two radii for every channel.
@@ -460,9 +486,50 @@ def png(path, arrival, aoi, name, outs, shape):
     plt.close(fig)
 
 
+def fast_divisor(reports: list[dict]) -> tuple[float, dict]:
+    """RULING M-20 (operator, product safety): F = the LARGEST ratio velocity Tc / second-method Tc (Kirpich or SCS lag)
+    over every sub-catchment of every area. arrival_h_fast = arrival_h / F. Never below 1 (never slower than arrival_h)."""
+    best, at = 1.0, {}
+    for r in reports:
+        for row in r["second_method"]["rows"]:
+            for k in ("ratio_velocity_to_kirpich", "ratio_velocity_to_scs_lag"):
+                if row[k] > best:
+                    best, at = row[k], {"area": r["area"], "river": row["name"], "ratio": k}
+    return best, at
+
+
+def write_fast(areas: list[str]) -> int:
+    """After every area's main run: arrival_h_fast.tif per area (= arrival_h / F, F from ALL areas), the rule recorded in
+    arrival.json, and the hand-off notes re-written with both files."""
+    prov = provenance()
+    if prov.get("dirty") or not prov.get("git_commit"):
+        sys.exit(f"REFUSED: a dirty or untraceable run ({prov}) does not write arrival_h_fast.tif")
+    reps = {a: json.loads((model_dir(a) / "arrival.json").read_text()) for a in areas}
+    F, at = fast_divisor(list(reps.values()))
+    for a, rep in reps.items():
+        import rasterio
+        m = model_dir(a)
+        with rasterio.open(m / "arrival_h.tif") as d:
+            arr = d.read(1)
+            src_tags = d.tags()
+        assert src_tags["git_commit"] == prov["git_commit"], f"{a}: arrival_h.tif is from {src_tags['git_commit']}, not {prov['git_commit']}"
+        fast = (arr / F).astype("float32")
+        tags = {**src_tags, "producer": "pipeline/10_arrival.py fast", "git_commit": prov["git_commit"], "dirty": prov["dirty"],
+                "meaning": f"FAST bound: arrival_h / {F} (largest velocity/second-method ratio, {at}); NaN as arrival_h"}
+        write(m / "arrival_h_fast.tif", fast, grid_of(m / "arrival_h.tif"), tags=tags)
+        rep["fast"] = {"divisor": F, "from": at, "areas": areas,
+                       "rule": "arrival_h_fast = arrival_h / F; the app headline is the FAST bound ('water could arrive in as little as X h')",
+                       "aoi_arrival_h_fast_on_flooded_cells": {k: {q: (round(v[q] / F, 2) if q != "cells" else v[q]) for q in v}
+                                                               for k, v in rep["aoi"]["arrival_h_on_flooded_cells"].items()}}
+        (m / "arrival.json").write_text(json.dumps(rep, indent=2))
+        handoff_md(a, config.load(a), grid_of(m / "arrival_h.tif"), rep, m / "arrival_h.tif", m / "arrival_h_fast.tif")
+        print(a, "F", F, at)
+    return 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("area", choices=config.areas())
+    ap.add_argument("area", choices=[*config.areas(), "fast"])
     ap.add_argument("--no-write", action="store_true")
     a = ap.parse_args()
-    raise SystemExit(main(a.area, not a.no_write))
+    raise SystemExit(write_fast(config.areas()) if a.area == "fast" else main(a.area, not a.no_write))
