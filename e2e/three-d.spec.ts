@@ -86,6 +86,13 @@ for (const area of areas()) {
       await expect(map).toHaveAttribute("data-pitch", "60", SLOW);
       await expect(map).toHaveAttribute("data-elevation", "1600", SLOW); // the flat 1600 m tile, decoded, exaggeration divided out
       await expect(map).toHaveAttribute("data-layers-3d", "flood-3d,buildings-3d");
+      // F20.1: the factors the note states, read back from the map: water = depth_m x WATER_X, buildings = render_height x 1
+      expect(JSON.parse((await map.getAttribute("data-paint-3d"))!)).toEqual({
+        water: ["*", ["coalesce", ["get", "depth_m"], 0], WATER_X],
+        buildingsLayer: "buildings-3d",
+        buildings: ["coalesce", ["get", "render_height"], 0],
+        buildingsBase: ["coalesce", ["get", "render_min_height"], 0],
+      });
       await expect(map).toHaveAttribute("data-overlays", /flood-fill/);
       await expect(map).toHaveAttribute("data-flood-features", String(flood.features.length));
       await expect(page.locator("[data-3d-note]")).toHaveText(THREE_D_NOTE);
@@ -104,6 +111,7 @@ for (const area of areas()) {
     await expect(map).toHaveAttribute("data-terrain", "off", SLOW);
     await expect(map).toHaveAttribute("data-pitch", "0", SLOW);
     await expect(map).toHaveAttribute("data-layers-3d", "");
+    expect(JSON.parse((await map.getAttribute("data-paint-3d"))!)).toEqual({ water: null, buildingsLayer: null, buildings: null, buildingsBase: null });
     await expect(map).not.toHaveAttribute("data-elevation");
     await expect(page.locator("[data-3d-note]")).toHaveCount(0);
     await expect(map).toHaveAttribute("data-flood-features", String(flood.features.length));

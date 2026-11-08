@@ -153,6 +153,8 @@ interface Drawn {
   pitch: number;
   /** M-17: the 3D layers present: "flood-3d" and the building extrusion layer's id */
   layers3d: string;
+  /** F20.1: the 3D layers' height expressions as the map holds them (JSON), so the stated factors are checkable */
+  paint3d: string;
   /** M-19: hexagons in the hex source, and the drawing order of ORDER_LAYERS (bottom first) */
   hexes: number;
   layerOrder: string;
@@ -321,6 +323,7 @@ export default function FloodMap(props: Props) {
           elevation: el === null ? null : Math.round(el / ex),
           pitch: Math.round(map.getPitch()),
           layers3d: ["flood-3d", BUILDINGS_LAYER, "building-3d"].filter((l) => map.getLayer(l)).join(","),
+          paint3d: JSON.stringify(paint3d(map)),
           hexes: map.getLayoutProperty("hex-fill", "visibility") === "visible" ? (hx.features?.length ?? 0) : 0,
           layerOrder: order,
         };
@@ -602,6 +605,7 @@ export default function FloodMap(props: Props) {
         data-elevation={drawn?.elevation ?? undefined}
         data-pitch={drawn?.pitch}
         data-layers-3d={drawn?.layers3d}
+        data-paint-3d={drawn?.paint3d}
         data-hex={showHex ? "on" : "off"}
         data-hexes={drawn?.hexes}
         data-layer-order={drawn?.layerOrder}
@@ -703,6 +707,18 @@ function drawReports(map: MLMap, reports: Report[]) {
     type: "FeatureCollection",
     features: reports.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { id: r.id } })),
   });
+}
+
+/** F20.1: the water and building extrusion heights as the map holds them (null where the layer is absent). */
+function paint3d(map: MLMap) {
+  const get = (l: string, prop: "fill-extrusion-height" | "fill-extrusion-base") => (map.getLayer(l) ? (map.getPaintProperty(l, prop) ?? null) : null);
+  const b = map.getLayer(BUILDINGS_LAYER) ? BUILDINGS_LAYER : map.getLayer("building-3d") ? "building-3d" : null;
+  return {
+    water: get("flood-3d", "fill-extrusion-height"),
+    buildingsLayer: b,
+    buildings: b ? get(b, "fill-extrusion-height") : null,
+    buildingsBase: b ? get(b, "fill-extrusion-base") : null,
+  };
 }
 
 /** M-17: add or remove the terrain and the 3D layers. Idempotent; called on toggle and after every style load. */
