@@ -4,8 +4,9 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { RAIN_VALUES } from "@/lib/schema";
 import { loadAreas, loadCrops, loadForecast, loadMeta, loadOrigins, loadPopulation, loadScenario, preloadArea } from "@/lib/data";
-import { riskNear } from "@/lib/geo";
-import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Scenario } from "@/lib/types";
+import { riskAt, riskNear } from "@/lib/geo";
+import { clientRoute, loadGraph, snapStart, type RouteResult } from "@/lib/routing";
+import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Route, Scenario } from "@/lib/types";
 import {
   AdvisoryPanel,
   AlertPreview,
@@ -35,6 +36,21 @@ const USER_TYPE_LABELS: Record<string, string> = {
 };
 
 type PanelKey = "safe" | "roads" | "advisory";
+
+/** M-14: a start point from a map tap or the device's location. */
+type TapPoint = { lon: number; lat: number; source: "tap" | "gps" };
+/** M-14: the outcome for one (area, scenario, point); "wet" = the point is inside the scenario's flood extent;
+ * "far" = no mapped road or path within MAX_TAP_SNAP_M; "graph" = graph.json could not be loaded. */
+type TapOutcome = { at: string; result: RouteResult | { ok: false; reason: "wet" | "far" | "graph" } };
+/** CHOICE (M-14): a tap more than this far from the nearest walk node gets no route (the straight snap leg would be
+ * unchecked for water over a long distance). Same bound as the shelters' max_dest_snap_m in graph.json. */
+const MAX_TAP_SNAP_M = 500;
+const NO_ROUTE_WHY: Record<string, string> = {
+  wet: "This starting point is inside the flood extent in this scenario, so no route leaves it on dry ground.",
+  cut_off: "The nearest path to this point is flooded in this scenario, so no route leaves it on dry ground.",
+  unreachable: "No safe place can be reached on dry paths from this point in this scenario.",
+  no_usable_shelter: "No safe place can be reached on dry paths from this point in this scenario.",
+};
 const EMPHASIS: Record<string, PanelKey> = {
   commuter: "safe",
   informal_settlement_resident: "safe",
@@ -67,6 +83,12 @@ export default function FloodApp() {
   const [reportMode, setReportMode] = useState(false);
   const [reports, setReports] = useState<Report[]>([]);
   const [features, setFeatures] = useState({ ai: false, sms: false });
+  // M-14: route from a tapped / located point
+  const [tap, setTap] = useState<TapPoint | null>(null);
+  const [tapOutcome, setTapOutcome] = useState<TapOutcome | null>(null);
+  const [locateNote, setLocateNote] = useState<string | null>(null);
+  /** which area/scenario `scenario` holds (it keeps the previous one while the next loads) */
+  const [scenarioKey, setScenarioKey] = useState<string | null>(null);
   const preloaded = useRef(new Set<AreaId>());
 
   const area = areas.find((a) => a.id === areaId) ?? null;
@@ -106,6 +128,7 @@ export default function FloodApp() {
       .then((s) => {
         if (!alive) return;
         setScenario(s);
+        setScenarioKey(`${areaId}/${rain}_${enso}`);
         setError(null);
         // Warm the other 19 scenarios only once the visible one has arrived, so
         // 80 preload requests never queue ahead of it on a weak connection.
@@ -139,6 +162,8 @@ export default function FloodApp() {
     (id: AreaId) => {
       setAreaId(id);
       setOriginId(null);
+      setTap(null);
+      setLocateNote(null);
       setReports([]);
       const a = areas.find((x) => x.id === id);
       if (a) setUserType(a.user_types[0]);
@@ -148,7 +173,10 @@ export default function FloodApp() {
 
   const pickOrigin = useCallback(
     (id: string) => {
+      if (id === "tap") return; // the tapped point's own entry in the list
       setOriginId(id);
+      setTap(null);
+      setLocateNote(null);
       setSheetOpen(true);
       const o = origins.find((x) => x.id === id);
       if (o) setUserType(o.user_type);
@@ -159,11 +187,103 @@ export default function FloodApp() {
   const pickUserType = (t: string) => {
     setUserType(t);
     const o = origins.find((x) => x.user_type === t);
-    if (o) setOriginId(o.id);
+    if (o) {
+      setOriginId(o.id);
+      setTap(null);
+    }
   };
 
-  const origin = origins.find((o) => o.id === originId) ?? null;
-  const route = useMemo(() => scenario?.routes.find((r) => r.origin_id === originId) ?? null, [scenario, originId]);
+  // --- M-14: route from a tapped / located point, in the browser, on graph.json for the scenario on screen ---
+  const tapAt = tap && scenarioKey?.startsWith(`${areaId}/`) ? `${scenarioKey}@${tap.lon},${tap.lat}` : null;
+  useEffect(() => {
+    if (!tap || !tapAt || !scenario) return;
+    let alive = true;
+    const key = tapAt.split("/")[1].split("@")[0];
+    loadGraph(areaId)
+      .then((P) => {
+        let result: TapOutcome["result"];
+        if (riskAt(scenario.flood, tap.lon, tap.lat)) result = { ok: false, reason: "wet" };
+        else if (snapStart(P, tap.lon, tap.lat).m > MAX_TAP_SNAP_M) result = { ok: false, reason: "far" };
+        else result = clientRoute(P, key, tap.lon, tap.lat);
+        if (alive) setTapOutcome({ at: tapAt, result });
+      })
+      .catch((e: Error) => {
+        console.warn("[route]", e.message);
+        if (alive) setTapOutcome({ at: tapAt, result: { ok: false, reason: "graph" } });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [tap, tapAt, scenario, areaId]);
+  const tapResult = tapOutcome && tapOutcome.at === tapAt ? tapOutcome.result : null;
+  const tapOrigin = useMemo<Origin | null>(
+    () => (tap ? { id: "tap", name: tap.source === "gps" ? "My location" : "Tapped point", lon: tap.lon, lat: tap.lat, user_type: userType } : null),
+    [tap, userType],
+  );
+  const tapPoint = useMemo(() => (tapOrigin ? { lon: tapOrigin.lon, lat: tapOrigin.lat, label: tapOrigin.name } : null), [tapOrigin]);
+  const tapRoute = useMemo<Route | null>(() => {
+    if (!tapResult?.ok) return null;
+    return {
+      origin_id: "tap",
+      kind: "to_shelter",
+      shelter_id: tapResult.shelter.id,
+      destination_name: tapResult.shelter.name,
+      baseline: null,
+      safe: { geometry: { type: "LineString", coordinates: tapResult.coords }, minutes: tapResult.minutes },
+      avoided: [],
+    };
+  }, [tapResult]);
+  const tapPanel = tap
+    ? {
+        pending: !tapResult,
+        noRouteWhy: tapResult && !tapResult.ok ? (NO_ROUTE_WHY[tapResult.reason] ?? null) : null,
+        note:
+          tapResult && !tapResult.ok && tapResult.reason === "far"
+            ? `This point is more than ${MAX_TAP_SNAP_M} m from any mapped road or path. Tap closer to one.`
+            : tapResult && !tapResult.ok && tapResult.reason === "graph"
+              ? "The road network could not be loaded, so routes from a tapped point are unavailable. The preset starting points still work."
+              : null,
+      }
+    : null;
+
+  const onTap = useCallback((lon: number, lat: number) => {
+    setTap({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, source: "tap" });
+    setOriginId(null);
+    setLocateNote(null);
+    setSheetOpen(true);
+  }, []);
+  const locate = useCallback(() => {
+    if (!area) return;
+    if (!("geolocation" in navigator)) {
+      setLocateNote("This browser cannot share its location. Tap the map instead.");
+      return;
+    }
+    setLocateNote("Finding your location…");
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { longitude: lon, latitude: lat } = pos.coords;
+        const [w, s, e, n] = area.bbox;
+        if (lon < w || lon > e || lat < s || lat > n) {
+          setLocateNote(`Your location (${lat.toFixed(4)}, ${lon.toFixed(4)}) is outside ${area.name}. Tap the map instead.`);
+          return;
+        }
+        setLocateNote(null);
+        setOriginId(null);
+        setTap({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, source: "gps" });
+      },
+      (err) =>
+        setLocateNote(
+          err.code === err.PERMISSION_DENIED
+            ? "Location permission denied. Tap the map to choose a starting point instead."
+            : "Your location is unavailable right now. Tap the map instead.",
+        ),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+    );
+  }, [area]);
+
+  const origin = tapOrigin ?? origins.find((o) => o.id === originId) ?? null;
+  const publishedRoute = useMemo(() => scenario?.routes.find((r) => r.origin_id === originId) ?? null, [scenario, originId]);
+  const route = tap ? tapRoute : publishedRoute;
   const riskHere = useMemo(
     () => (scenario && origin ? riskNear(scenario.flood, origin.lon, origin.lat, area?.type === "urban" ? 0.004 : 0.015) : null),
     [scenario, origin, area],
@@ -196,12 +316,15 @@ export default function FloodApp() {
       <SafePlacesPanel
         key="safe"
         area={area}
-        origins={origins}
-        selectedOrigin={originId}
+        origins={tapOrigin ? [tapOrigin, ...origins] : origins}
+        selectedOrigin={tap ? "tap" : originId}
         onOrigin={pickOrigin}
         route={route}
         shelters={scenario.shelters}
         highlight={emphasis === "safe"}
+        tap={tapPanel}
+        onLocate={locate}
+        locateNote={locateNote}
       />
     ),
     roads: <RoadsPanel key="roads" exposure={scenario?.exposure ?? null} highlight={emphasis === "roads"} />,
@@ -260,6 +383,8 @@ export default function FloodApp() {
             reportMode={reportMode}
             reports={reports}
             onPickOrigin={pickOrigin}
+            tapPoint={tapPoint}
+            onTap={onTap}
             onReport={(lon, lat) => {
               setReports((r) => [...r, { id: `${Date.now()}`, lon, lat }]);
               setReportMode(false);

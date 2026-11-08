@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { Area, CropRule, Enso, Exposure, Forecast, Meta, Origin, Population, Rain, Risk, Route, Scenario, Shelter } from "@/lib/types";
-import { RISK_COLORS } from "@/lib/types";
+import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
 import { RAIN_VALUES } from "@/lib/schema";
 import { alertText, adviceFallback, type Lang } from "@/lib/alertTemplates";
 import { AnimatedNumber, Badge, Card, RiskBadge, Skeleton } from "./ui";
@@ -207,8 +207,19 @@ export function SafePlacesPanel(props: {
   route: Route | null;
   shelters: Shelter[];
   highlight?: boolean;
+  /** M-14: route from a tapped / located point */
+  tap?: {
+    /** the route is still being computed (the road graph loading) */
+    pending: boolean;
+    /** why there is no route: shown in the 1199 card instead of the preset text */
+    noRouteWhy: string | null;
+    /** a problem that is not a flood refusal (graph unavailable, too far from any path): no 1199 card */
+    note: string | null;
+  } | null;
+  onLocate?: () => void;
+  locateNote?: string | null;
 }) {
-  const { route } = props;
+  const { route, tap } = props;
   const shelter = route?.shelter_id ? props.shelters.find((s) => s.id === route.shelter_id) : undefined;
   const isRural = props.area.type === "rural";
   const extra = route?.baseline ? route.safe.minutes - route.baseline.minutes : 0;
@@ -237,8 +248,19 @@ export function SafePlacesPanel(props: {
           </option>
         ))}
       </select>
+      {props.onLocate && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+          <button onClick={props.onLocate} className="rounded-md border border-blue-600 px-2 py-0.5 font-semibold text-blue-700 hover:bg-blue-50">
+            Use my location
+          </button>
+          <span>or tap the map to route from any point.</span>
+        </div>
+      )}
+      {props.locateNote && <p className="mt-1 text-xs text-amber-800">{props.locateNote}</p>}
+      {tap?.pending && <p className="mt-3 text-sm text-zinc-600">Finding the safest route on foot from this point…</p>}
+      {tap?.note && <p className="mt-3 rounded-lg bg-amber-50 p-2 text-sm text-amber-900">{tap.note}</p>}
 
-      {props.selectedOrigin && !route && (
+      {props.selectedOrigin && !route && !tap?.pending && !tap?.note && (
         <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-2 text-sm">
           <div className="font-semibold text-red-800">No safe route on foot.</div>
           <p className="mt-1 text-red-900">
@@ -248,7 +270,9 @@ export function SafePlacesPanel(props: {
             </a>
             .
           </p>
-          <p className="mt-1 text-[11px] text-red-700">This starting point is inside the flood extent in this scenario, so no route leaves it on dry ground.</p>
+          <p className="mt-1 text-[11px] text-red-700">
+            {tap?.noRouteWhy ?? "This starting point is inside the flood extent in this scenario, so no route leaves it on dry ground."}
+          </p>
         </div>
       )}
 
@@ -279,8 +303,15 @@ export function SafePlacesPanel(props: {
               </div>
               <div className="rounded-lg bg-blue-50 p-2">
                 <span className="mr-1 inline-block h-1 w-6 rounded bg-blue-600 align-middle" /> About <b>{route.safe.minutes} min</b> on foot
+                {shelter && route.kind === "to_shelter" ? <span className="text-zinc-500"> · {SHELTER_TYPE_LABELS[shelter.type] ?? shelter.type}</span> : null}
                 {shelter?.capacity ? <span className="text-zinc-500"> · capacity {shelter.capacity}</span> : null}
               </div>
+              {tap && (
+                <p className="text-[11px] text-zinc-500">
+                  Computed in your browser on the mapped roads and paths for this scenario: flooded paths excluded, paths near the flood avoided
+                  where a dry detour costs less than 3× the time. Screening-level, not a forecast.
+                </p>
+              )}
             </>
           )}
           {route.avoided.length > 0 && (

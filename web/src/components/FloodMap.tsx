@@ -66,7 +66,8 @@ export const ARRIVAL_COLORS = ["#7c3aed", "#2563eb", "#06b6d4", "#a5f3fc"];
 
 /** Fill layers drawn from the flood source; exactly one is visible at a time. */
 const FLOOD_LAYERS = ["flood-fill", "flood-arrival"] as const;
-/** Layers that answer a click, so a tap on one never falls through to origin snapping. */
+/** Layers that answer a click with a popup. A tap on a shelter is only a query; a tap on the flood also starts a
+ * route from there (M-14), which then reports "no safe route" (the start point is wet). */
 const INTERACTIVE_LAYERS = [...FLOOD_LAYERS, "shelters"];
 
 const EMPTY: FeatureCollection = { type: "FeatureCollection", features: [] };
@@ -90,6 +91,10 @@ interface Props {
   reports: Report[];
   onPickOrigin: (id: string) => void;
   onReport: (lon: number, lat: number) => void;
+  /** M-14: the start point the user tapped or located (null = a preset origin or none) */
+  tapPoint: { lon: number; lat: number; label: string } | null;
+  /** M-14: a tap on the map, outside a marker or shelter: route from this point */
+  onTap: (lon: number, lat: number) => void;
 }
 
 /** What is drawn on the map now, exposed as data-* attributes so e2e can check it (the canvas is opaque to the DOM). */
@@ -100,6 +105,11 @@ interface Drawn {
   style: string;
   overlays: string;
   floodFeatures: number;
+  /** features in the shelters source, and how many of them are high_ground (Nyando's relocation sites) */
+  shelters: number;
+  highGround: number;
+  /** vertices of the drawn safe route (0 = none) */
+  routePoints: number;
 }
 
 export default function FloodMap(props: Props) {
@@ -117,6 +127,9 @@ export default function FloodMap(props: Props) {
   /** set on the first style.load; after it, the startup fallback is off (F14.2) */
   const firstLoadedRef = useRef(false);
   const [drawn, setDrawn] = useState<Drawn | null>(null);
+  /** M-14 test hook: the camera after each move ("lon,lat,zoom"), so e2e can turn a lon/lat into a pixel to tap */
+  const [view, setView] = useState<string | null>(null);
+  const tapMarkerRef = useRef<maplibregl.Marker | null>(null);
 
   useEffect(() => {
     propsRef.current = props;
@@ -201,13 +214,20 @@ export default function FloodMap(props: Props) {
       const src = map.getSource("flood") as GeoJSONSource | undefined;
       const id = styleIdentity(map);
       if (!src || !id) return;
-      void src.getData().then((d) => {
-        const next = { ...id, overlays, floodFeatures: (d as FeatureCollection).features?.length ?? 0 };
-        setDrawn((cur) =>
-          cur && cur.basemap === next.basemap && cur.style === next.style && cur.overlays === next.overlays && cur.floodFeatures === next.floodFeatures
-            ? cur
-            : next,
-        );
+      const read = (sid: string) =>
+        (map.getSource(sid) as GeoJSONSource | undefined)?.getData().then((x) => x as FeatureCollection) ?? Promise.resolve(EMPTY);
+      void Promise.all([src.getData(), read("shelters"), read("route-safe")]).then(([d, sh, rt]) => {
+        const shelters = (sh.features ?? []) as { properties: { type?: string } | null }[];
+        const line = rt.features?.[0]?.geometry;
+        const next: Drawn = {
+          ...id,
+          overlays,
+          floodFeatures: (d as FeatureCollection).features?.length ?? 0,
+          shelters: shelters.length,
+          highGround: shelters.filter((f) => f.properties?.type === "high_ground").length,
+          routePoints: line?.type === "LineString" ? line.coordinates.length : 0,
+        };
+        setDrawn((cur) => (cur && JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
       });
     });
 
@@ -241,20 +261,18 @@ export default function FloodMap(props: Props) {
         .addTo(map);
     });
     map.on("click", (e) => {
-      const hits = map.queryRenderedFeatures(e.point, { layers: INTERACTIVE_LAYERS.filter((l) => map.getLayer(l)) });
-      const { reportMode, origins, onPickOrigin, onReport } = propsRef.current;
+      const { reportMode, onReport, onTap } = propsRef.current;
       if (reportMode) {
         onReport(e.lngLat.lng, e.lngLat.lat);
         return;
       }
-      if (hits.length) return;
-      // snap to the nearest demo origin
-      let best: { id: string; d: number } | null = null;
-      for (const o of origins) {
-        const d = (o.lon - e.lngLat.lng) ** 2 + (o.lat - e.lngLat.lat) ** 2;
-        if (!best || d < best.d) best = { id: o.id, d };
-      }
-      if (best) onPickOrigin(best.id);
+      // a shelter tap is a query (its popup); anywhere else, the flood included, routes from the tapped point (M-14)
+      if (map.getLayer("shelters") && map.queryRenderedFeatures(e.point, { layers: ["shelters"] }).length) return;
+      onTap(e.lngLat.lng, e.lngLat.lat);
+    });
+    map.on("moveend", () => {
+      const c = map.getCenter();
+      setView(`${c.lng},${c.lat},${map.getZoom()}`);
     });
     for (const layer of INTERACTIVE_LAYERS) {
       map.on("mouseenter", layer, () => (map.getCanvas().style.cursor = "pointer"));
@@ -363,6 +381,20 @@ export default function FloodMap(props: Props) {
     });
   }, [props.origins, props.selectedOrigin]);
 
+  // --- M-14: the tapped / located start point ---
+  const tap = props.tapPoint;
+  useEffect(() => {
+    const map = mapRef.current;
+    tapMarkerRef.current?.remove();
+    tapMarkerRef.current = null;
+    if (!map || !tap) return;
+    const el = document.createElement("div");
+    el.className = "origin-marker active tap-marker";
+    el.innerHTML = `<span class="dot"></span><span class="label"></span>`;
+    el.querySelector(".label")!.textContent = tap.label;
+    tapMarkerRef.current = new maplibregl.Marker({ element: el, anchor: "left", offset: [-9, 0] }).setLngLat([tap.lon, tap.lat]).addTo(map);
+  }, [tap]);
+
   return (
     <div className="absolute inset-0">
       {/* maplibre's CSS forces position:relative on the container, so size it with h-full/w-full */}
@@ -373,6 +405,11 @@ export default function FloodMap(props: Props) {
         data-style={drawn?.style}
         data-overlays={drawn?.overlays}
         data-flood-features={drawn?.floodFeatures}
+        data-shelters={drawn?.shelters}
+        data-high-ground={drawn?.highGround}
+        data-route-points={drawn?.routePoints}
+        data-view={view ?? undefined}
+        data-tap={tap ? `${tap.lon},${tap.lat}` : undefined}
       />
       {!mapError && (
         <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
