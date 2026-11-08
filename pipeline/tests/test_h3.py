@@ -161,3 +161,12 @@ def test_people_integers_use_largest_remainder_not_plain_rounding():
     bbox = [*TO_LL(TF.c, TF.f - 1800), *TO_LL(TF.c + 1800, TF.f)]
     rows = hm.aggregate(depth, hexes, 900.0, (r, c, ok), ppl, dict.fromkeys(("low", "medium", "high"), target), bbox)
     assert sum(x["people_low"] for x in rows) == target
+
+
+def test_rural_area_without_relocation_targets_gets_null_shelter_fields_with_a_reason():
+    """RULING R19 (2): rural + no shelter of kind "relocation" in graph.json -> null with the stated reason; urban, or
+    rural once relocation targets exist (E-19), -> computed."""
+    g = {"shelters": [{"id": "s1"}]}
+    assert hm.shelter_null_reason({"type": "rural"}, g) == "relocation sites not yet in graph"
+    assert hm.shelter_null_reason({"type": "urban"}, g) is None
+    assert hm.shelter_null_reason({"type": "rural"}, {"shelters": [{"id": "r1", "kind": "relocation"}]}) is None

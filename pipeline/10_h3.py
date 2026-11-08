@@ -12,6 +12,8 @@ buildings (operator ruling E-18; exposure is counted only in wet cells, so the t
   people_low/medium/high  exposed people (exposure.json method: building-weighted, mode B, per projection),
                     integers by largest remainder so that the hex sums equal exposure.json exactly
   buildings_flooded Open Buildings footprints whose centroid cell is wet (exposure.json method)
+  shelter_null_reason  only when the shelter fields are null by rule (RULING R19: a rural area until graph.json has
+                    relocation targets -> "relocation sites not yet in graph")
   shelter_reachable / walk_min / shelter_id  the graph.json CLIENT (06 client_route, x3 near penalty): the MINIMUM
                     true walking minutes to the client's chosen usable safe shelter over every walk node INSIDE the hex
                     (a tap on the node); a hex with no walk node uses a tap at its centre. false/null: no route at all
@@ -142,6 +144,17 @@ def aggregate(depth: np.ndarray, hexes: np.ndarray, cell_m2: float, bpos, ppl: n
     return rows
 
 
+NULL_RURAL = "relocation sites not yet in graph"
+
+
+def shelter_null_reason(area_meta: dict, g: dict) -> str | None:
+    """RULING R19 (2): a RURAL area's people are routed to relocation high ground, not only to OSM shelters. Until
+    graph.json carries relocation targets (E-19: shelters with kind "relocation"), its hex shelter fields are null."""
+    if area_meta.get("type") == "rural" and not any(s.get("kind") == "relocation" for s in g.get("shelters", [])):
+        return NULL_RURAL
+    return None
+
+
 def walk_node_hexes(g: dict, res: int) -> dict:
     """{walk node index: H3 string} for every node used by a walk edge of graph.json."""
     import h3
@@ -181,7 +194,8 @@ def main(argv=None) -> int:
     sc, pop, rt = _mod("sc07", "07_scenarios.py"), _mod("pop05", "05_population.py"), _mod("rt06", "06_routing.py")
     import h3
     data = REPO / "web" / "public" / "data"
-    bbox = next(x for x in json.loads((data / "areas.json").read_text()) if x["id"] == a.area)["bbox"]
+    area_meta = next(x for x in json.loads((data / "areas.json").read_text()) if x["id"] == a.area)
+    bbox = area_meta["bbox"]
     pdir = sc.rms_data() / "processed" / a.area / "exposure"
     man = json.loads((pdir / "population_manifest.json").read_text())
     bld = dict(np.load(pdir / "open_buildings_aoi.npz"))
@@ -215,16 +229,22 @@ def main(argv=None) -> int:
         if w2 != exp["population"] or nb != exp["buildings"]:
             raise SystemExit(f"{key}: recomputed exposure {w2} / {nb} != exposure.json {exp['population']} / {exp['buildings']}")
         rows = aggregate(depth, hexes, cell_m2, (r, c, ok), ppl, exp["population"], bbox)
-        field, cache = rt.client_field(g, key), {}
-        best = node_best(g, field, node_hex)
-        for x in rows:
-            q = best.get(x["h3"])
-            if q is None and x["h3"] not in hex_has_node:
-                lat, lon = h3.cell_to_latlng(x["h3"])
-                q = rt.client_from_field(g, field, lon, lat, cache)
-                q = None if "error" in q else (q["minutes"], q["shelter"])
-            x["shelter_reachable"] = q is not None
-            x["walk_min"], x["shelter_id"] = (q if q is not None else (None, None))
+        reason = shelter_null_reason(area_meta, g)
+        if reason:
+            for x in rows:
+                x["shelter_reachable"] = x["walk_min"] = x["shelter_id"] = None
+                x["shelter_null_reason"] = reason
+        else:
+            field, cache = rt.client_field(g, key), {}
+            best = node_best(g, field, node_hex)
+            for x in rows:
+                q = best.get(x["h3"])
+                if q is None and x["h3"] not in hex_has_node:
+                    lat, lon = h3.cell_to_latlng(x["h3"])
+                    q = rt.client_from_field(g, field, lon, lat, cache)
+                    q = None if "error" in q else (q["minutes"], q["shelter"])
+                x["shelter_reachable"] = q is not None
+                x["walk_min"], x["shelter_id"] = (q if q is not None else (None, None))
         # checks (each a SystemExit): hex sums == exposure.json; flooded area by hex == wet cells
         tot = {s: sum(x[f"people_{s}"] for x in rows) for s in ("low", "medium", "high")}
         hb, hm2 = sum(x["buildings_flooded"] for x in rows), sum(x["flooded_m2"] for x in rows)
@@ -239,7 +259,7 @@ def main(argv=None) -> int:
         gz = len(gzip.compress(raw.encode(), 9))
         p = exp["population"]
         print(f"{key:<12}{len(rows):>7,}{wet_m2 / 1e6:>9.3f}{hm2 / 1e6:>9.3f}{exp['buildings']:>7,}{hb:>8,}"
-              f"{f'{p['low']:,}/{p['medium']:,}/{p['high']:,}':>34}{sum(x['shelter_reachable'] for x in rows):>7,}"
+              f"{f'{p['low']:,}/{p['medium']:,}/{p['high']:,}':>34}{('null' if reason else f"{sum(bool(x['shelter_reachable']) for x in rows):,}"):>7}"
               f"{len(raw) / 1024:>7.0f}{gz / 1024:>7.0f}")
     print("CHECKS:", "ALL PASS (people, buildings == exposure.json; flooded area by hex == wet cells)" if not bad
           else f"{bad} scenario(s) FAILED")
