@@ -133,3 +133,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   "caught" or "not caught" without a rebuild means nothing.
 - 2026-11-08 (M-14): a test that passes on its first run is not yet evidence. Inject the fault it is meant to catch. Here a
   backwards-drawn edge (J8) passed every oracle test until a drawn-length check was added.
+- 2026-11-08 (M-16): Playwright's `expect` is costly per call (it captures a location), and a synchronous test body
+  cannot be interrupted by the test timeout. 277k per-edge `expect` calls ran for 10+ minutes with no output and
+  looked like a hang; the same body with a plain assert took 6 s. Aggregate inside a loop and assert once per item.
+  Also: `Math.hypot` in a 55k-node nearest-node loop plus destructuring swaps in the heap cost ~20x together (not
+  measured apart); compare squared distances, swap with a temporary.

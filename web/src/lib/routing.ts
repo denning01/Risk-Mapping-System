@@ -1,5 +1,5 @@
 /**
- * M-14 · "Route from where I am": the E-16 client, run in the browser on web/public/data/<area>/graph.json (v2).
+ * M-14 · "Route from where I am": the E-16 client, run in the browser on web/public/data/<area>/graph.json (v2, or v3 with relocation targets).
  * A line-for-line port of the Python reference client_route() in pipeline/06_routing.py (the oracle):
  *   1. snap the point to the nearest WALK node in UTM metres (lowest node index on a tie); if that node has no
  *      unflooded walk edge -> no route
@@ -32,7 +32,7 @@ interface Net {
 }
 export interface GraphJson {
   area: string;
-  version: number;
+  version: 2 | 3;
   scenarios: string[];
   time_unit: string;
   walk_kph: number;
@@ -64,7 +64,8 @@ export function checkGraph(j: unknown): GraphJson {
     throw new Error(`graph.json: ${m}`);
   };
   if (!g || typeof g !== "object") bad("not an object");
-  if (g.version !== 2) bad(`version ${g.version}, expected 2`);
+  // v2 (E-16): OSM shelters, no kind. v3 (E-19): every target has a kind, "shelter" or "relocation" (F15.3).
+  if (g.version !== 2 && g.version !== 3) bad(`version ${g.version}, expected 2 or 3`);
   if (g.time_unit !== "deciseconds") bad(`time_unit ${g.time_unit}`);
   if (g.client_targets !== "all_usable") bad(`client_targets ${g.client_targets}`);
   if (!Array.isArray(g.scenarios) || g.scenarios.length === 0 || g.scenarios.length > 31) bad("scenarios");
@@ -73,7 +74,10 @@ export function checkGraph(j: unknown): GraphJson {
   const m = w?.flooded?.length;
   if (!Array.isArray(w?.edges) || w.edges.length !== 3 * m || w.near?.length !== m || w.geom?.length !== m) bad("walk arrays differ in length");
   if (!Array.isArray(g.shelters)) bad("shelters");
-  for (const s of g.shelters) if (s.kind !== undefined && s.kind !== "shelter" && s.kind !== "relocation") bad(`target ${s.id} kind ${s.kind}`);
+  for (const s of g.shelters) {
+    if (s.kind !== undefined && s.kind !== "shelter" && s.kind !== "relocation") bad(`target ${s.id} kind ${s.kind}`);
+    if (g.version === 3 && s.kind === undefined) bad(`v3 target ${s.id} has no kind`);
+  }
   if (!(g.walk_kph > 0) || !(g.near_penalty >= 1)) bad("walk_kph / near_penalty");
   const z = g.utm_epsg - (g.utm_epsg >= 32701 ? 32700 : 32600);
   if (!((g.utm_epsg >= 32601 && g.utm_epsg <= 32660) || (g.utm_epsg >= 32701 && g.utm_epsg <= 32760)) || z < 1) bad(`utm_epsg ${g.utm_epsg}`);

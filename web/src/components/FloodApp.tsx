@@ -5,7 +5,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { RAIN_VALUES } from "@/lib/schema";
 import { loadAreas, loadCrops, loadForecast, loadMeta, loadOrigins, loadPopulation, loadScenario, preloadArea } from "@/lib/data";
 import { riskAt, riskNear } from "@/lib/geo";
-import { clientRoute, loadGraph, relocationTargets, snapStart, type RouteResult } from "@/lib/routing";
+import { clientAnswers, loadGraph, relocationTargets, routeBetween, snapStart, type Answer, type RouteOk, type TargetKind, type TripResult } from "@/lib/routing";
+import { floodNextTo } from "@/lib/tripAnalysis";
 import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Route, Scenario } from "@/lib/types";
 import {
   AdvisoryPanel,
@@ -20,6 +21,7 @@ import {
 } from "./panels";
 import { Badge, Card, Modal } from "./ui";
 import { WeatherPanel, type WeatherPoint } from "./weather";
+import { TripPanel, type TripDestOption, type TripView } from "./trip";
 import type { Report } from "./FloodMap";
 
 const FloodMap = dynamic(() => import("./FloodMap"), {
@@ -41,7 +43,16 @@ type PanelKey = "safe" | "roads" | "advisory";
 type TapPoint = { lon: number; lat: number; source: "tap" | "gps" };
 /** M-14: the outcome for one (area, scenario, point); "wet" = the point is inside the scenario's flood extent;
  * "far" = no mapped road or path within MAX_TAP_SNAP_M; "graph" = graph.json could not be loaded. */
-type TapOutcome = { at: string; result: RouteResult | { ok: false; reason: "wet" | "far" | "graph" | "no_relocation" } };
+type TapOutcome = {
+  at: string;
+  /** RULING R20: a free tap gets client_answers() with no user type: "shelter" and, where relocation targets exist, "relocation" */
+  result: { ok: true; answers: Partial<Record<TargetKind, Answer>> } | { ok: false; reason: "wet" | "far" | "graph" | "no_relocation" | Exclude<Answer, { ok: true }>["reason"] };
+};
+/** which answer is drawn after a tap: the kind, and the fastest (primary) or the safer route */
+type TapChoice = { kind: TargetKind; safer: boolean };
+/** M-16: a trip destination; "map" = tapped on the map */
+type TripDest = { id: string; name: string; lon: number; lat: number; targetId?: string };
+type TripOutcome = { at: string; result: TripResult | { ok: false; reason: "wet_start" | "wet_dest" | "graph" } };
 /** CHOICE (M-14): a tap more than this far from the nearest walk node gets no route (the straight snap leg would be
  * unchecked for water over a long distance). Same bound as the shelters' max_dest_snap_m in graph.json. */
 const MAX_TAP_SNAP_M = 500;
@@ -87,6 +98,12 @@ export default function FloodApp() {
   const [tap, setTap] = useState<TapPoint | null>(null);
   const [tapOutcome, setTapOutcome] = useState<TapOutcome | null>(null);
   const [locateNote, setLocateNote] = useState<string | null>(null);
+  const [tapChoice, setTapChoice] = useState<TapChoice | null>(null);
+  // M-16: from -> to
+  const [tripDest, setTripDest] = useState<TripDest | null>(null);
+  const [pickingDest, setPickingDest] = useState(false);
+  const [tripChoice, setTripChoice] = useState(0);
+  const [tripOutcome, setTripOutcome] = useState<TripOutcome | null>(null);
   /** which area/scenario `scenario` holds (it keeps the previous one while the next loads) */
   const [scenarioKey, setScenarioKey] = useState<string | null>(null);
   const preloaded = useRef(new Set<AreaId>());
@@ -164,6 +181,8 @@ export default function FloodApp() {
       setOriginId(null);
       setTap(null);
       setLocateNote(null);
+      setTripDest(null);
+      setPickingDest(false);
       setReports([]);
       const a = areas.find((x) => x.id === id);
       if (a) setUserType(a.user_types[0]);
@@ -206,7 +225,12 @@ export default function FloodApp() {
         // a rural area's safe places are its relocation sites: never route there to OSM shelters alone (operator ruling)
         else if (area?.type === "rural" && relocationTargets(P.g) === 0) result = { ok: false, reason: "no_relocation" };
         else if (snapStart(P, tap.lon, tap.lat).m > MAX_TAP_SNAP_M) result = { ok: false, reason: "far" };
-        else result = clientRoute(P, key, tap.lon, tap.lat);
+        else {
+          const answers = clientAnswers(P, key, tap.lon, tap.lat);
+          const ok = Object.values(answers).some((a) => a.ok);
+          const first = Object.values(answers).find((a) => !a.ok);
+          result = ok ? { ok: true, answers } : { ok: false, reason: first && !first.ok ? first.reason : "unreachable" };
+        }
         if (alive) setTapOutcome({ at: tapAt, result });
       })
       .catch((e: Error) => {
@@ -218,23 +242,50 @@ export default function FloodApp() {
     };
   }, [tap, tapAt, scenario, areaId, area?.type]);
   const tapResult = tapOutcome && tapOutcome.at === tapAt ? tapOutcome.result : null;
+  // the drawn answer: the user's choice, else the nearest safe shelter (the default), else high ground
+  const tapRouteOk = useMemo<RouteOk | null>(() => {
+    if (!tapResult?.ok) return null;
+    const A = tapResult.answers;
+    const pick = (c: TapChoice) => {
+      const a = A[c.kind];
+      return a?.ok ? (c.safer && a.safer ? a.safer : a.primary) : null;
+    };
+    return (tapChoice && pick(tapChoice)) || pick({ kind: "shelter", safer: false }) || pick({ kind: "relocation", safer: false });
+  }, [tapResult, tapChoice]);
+  const tapOptions = useMemo(() => {
+    if (!tapResult?.ok) return [];
+    const out: { id: string; label: string; active: boolean }[] = [];
+    for (const kind of ["shelter", "relocation"] as const) {
+      const a = tapResult.answers[kind];
+      if (!a?.ok) continue;
+      const what = kind === "shelter" ? "Nearest safe shelter" : "Nearest high ground";
+      out.push({ id: `${kind}:primary`, label: `${what}: ${a.primary.shelter.name}, ${a.primary.minutes} min (fastest)`, active: tapRouteOk === a.primary });
+      if (a.safer)
+        out.push({
+          id: `${kind}:safer`,
+          label: `${what}, safer way${a.safer.shelter.id !== a.primary.shelter.id ? ` (${a.safer.shelter.name})` : ""}: ${a.safer.minutes} min, +${a.safer.extraMin} min, fewer paths next to water`,
+          active: tapRouteOk === a.safer,
+        });
+    }
+    return out;
+  }, [tapResult, tapRouteOk]);
   const tapOrigin = useMemo<Origin | null>(
     () => (tap ? { id: "tap", name: tap.source === "gps" ? "My location" : "Tapped point", lon: tap.lon, lat: tap.lat, user_type: userType } : null),
     [tap, userType],
   );
   const tapPoint = useMemo(() => (tapOrigin ? { lon: tapOrigin.lon, lat: tapOrigin.lat, label: tapOrigin.name } : null), [tapOrigin]);
   const tapRoute = useMemo<Route | null>(() => {
-    if (!tapResult?.ok) return null;
+    if (!tapRouteOk) return null;
     return {
       origin_id: "tap",
-      kind: tapResult.shelter.kind === "relocation" ? "relocation" : "to_shelter",
-      shelter_id: tapResult.shelter.id,
-      destination_name: tapResult.shelter.name,
+      kind: tapRouteOk.shelter.kind === "relocation" ? "relocation" : "to_shelter",
+      shelter_id: tapRouteOk.shelter.id,
+      destination_name: tapRouteOk.shelter.name,
       baseline: null,
-      safe: { geometry: { type: "LineString", coordinates: tapResult.coords }, minutes: tapResult.minutes },
+      safe: { geometry: { type: "LineString", coordinates: tapRouteOk.coords }, minutes: tapRouteOk.minutes },
       avoided: [],
     };
-  }, [tapResult]);
+  }, [tapRouteOk]);
   const tapPanel = tap
     ? {
         pending: !tapResult,
@@ -247,15 +298,25 @@ export default function FloodApp() {
               : tapResult && !tapResult.ok && tapResult.reason === "graph"
               ? "The road network could not be loaded, so routes from a tapped point are unavailable. The preset starting points still work."
               : null,
+        options: tapOptions.length > 1 ? tapOptions : [],
       }
     : null;
 
   const onTap = useCallback((lon: number, lat: number) => {
-    setTap({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, source: "tap" });
+    const p = { lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6 };
+    setSheetOpen(true);
+    if (pickingDest) {
+      // M-16: this tap sets the trip's destination, not a new start
+      setTripDest({ id: "map", name: "Point on the map", ...p });
+      setTripChoice(0);
+      setPickingDest(false);
+      return;
+    }
+    setTap({ ...p, source: "tap" });
+    setTapChoice(null);
     setOriginId(null);
     setLocateNote(null);
-    setSheetOpen(true);
-  }, []);
+  }, [pickingDest]); // FloodMap reads onTap through its props ref, so a new identity is fine
   const locate = useCallback(() => {
     if (!area) return;
     if (!("geolocation" in navigator)) {
@@ -273,6 +334,7 @@ export default function FloodApp() {
         }
         setLocateNote(null);
         setOriginId(null);
+        setTapChoice(null);
         setTap({ lon: Math.round(lon * 1e6) / 1e6, lat: Math.round(lat * 1e6) / 1e6, source: "gps" });
       },
       (err) =>
@@ -288,6 +350,60 @@ export default function FloodApp() {
   const origin = tapOrigin ?? origins.find((o) => o.id === originId) ?? null;
   const publishedRoute = useMemo(() => scenario?.routes.find((r) => r.origin_id === originId) ?? null, [scenario, originId]);
   const route = tap ? tapRoute : publishedRoute;
+
+  // --- M-16: from the current start (tap, location or preset) to a chosen destination ---
+  const tripAt = origin && tripDest && scenarioKey?.startsWith(`${areaId}/`) ? `${scenarioKey}@${origin.lon},${origin.lat}>${tripDest.lon},${tripDest.lat}:${tripDest.targetId ?? ""}` : null;
+  useEffect(() => {
+    if (!origin || !tripDest || !tripAt || !scenario) return;
+    let alive = true;
+    const key = tripAt.split("/")[1].split("@")[0];
+    loadGraph(areaId)
+      .then((P) => {
+        let result: TripOutcome["result"];
+        if (riskAt(scenario.flood, origin.lon, origin.lat)) result = { ok: false, reason: "wet_start" };
+        else if (!tripDest.targetId && riskAt(scenario.flood, tripDest.lon, tripDest.lat)) result = { ok: false, reason: "wet_dest" };
+        else result = routeBetween(P, key, origin, tripDest);
+        if (alive) setTripOutcome({ at: tripAt, result });
+      })
+      .catch((e: Error) => {
+        console.warn("[trip]", e.message);
+        if (alive) setTripOutcome({ at: tripAt, result: { ok: false, reason: "graph" } });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [origin, tripDest, tripAt, scenario, areaId]);
+  const tripResult = tripOutcome && tripOutcome.at === tripAt ? tripOutcome.result : null;
+  const tripView = useMemo<TripView>(() => {
+    if (!tripDest) return { state: "idle" };
+    if (!tripResult) return { state: tripAt ? "pending" : "idle" };
+    if (!tripResult.ok) return { state: "refused", reason: tripResult.reason };
+    return { state: "ok", alts: tripResult.alts.map((a) => ({ ...a, flood: scenario ? floodNextTo(scenario.flood, a.coords) : null })) };
+  }, [tripDest, tripResult, tripAt, scenario]);
+  const tripPick = tripView.state === "ok" ? Math.min(tripChoice, tripView.alts.length - 1) : 0;
+  const tripRoute = useMemo<Route | null>(() => {
+    if (tripView.state !== "ok" || !tripDest) return null;
+    const a = tripView.alts[tripPick];
+    return {
+      origin_id: "trip",
+      kind: "to_shelter",
+      shelter_id: null,
+      destination_name: tripDest.name,
+      baseline: null,
+      safe: { geometry: { type: "LineString", coordinates: a.coords }, minutes: a.minutes },
+      avoided: [],
+    };
+  }, [tripView, tripPick, tripDest]);
+  const tripAlts = useMemo(() => (tripView.state === "ok" ? tripView.alts.filter((_, i) => i !== tripPick).map((a) => a.coords) : []), [tripView, tripPick]);
+  const tripOptions = useMemo<TripDestOption[]>(
+    () => [
+      ...origins.map((o) => ({ id: `o:${o.id}`, name: o.name, lon: o.lon, lat: o.lat, group: "Places" as const })),
+      ...(scenario?.shelters ?? [])
+        .filter((s) => s.safe)
+        .map((s) => ({ id: `s:${s.id}`, name: s.name, lon: s.lon, lat: s.lat, targetId: s.id, group: "Safe places" as const })),
+    ],
+    [origins, scenario],
+  );
   const riskHere = useMemo(
     () => (scenario && origin ? riskNear(scenario.flood, origin.lon, origin.lat, area?.type === "urban" ? 0.004 : 0.015) : null),
     [scenario, origin, area],
@@ -296,12 +412,13 @@ export default function FloodApp() {
   // route line's last vertex for a commute).
   const weatherHere = useMemo<WeatherPoint | null>(() => (origin ? { label: origin.name, lon: origin.lon, lat: origin.lat } : null), [origin]);
   const weatherDest = useMemo<WeatherPoint | null>(() => {
+    if (tripDest && tripRoute) return { label: tripDest.name, lon: tripDest.lon, lat: tripDest.lat };
     if (!route) return null;
     const s = route.shelter_id ? scenario?.shelters.find((x) => x.id === route.shelter_id) : undefined;
     const end = route.safe.geometry.coordinates[route.safe.geometry.coordinates.length - 1];
     const [lon, lat] = s ? [s.lon, s.lat] : [end[0], end[1]];
     return { label: route.destination_name, lon, lat };
-  }, [route, scenario]);
+  }, [route, scenario, tripDest, tripRoute]);
   const hasArrival = !!scenario?.flood.features.some((f) => f.properties.arrival_h !== null);
   // looped, not Math.max(...spread): a real raster-derived scenario can hold
   // tens of thousands of features, which would overflow the argument limit
@@ -327,6 +444,10 @@ export default function FloodApp() {
         shelters={scenario.shelters}
         highlight={emphasis === "safe"}
         tap={tapPanel}
+        onTapOption={(id) => {
+          const [kind, v] = id.split(":") as [TargetKind, string];
+          setTapChoice({ kind, safer: v === "safer" });
+        }}
         onLocate={locate}
         locateNote={locateNote}
       />
@@ -381,7 +502,9 @@ export default function FloodApp() {
             scenario={scenario}
             origins={origins}
             selectedOrigin={originId}
-            route={route}
+            route={tripRoute ?? route}
+            altRoutes={tripAlts}
+            destPoint={tripDest ? { lon: tripDest.lon, lat: tripDest.lat, label: tripDest.name } : null}
             showArrival={showArrival && hasArrival}
             maxArrival={maxArrival}
             reportMode={reportMode}
@@ -494,6 +617,31 @@ export default function FloodApp() {
                 />
                 <ExposurePanel exposure={scenario?.exposure ?? null} population={population} />
                 {order.map((k) => panels[k])}
+                {area && scenario && (
+                  <TripPanel
+                    startName={origin?.name ?? null}
+                    options={tripOptions}
+                    destId={tripDest?.id ?? null}
+                    destName={tripDest?.name ?? null}
+                    picking={pickingDest}
+                    onDest={(id) => {
+                      const o = tripOptions.find((x) => x.id === id);
+                      if (o) {
+                        setTripDest({ id: o.id, name: o.name, lon: o.lon, lat: o.lat, targetId: o.targetId });
+                        setTripChoice(0);
+                        setPickingDest(false);
+                      }
+                    }}
+                    onPickOnMap={() => setPickingDest((v) => !v)}
+                    onClear={() => {
+                      setTripDest(null);
+                      setPickingDest(false);
+                    }}
+                    view={tripView}
+                    choice={tripPick}
+                    onChoice={setTripChoice}
+                  />
+                )}
                 <WeatherPanel here={weatherHere} destination={weatherDest} />
                 {area && scenario && (
                   <AlertPreview

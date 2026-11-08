@@ -95,6 +95,10 @@ interface Props {
   tapPoint: { lon: number; lat: number; label: string } | null;
   /** M-14: a tap on the map, outside a marker or shelter: route from this point */
   onTap: (lon: number, lat: number) => void;
+  /** M-16: the other alternatives of a from -> to trip (the chosen one is `route`), drawn thin under it */
+  altRoutes?: [number, number][][];
+  /** M-16: the trip's destination */
+  destPoint?: { lon: number; lat: number; label: string } | null;
 }
 
 /** What is drawn on the map now, exposed as data-* attributes so e2e can check it (the canvas is opaque to the DOM). */
@@ -110,6 +114,8 @@ interface Drawn {
   highGround: number;
   /** vertices of the drawn safe route (0 = none) */
   routePoints: number;
+  /** M-16: alternative route lines drawn besides the chosen one */
+  altRoutes: number;
 }
 
 export default function FloodMap(props: Props) {
@@ -132,6 +138,7 @@ export default function FloodMap(props: Props) {
   /** M-14 test hook: the camera after each move ("lon,lat,zoom"), so e2e can turn a lon/lat into a pixel to tap */
   const [view, setView] = useState<string | null>(null);
   const tapMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const destMarkerRef = useRef<maplibregl.Marker | null>(null);
 
   useEffect(() => {
     propsRef.current = props;
@@ -233,6 +240,7 @@ export default function FloodMap(props: Props) {
       // basemap switch can never leave the overlays empty
       drawScenario(map, propsRef.current.scenario);
       drawRoute(map, propsRef.current.route);
+      drawAlts(map, propsRef.current.altRoutes);
       drawReports(map, propsRef.current.reports);
       setStyleReady((n) => n + 1);
     });
@@ -244,7 +252,7 @@ export default function FloodMap(props: Props) {
       if (!src || !id) return;
       const read = (sid: string) =>
         (map.getSource(sid) as GeoJSONSource | undefined)?.getData().then((x) => x as FeatureCollection) ?? Promise.resolve(EMPTY);
-      void Promise.all([src.getData(), read("shelters"), read("route-safe")]).then(([d, sh, rt]) => {
+      void Promise.all([src.getData(), read("shelters"), read("route-safe"), read("route-alt")]).then(([d, sh, rt, alt]) => {
         const shelters = (sh.features ?? []) as { properties: { type?: string } | null }[];
         const line = rt.features?.[0]?.geometry;
         const next: Drawn = {
@@ -254,6 +262,7 @@ export default function FloodMap(props: Props) {
           shelters: shelters.length,
           highGround: shelters.filter((f) => f.properties?.type === "high_ground").length,
           routePoints: line?.type === "LineString" ? line.coordinates.length : 0,
+          altRoutes: alt.features?.length ?? 0,
         };
         setDrawn((cur) => (cur && JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
       });
@@ -364,6 +373,11 @@ export default function FloodMap(props: Props) {
     if (!map || !styleReady) return;
     drawRoute(map, props.route);
   }, [props.route, styleReady]);
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !styleReady) return;
+    drawAlts(map, props.altRoutes);
+  }, [props.altRoutes, styleReady]);
 
   // --- arrival layer toggle ---
   useEffect(() => {
@@ -424,6 +438,20 @@ export default function FloodMap(props: Props) {
     tapMarkerRef.current = new maplibregl.Marker({ element: el, anchor: "left", offset: [-9, 0] }).setLngLat([tap.lon, tap.lat]).addTo(map);
   }, [tap]);
 
+  // --- M-16: the trip's destination ---
+  const dest = props.destPoint ?? null;
+  useEffect(() => {
+    const map = mapRef.current;
+    destMarkerRef.current?.remove();
+    destMarkerRef.current = null;
+    if (!map || !dest) return;
+    const el = document.createElement("div");
+    el.className = "origin-marker active dest-marker";
+    el.innerHTML = `<span class="dot" style="background:#7c3aed"></span><span class="label"></span>`;
+    el.querySelector(".label")!.textContent = dest.label;
+    destMarkerRef.current = new maplibregl.Marker({ element: el, anchor: "left", offset: [-9, 0] }).setLngLat([dest.lon, dest.lat]).addTo(map);
+  }, [dest]);
+
   return (
     <div className="absolute inset-0">
       {/* maplibre's CSS forces position:relative on the container, so size it with h-full/w-full */}
@@ -439,6 +467,8 @@ export default function FloodMap(props: Props) {
         data-route-points={drawn?.routePoints}
         data-view={view ?? undefined}
         data-tap={tap ? `${tap.lon},${tap.lat}` : undefined}
+        data-dest={dest ? `${dest.lon},${dest.lat}` : undefined}
+        data-alt-routes={drawn?.altRoutes}
       />
       {!mapError && (
         <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
@@ -499,6 +529,13 @@ function drawRoute(map: MLMap, r: Route | null) {
   setData(map, "route-safe", line(r?.safe.geometry));
 }
 
+function drawAlts(map: MLMap, alts: [number, number][][] | undefined) {
+  setData(map, "route-alt", {
+    type: "FeatureCollection",
+    features: (alts ?? []).map((c, i) => ({ type: "Feature", geometry: { type: "LineString", coordinates: c }, properties: { i } })),
+  });
+}
+
 function drawReports(map: MLMap, reports: Report[]) {
   setData(map, "reports", {
     type: "FeatureCollection",
@@ -507,7 +544,7 @@ function drawReports(map: MLMap, reports: Report[]) {
 }
 
 function addLayers(map: MLMap) {
-  for (const id of ["flood", "shelters", "route-baseline", "route-safe", "reports"]) {
+  for (const id of ["flood", "shelters", "route-baseline", "route-alt", "route-safe", "reports"]) {
     if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: EMPTY });
   }
   map.addLayer({
@@ -545,6 +582,13 @@ function addLayers(map: MLMap) {
     source: "route-baseline",
     layout: { "line-cap": "round" },
     paint: { "line-color": "#6b7280", "line-width": 4, "line-dasharray": [1.5, 1.5] },
+  });
+  map.addLayer({
+    id: "route-alt",
+    type: "line",
+    source: "route-alt",
+    layout: { "line-cap": "round", "line-join": "round" },
+    paint: { "line-color": "#64748b", "line-width": 4, "line-opacity": 0.75 },
   });
   map.addLayer({
     id: "route-safe-casing",

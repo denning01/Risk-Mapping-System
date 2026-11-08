@@ -5,15 +5,17 @@
 // The map canvas is opaque: FloodMap exposes the camera (data-view "lon,lat,zoom") so a lon/lat becomes a pixel, and the
 // point it received (data-tap), so the test routes from exactly the point the app used.
 import { expect, test, type Page } from "@playwright/test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { riskAt } from "../web/src/lib/geo";
 import type { FloodCollection } from "../web/src/lib/types";
-import { checkGraph, clientRoute, prepareGraph, relocationTargets, snapStart, type GraphJson, type PreparedGraph, type RouteResult } from "../web/src/lib/routing";
+import { checkGraph, clientAnswers, prepareGraph, relocationTargets, snapStart, type GraphJson, type PreparedGraph, type RouteResult } from "../web/src/lib/routing";
 import { areas, card, openScenario, readJson, safeCardTitle, watch, type Area } from "./helpers";
 import { fixture } from "./weather-fixture";
+import { panTo, pixelOf, settledView, tapAt, wetPoints } from "./map-helpers";
 
 const IT = { useInnerText: true };
+const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 const ORACLE: { area: string; key: string; tap: string; lon: number; lat: number; error?: string }[] = JSON.parse(
   readFileSync(join(__dirname, "fixtures", "route-oracle.json"), "utf8"),
 );
@@ -30,17 +32,46 @@ const graph = (a: string) => {
   if (!graphs.has(a)) graphs.set(a, prepareGraph(checkGraph(readJson<GraphJson>(`${a}/graph.json`))));
   return graphs.get(a)!;
 };
+/** F15.3: the real E-19 graph.json v3 export, served to the app in place of the committed v2 where present */
+const RMS_DATA = process.env.RMS_DATA ?? "/Users/mac/IGAD/data";
+const V3_PATH: Record<string, string> = {
+  nairobi: join(RMS_DATA, "processed/nairobi/exposure/graph/856ad74/graph.json"),
+  nyando: join(RMS_DATA, "processed/nyando/exposure/graph/56322d6/graph.json"),
+};
 type Expect = RouteResult | { ok: false; reason: "wet" | "far" | "no_relocation" };
 const RURAL = new Set(areas().filter((a) => a.type === "rural").map((a) => a.id));
-/** The outcome the app must show, in the app's order: wet -> (rural without relocation targets) -> far -> the client. */
-function expected(area: string, rain: number, enso: string, lon: number, lat: number): Expect {
+/** The outcome the app must show, in the app's order: wet -> (rural without relocation targets) -> far -> the client.
+ * RULING R20: a free tap gets client_answers() with no user type; the drawn default is the nearest safe shelter's
+ * PRIMARY (fastest, penalty 1), else the nearest high ground's; refused everywhere -> the first refusal. */
+function expected(area: string, rain: number, enso: string, lon: number, lat: number, P = graph(area)): Expect {
   const flood = readJson<FloodCollection>(`${area}/scenarios/${rain}_${enso}.geojson`);
   if (riskAt(flood, lon, lat)) return { ok: false, reason: "wet" };
-  const P = graph(area);
   // operator ruling: a rural user is never routed to OSM shelters alone; graph.json v2 has no relocation targets
   if (RURAL.has(area) && relocationTargets(P.g) === 0) return { ok: false, reason: "no_relocation" };
   if (snapStart(P, lon, lat).m > 500) return { ok: false, reason: "far" };
-  return clientRoute(P, `${rain}_${enso}`, lon, lat);
+  const ans = clientAnswers(P, `${rain}_${enso}`, lon, lat);
+  for (const k of ["shelter", "relocation"] as const) {
+    const a = ans[k];
+    if (a?.ok) return a.primary;
+  }
+  const first = Object.values(ans).find((a) => !a.ok);
+  return { ok: false, reason: first && !first.ok ? first.reason : "unreachable" };
+}
+
+/** Dry points of the area's bbox (61x61 grid) more than `m` metres from every walk node, farthest first. */
+function farPoints(area: string, key: string, m: number, P = graph(area)): [number, number][] {
+  const a = areas().find((x) => x.id === area)! as Area & { bbox: [number, number, number, number] };
+  const [w, so, e, n] = a.bbox;
+  const flood = readJson<FloodCollection>(`${area}/scenarios/${key}.geojson`);
+  const out: { p: [number, number]; d: number }[] = [];
+  for (let i = 0; i <= 60; i++)
+    for (let j = 0; j <= 60; j++) {
+      const lon = Math.round((w + ((e - w) * i) / 60) * 1e6) / 1e6;
+      const lat = Math.round((so + ((n - so) * j) / 60) * 1e6) / 1e6;
+      const d = snapStart(P, lon, lat).m;
+      if (d > m && !riskAt(flood, lon, lat)) out.push({ p: [lon, lat], d });
+    }
+  return out.sort((x, y) => y.d - x.d).map((x) => x.p);
 }
 
 async function mockOpenMeteo(page: Page) {
@@ -52,62 +83,6 @@ async function mockOpenMeteo(page: Page) {
     return r.fulfill({ status: 200, contentType: "application/json", headers: { "access-control-allow-origin": "*" }, body });
   });
   return asked;
-}
-
-/** The settled camera (data-view stops changing). */
-async function settledView(page: Page) {
-  const map = page.locator(".maplibregl-map");
-  let last = "";
-  await expect
-    .poll(
-      async () => {
-        const v = (await map.getAttribute("data-view")) ?? "";
-        const same = v !== "" && v === last;
-        last = v;
-        return same;
-      },
-      { intervals: [400], timeout: 15000 },
-    )
-    .toBe(true);
-  const [lon, lat, zoom] = last.split(",").map(Number);
-  return { lon, lat, zoom };
-}
-
-/** Web Mercator (MapLibre, 512 px tiles, no pitch or bearing): lon/lat -> pixel in the map container. */
-async function pixelOf(page: Page, lon: number, lat: number) {
-  const v = await settledView(page);
-  const box = (await page.locator(".maplibregl-map").boundingBox())!;
-  const world = 512 * 2 ** v.zoom;
-  const mx = (x: number) => ((x + 180) / 360) * world;
-  const my = (y: number) => ((1 - Math.log(Math.tan(Math.PI / 4 + (y * Math.PI) / 360)) / Math.PI) / 2) * world;
-  const px = box.width / 2 + mx(lon) - mx(v.lon);
-  const py = box.height / 2 + my(lat) - my(v.lat);
-  const inside = px > 60 && px < box.width - 60 && py > 60 && py < box.height - 60;
-  return inside ? { x: box.x + px, y: box.y + py } : null;
-}
-
-/** Tap the map at lon/lat; returns the point the app received, or null when the tap hit a marker or shelter. */
-async function tapAt(page: Page, lon: number, lat: number): Promise<[number, number] | null> {
-  const map = page.locator(".maplibregl-map");
-  const before = await map.getAttribute("data-tap");
-  const p = await pixelOf(page, lon, lat);
-  if (!p) return null;
-  await page.mouse.click(p.x, p.y);
-  let now: string | null = null;
-  try {
-    await expect
-      .poll(async () => ((now = await map.getAttribute("data-tap")) !== null && now !== before), { timeout: 2000 })
-      .toBe(true);
-  } catch {
-    return null;
-  }
-  const got = now!.split(",").map(Number) as [number, number];
-  // the click landed where it was aimed (within ~2 px at this zoom)
-  const v = await settledView(page);
-  const degPerPx = 360 / (512 * 2 ** v.zoom);
-  expect(Math.abs(got[0] - lon)).toBeLessThan(3 * degPerPx);
-  expect(Math.abs(got[1] - lat)).toBeLessThan(3 * degPerPx);
-  return got;
 }
 
 async function expectRouteCard(page: Page, area: Area, r: Expect, start: string) {
@@ -189,22 +164,7 @@ for (const area of areas()) {
     await mockOpenMeteo(page);
     await openScenario(page, area, 250, "elnino");
     const flood = readJson<FloodCollection>(`${area.id}/scenarios/250_elnino.geojson`);
-    // interior points of flood polygons that stay wet 3 px around (a click lands within a pixel or two)
-    const v = await settledView(page);
-    const d = (3 * 360) / (512 * 2 ** v.zoom);
-    const wetAround = (lon: number, lat: number) =>
-      [[0, 0], [d, 0], [-d, 0], [0, d], [0, -d]].every(([dx, dy]) => riskAt(flood, lon + dx, lat + dy));
-    const wet: [number, number][] = [];
-    // every polygon of every feature (each risk class is one MultiPolygon), largest rings first
-    const rings = flood.features
-      .flatMap((f) => (f.geometry.type === "Polygon" ? [f.geometry.coordinates[0]] : f.geometry.coordinates.map((q) => q[0])))
-      .sort((a, b) => b.length - a.length);
-    for (const ring of rings) {
-      const lon = ring.reduce((a, p) => a + p[0], 0) / ring.length;
-      const lat = ring.reduce((a, p) => a + p[1], 0) / ring.length;
-      if (wetAround(lon, lat)) wet.push([lon, lat]);
-      if (wet.length >= 40) break;
-    }
+    const wet = await wetPoints(page, flood);
     expect(wet.length).toBeGreaterThan(0);
     let got: [number, number] | null = null;
     for (const [lon, lat] of wet) {
@@ -258,10 +218,124 @@ for (const area of areas()) {
   });
 }
 
+// F15.4: the 500 m bound on the unchecked straight snap leg. Nairobi on the committed v2; Nyando (whose taps wait for
+// relocation targets on v2) with the real v3 export served in its place, where present.
+for (const area of areas()) {
+  test(`${area.id}: a tap more than 500 m from any mapped path -> the note, no route, no 1199 card (F15.4)`, async ({ page, baseURL }) => {
+    const v3 = RURAL.has(area.id);
+    test.skip(v3 && !existsSync(V3_PATH[area.id]), `v3 export not on this machine (${RMS_DATA})`);
+    const errors = await watch(page, baseURL!);
+    await mockOpenMeteo(page);
+    if (v3) await page.route(`**/data/${area.id}/graph.json`, (r) => r.fulfill({ status: 200, contentType: "application/json", body: readFileSync(V3_PATH[area.id]) }));
+    await openScenario(page, area, 50, "normal");
+    const P = v3 ? prepareGraph(checkGraph(JSON.parse(readFileSync(V3_PATH[area.id], "utf8")))) : graph(area.id);
+    if (v3) graphs.set(area.id, P); // farPoints and expected() read the graph the app is served
+    try {
+      // Nairobi's few far points lie at the box edge: pan to each, tap, and judge the point the app actually received
+      const pts = farPoints(area.id, "50_normal", 560, P);
+      expect(pts.length, "dry points > 560 m from any walk node").toBeGreaterThan(0);
+      let r: ReturnType<typeof expected> | null = null;
+      for (const [lon, lat] of pts.slice(0, 8)) {
+        if (!(await panTo(page, lon, lat))) continue;
+        const got = await tapAt(page, lon, lat);
+        if (!got) continue;
+        const e = expected(area.id, 50, "normal", got[0], got[1], P);
+        if (!e.ok && e.reason === "far") {
+          r = e;
+          break;
+        }
+      }
+      expect(r, "a far tap reached the app").toEqual({ ok: false, reason: "far" });
+      await expectRouteCard(page, area, r!, "Tapped point");
+      const c = card(page, safeCardTitle(area));
+      await expect(c).not.toContainText("No safe route on foot");
+      await expect(c).not.toContainText("Computed in your browser");
+      await expect(page.locator(".maplibregl-map")).toHaveAttribute("data-route-points", "0");
+    } finally {
+      graphs.delete(area.id);
+    }
+    expect(errors, errors.join("\n")).toEqual([]);
+  });
+}
+
+// F15.3 + RULING R20 in the app: Nyando with the real graph.json v3 -> a free tap is routed, with TWO answers (nearest
+// safe shelter = the default drawn route; nearest high ground one click away).
+test("nyando with graph.json v3: a free tap shows the nearest safe shelter (drawn) AND the nearest high ground (F15.3, R20)", async ({ page, baseURL }) => {
+  test.skip(!existsSync(V3_PATH.nyando), `v3 export not on this machine (${RMS_DATA})`);
+  const area = areas().find((a) => a.id === "nyando")!;
+  const errors = await watch(page, baseURL!);
+  await mockOpenMeteo(page);
+  await page.route("**/data/nyando/graph.json", (r) => r.fulfill({ status: 200, contentType: "application/json", body: readFileSync(V3_PATH.nyando) }));
+  await openScenario(page, area, 50, "normal");
+  const P = prepareGraph(checkGraph(JSON.parse(readFileSync(V3_PATH.nyando, "utf8"))));
+  const both = (lon: number, lat: number) => {
+    const e = expected("nyando", 50, "normal", lon, lat, P);
+    const a = clientAnswers(P, "50_normal", lon, lat);
+    return e.ok && a.shelter?.ok && a.relocation?.ok;
+  };
+  const cands = ORACLE.filter((o) => o.area === "nyando" && o.key === "50_normal").filter((o) => both(o.lon, o.lat));
+  expect(cands.length).toBeGreaterThan(0);
+  let got: [number, number] | null = null;
+  for (const o of cands) if ((got = await tapAt(page, o.lon, o.lat)) && both(...got)) break;
+  expect(got).not.toBeNull();
+  const a = clientAnswers(P, "50_normal", got![0], got![1]);
+  if (!a.shelter?.ok || !a.relocation?.ok) throw new Error("expected two answers");
+  const c = card(page, safeCardTitle(area));
+  const map = page.locator(".maplibregl-map");
+  await expect(c).toContainText(`Go to: ${a.shelter.primary.shelter.name}`, IT);
+  await expect(map).toHaveAttribute("data-route-points", String(a.shelter.primary.coords.length));
+  await expect(c.locator('[data-option="shelter:primary"]')).toHaveAttribute("aria-checked", "true");
+  await c.locator('[data-option="relocation:primary"]').click();
+  await expect(c).toContainText(`Relocate to high ground: ${a.relocation.primary.shelter.name}`, IT);
+  await expect(c).toContainText(`About ${a.relocation.primary.minutes} min on foot`, IT);
+  await expect(map).toHaveAttribute("data-route-points", String(a.relocation.primary.coords.length));
+  expect(errors, errors.join("\n")).toEqual([]);
+});
+
+// RULING R20: where the fastest safe route runs next to water, the x3 "safer" way is offered with its extra minutes.
+test("nairobi: a tap whose fastest route runs next to water offers the safer way with its extra minutes (R20)", async ({ page, baseURL }) => {
+  const area = areas().find((a) => a.id === "nairobi")!;
+  const ANS: { rows: { area: string; key: string; lon: number; lat: number; user_type: string | null; answers: Record<string, { safer?: unknown }> }[] } = JSON.parse(
+    readFileSync(join(__dirname, "fixtures", "answers-oracle.json"), "utf8"),
+  );
+  const rows = ANS.rows.filter((r) => r.area === "nairobi" && r.user_type === null && r.answers.shelter?.safer);
+  expect(rows.length).toBeGreaterThan(0);
+  const errors = await watch(page, baseURL!);
+  await mockOpenMeteo(page);
+  // tiles as a 1x1 PNG: data-route-points is read on the map's "idle", which waits for real tiles under load
+  await page.route(
+    (u) => u.host.endsWith("tile.openstreetmap.org"),
+    (r) => r.fulfill({ status: 200, contentType: "image/png", headers: { "access-control-allow-origin": "*" }, body: PNG_1X1 }),
+  );
+  let done = false;
+  for (const row of rows) {
+    const [rain, enso] = row.key.split("_");
+    if (riskAt(readJson<FloodCollection>(`nairobi/scenarios/${row.key}.geojson`), row.lon, row.lat)) continue;
+    await openScenario(page, area, Number(rain), enso);
+    const got = await tapAt(page, row.lon, row.lat);
+    if (!got) continue;
+    const a = clientAnswers(graph("nairobi"), row.key, got[0], got[1]).shelter;
+    if (!a?.ok || !a.safer) continue;
+    const c = card(page, safeCardTitle(area));
+    const map = page.locator(".maplibregl-map");
+    await expect(map).toHaveAttribute("data-route-points", String(a.primary.coords.length));
+    const opt = c.locator('[data-option="shelter:safer"]');
+    await expect(opt).toContainText(`${a.safer.minutes} min, +${a.safer.extraMin} min, fewer paths next to water`, IT);
+    await opt.click();
+    await expect(opt).toHaveAttribute("aria-checked", "true");
+    await expect(c).toContainText(`Go to: ${a.safer.shelter.name}`, IT);
+    await expect(c).toContainText(`About ${a.safer.minutes} min on foot`, IT);
+    await expect(map).toHaveAttribute("data-route-points", String(a.safer.coords.length));
+    done = true;
+    break;
+  }
+  expect(done, "one oracle point with a safer way was tapped").toBe(true);
+  expect(errors, errors.join("\n")).toEqual([]);
+});
+
 // CONSTRAINT (human's order, tasks/model.md): no shelter feature is removed or hidden. The shelters layer (with Nyando's
 // high_ground relocation sites), its popups and the published nearest-shelter routes stay; a tap routes to the nearest
 // safe shelter by default. Tiles are served as a 1x1 PNG so the map reaches "idle" and reports what it holds.
-const PNG_1X1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 for (const area of areas()) {
   test(`${area.id}: shelters, relocation sites, shelter popups and the nearest-shelter route all stay with tap routing`, async ({ page, baseURL }) => {
     const errors = await watch(page, baseURL!);

@@ -215,7 +215,10 @@ export function SafePlacesPanel(props: {
     noRouteWhy: string | null;
     /** a problem that is not a flood refusal (graph unavailable, too far from any path): no 1199 card */
     note: string | null;
+    /** RULING R20: the answers for a free tap (nearest safe shelter, nearest high ground, each with a safer way) */
+    options?: { id: string; label: string; active: boolean }[];
   } | null;
+  onTapOption?: (id: string) => void;
   onLocate?: () => void;
   locateNote?: string | null;
 }) {
@@ -306,10 +309,27 @@ export function SafePlacesPanel(props: {
                 {shelter && route.kind === "to_shelter" ? <span className="text-zinc-500"> · {SHELTER_TYPE_LABELS[shelter.type] ?? shelter.type}</span> : null}
                 {shelter?.capacity ? <span className="text-zinc-500"> · capacity {shelter.capacity}</span> : null}
               </div>
+              {tap && tap.options && tap.options.length > 0 && (
+                <div className="space-y-1" role="radiogroup" aria-label="Safe place options">
+                  {tap.options.map((o) => (
+                    <button
+                      key={o.id}
+                      role="radio"
+                      aria-checked={o.active}
+                      data-option={o.id}
+                      onClick={() => props.onTapOption?.(o.id)}
+                      className={`w-full rounded-md border px-2 py-1 text-left text-xs ${o.active ? "border-blue-600 bg-blue-50 font-semibold text-blue-900" : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"}`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               {tap && (
                 <p className="text-[11px] text-zinc-500">
-                  Computed in your browser on the mapped roads and paths for this scenario: flooded paths excluded, paths near the flood avoided
-                  where a dry detour costs less than 3× the time. Screening-level, not a forecast.
+                  Computed in your browser on the mapped roads and paths for this scenario: flooded paths are never used. The fastest safe route is
+                  shown first; where it passes close to water, a safer way (paths next to water cost 3×) is offered with its extra minutes.
+                  Screening-level, not a forecast.
                 </p>
               )}
             </>

@@ -20,25 +20,43 @@ export interface FloodNext {
   metres: number;
 }
 
-type Box = { w: number; s: number; e: number; n: number };
-const boxes = new WeakMap<FloodCollection, Box[]>();
-function featureBoxes(flood: FloodCollection): Box[] {
-  const hit = boxes.get(flood);
+/** Every POLYGON of every feature (a feature is one MultiPolygon per risk class with thousands of polygons, so a
+ * per-feature box filters nothing), bucketed in a grid of CELL_DEG cells by its box padded with the search radius. */
+const CELL_DEG = 0.002; // ~220 m
+type Poly = { k: number; poly: number[][][] };
+type Index = { polys: Poly[]; cells: Map<string, number[]> };
+const indexes = new WeakMap<FloodCollection, Map<number, Index>>();
+function polyIndex(flood: FloodCollection, r: number): Index {
+  let byR = indexes.get(flood);
+  if (!byR) indexes.set(flood, (byR = new Map()));
+  const hit = byR.get(r);
   if (hit) return hit;
-  const out = flood.features.map((f) => {
-    const b = { w: Infinity, s: Infinity, e: -Infinity, n: -Infinity };
-    const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
-    for (const p of polys)
-      for (const [x, y] of p[0]) {
-        if (x < b.w) b.w = x;
-        if (x > b.e) b.e = x;
-        if (y < b.s) b.s = y;
-        if (y > b.n) b.n = y;
+  const pad = r / M_PER_DEG_LAT / 0.98; // degrees, generous enough in longitude below |lat| 10
+  const polys: Poly[] = [];
+  const cells = new Map<string, number[]>();
+  flood.features.forEach((f, k) => {
+    const list = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+    for (const poly of list) {
+      let w = Infinity, so = Infinity, e = -Infinity, n = -Infinity;
+      for (const [x, y] of poly[0]) {
+        if (x < w) w = x;
+        if (x > e) e = x;
+        if (y < so) so = y;
+        if (y > n) n = y;
       }
-    return b;
+      const id = polys.push({ k, poly }) - 1;
+      for (let i = Math.floor((w - pad) / CELL_DEG); i <= Math.floor((e + pad) / CELL_DEG); i++)
+        for (let j = Math.floor((so - pad) / CELL_DEG); j <= Math.floor((n + pad) / CELL_DEG); j++) {
+          const c = `${i},${j}`;
+          const l = cells.get(c);
+          if (l) l.push(id);
+          else cells.set(c, [id]);
+        }
+    }
   });
-  boxes.set(flood, out);
-  return out;
+  const idx = { polys, cells };
+  byR.set(r, idx);
+  return idx;
 }
 
 function inRing(x: number, y: number, ring: number[][]): boolean {
@@ -99,29 +117,22 @@ export function lineMetres(coords: [number, number][]): number {
 
 /** The flood within RADIUS_M of a route line, or null when none is. */
 export function floodNextTo(flood: FloodCollection, coords: [number, number][], r = RADIUS_M): FloodNext | null {
-  const B = featureBoxes(flood);
-  const pts = sampleLine(coords);
+  const { polys, cells } = polyIndex(flood, r);
   let risk: Risk | null = null;
   let depthMax = 0;
   let metres = 0;
-  const pad = r / M_PER_DEG_LAT / 0.98; // degrees, generous enough in longitude below |lat| 10
-  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
-  for (const [x, y] of coords) {
-    w = Math.min(w, x); e = Math.max(e, x); s = Math.min(s, y); n = Math.max(n, y);
-  }
-  const near = flood.features
-    .map((f, k) => ({ f, b: B[k] }))
-    .filter(({ b }) => !(b.e < w - pad || b.w > e + pad || b.n < s - pad || b.s > n + pad));
-  for (const p of pts) {
+  for (const p of sampleLine(coords)) {
     let hit = false;
-    near.forEach(({ f, b }) => {
-      if (p.lon < b.w - pad || p.lon > b.e + pad || p.lat < b.s - pad || p.lat > b.n + pad) return;
-      const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
-      if (!polys.some((poly) => touches(p.lon, p.lat, poly, r))) return;
+    for (const id of cells.get(`${Math.floor(p.lon / CELL_DEG)},${Math.floor(p.lat / CELL_DEG)}`) ?? []) {
+      const { k, poly } = polys[id];
+      const props = flood.features[k].properties;
+      // a polygon of a feature already counted at this sample cannot raise risk or depth: skip the geometry test
+      if (hit && risk && RANK[props.risk] <= RANK[risk] && props.depth_m <= depthMax) continue;
+      if (!touches(p.lon, p.lat, poly, r)) continue;
       hit = true;
-      if (!risk || RANK[f.properties.risk] > RANK[risk]) risk = f.properties.risk;
-      if (f.properties.depth_m > depthMax) depthMax = f.properties.depth_m;
-    });
+      if (!risk || RANK[props.risk] > RANK[risk]) risk = props.risk;
+      if (props.depth_m > depthMax) depthMax = props.depth_m;
+    }
     if (hit) metres += p.w;
   }
   return risk ? { risk, depthMax, metres } : null;
