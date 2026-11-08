@@ -131,9 +131,17 @@ for (const area of areas()) {
     await page.locator("select#origin").selectOption(dry.id);
     let landed = false;
     for (const [lon, lat] of wet) {
-      await t.getByRole("button", { name: "Pick destination on the map" }).click();
+      // the button TOGGLES picking: press it only when picking is off (a click on a marker leaves it on; F15.8)
+      const pick = t.getByRole("button", { name: "Pick destination on the map" });
+      if (await pick.count()) await pick.click();
+      await expect(t.getByRole("button", { name: "Tap the map for the destination…" })).toBeVisible();
+      const before = await map.getAttribute("data-dest");
       if (!(await clickAt(page, lon, lat))) continue;
-      await expect(map).toHaveAttribute("data-dest", /,/);
+      try {
+        await expect.poll(async () => { const d = await map.getAttribute("data-dest"); return d !== null && d !== before; }, { timeout: 2000 }).toBe(true);
+      } catch {
+        continue; // the click hit a marker or a shelter: not a destination
+      }
       const [dl, dt] = (await map.getAttribute("data-dest"))!.split(",").map(Number);
       if (!riskAt(flood, dl, dt)) continue; // the point the app took is not wet: try the next one
       landed = true;
