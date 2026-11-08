@@ -14,9 +14,15 @@ buildings (operator ruling E-18; exposure is counted only in wet cells, so the t
   buildings_flooded Open Buildings footprints whose centroid cell is wet (exposure.json method)
   shelter_null_reason  only when the shelter fields are null by rule (RULING R19: a rural area until graph.json has
                     relocation targets -> "relocation sites not yet in graph")
-  shelter_reachable / walk_min / shelter_id  the graph.json CLIENT (06 client_route, x3 near penalty): the MINIMUM
-                    true walking minutes to the client's chosen usable safe shelter over every walk node INSIDE the hex
-                    (a tap on the node); a hex with no walk node uses a tap at its centre. false/null: no route at all
+  walk_min / shelter_id  RULING R20: the client's PRIMARY answer of kind "shelter" (fastest safe walk, flooded edges
+                    excluded, penalty 1) to the nearest usable safe shelter, MINIMISED over every walk node INSIDE the hex
+                    (a tap on the node); a hex with no walk node uses a tap at its centre
+  relocation_walk_min / relocation_id  the same for kind "relocation" (high ground); only when graph.json has
+                    relocation targets (rural)
+  shelter_reachable true when either answer exists
+  no_route          null, or (no answer of any kind) "inside_flood" (every walk node of the hex -- or the one its centre
+                    snaps to -- is cut by the flood: shelter in place / upper floor / 1199) or "cut_off_outside_flood"
+                    (a dry open node exists but its network piece reaches no target)
 RULES:
   * A 30 m cell belongs to the ONE hex containing its CENTRE (lon/lat of the UTM cell centre). Every AOI cell is
     therefore counted once; flooded area by hex == wet cells exactly.
@@ -177,6 +183,53 @@ def node_best(g: dict, field: dict, node_hex: dict) -> dict:
     return out
 
 
+def live_walk_nodes(g: dict, key: str) -> set:
+    """Walk nodes that keep >= 1 unflooded walk edge in `key`."""
+    k = g["scenarios"].index(key)
+    E, F = g["walk"]["edges"], g["walk"]["flooded"]
+    return {E[3 * i + j] for i in range(len(F)) if not F[i] >> k & 1 for j in (0, 1)}
+
+
+def no_route_class(nodes: list, live: set) -> str:
+    """RULING R20 (c), for a hex with no route of any kind. `nodes` = its walk nodes (or, if it has none, the node its
+    centre snaps to). "inside_flood": every one of them is cut by the flood -- people there are IN the water (shelter
+    in place / upper floor / call 1199). "cut_off_outside_flood": some node is still on dry, open road, but that piece
+    of network reaches no target."""
+    return "cut_off_outside_flood" if any(n in live for n in nodes) else "inside_flood"
+
+
+def fill_shelter_fields(rows: list, g: dict, key: str, node_hex: dict, hex_has_node: set) -> None:
+    """RULING R20: per hex, the PRIMARY (fastest safe, penalty 1) answers of a free tap -- nearest safe shelter
+    (walk_min, shelter_id) and, when the graph has relocation targets, nearest high ground (relocation_walk_min,
+    relocation_id) -- each the minimum over the hex's walk nodes (centre tap if it has none). shelter_reachable =
+    either answer exists; otherwise no_route = no_route_class."""
+    import h3
+    rt = _mod("rt06", "06_routing.py")
+    has_rel = any(s.get("kind") == "relocation" for s in g["shelters"])
+    kinds = ["shelter"] + (["relocation"] if has_rel else [])
+    fields = {k: rt.client_field(g, key, penalty=1.0, kinds={k}) for k in kinds}
+    best = {k: node_best(g, fields[k], node_hex) for k in kinds}
+    live, cache, hex_nodes = live_walk_nodes(g, key), {}, {}
+    for n, h in node_hex.items():
+        hex_nodes.setdefault(h, []).append(n)
+    for x in rows:
+        ans, centre = {}, None
+        for k in kinds:
+            q = best[k].get(x["h3"])
+            if q is None and x["h3"] not in hex_has_node:
+                lat, lon = h3.cell_to_latlng(x["h3"])
+                c = rt.client_from_field(g, fields[k], lon, lat, cache)
+                centre = c["node"]
+                q = None if "error" in c else (c["minutes"], c["shelter"])
+            ans[k] = q
+        x["walk_min"], x["shelter_id"] = ans["shelter"] or (None, None)
+        if has_rel:
+            x["relocation_walk_min"], x["relocation_id"] = ans["relocation"] or (None, None)
+        x["shelter_reachable"] = any(v is not None for v in ans.values())
+        x["no_route"] = (None if x["shelter_reachable"]
+                         else no_route_class(hex_nodes.get(x["h3"]) or [centre], live))
+
+
 def main(argv=None) -> int:
     import rasterio
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -235,16 +288,7 @@ def main(argv=None) -> int:
                 x["shelter_reachable"] = x["walk_min"] = x["shelter_id"] = None
                 x["shelter_null_reason"] = reason
         else:
-            field, cache = rt.client_field(g, key), {}
-            best = node_best(g, field, node_hex)
-            for x in rows:
-                q = best.get(x["h3"])
-                if q is None and x["h3"] not in hex_has_node:
-                    lat, lon = h3.cell_to_latlng(x["h3"])
-                    q = rt.client_from_field(g, field, lon, lat, cache)
-                    q = None if "error" in q else (q["minutes"], q["shelter"])
-                x["shelter_reachable"] = q is not None
-                x["walk_min"], x["shelter_id"] = (q if q is not None else (None, None))
+            fill_shelter_fields(rows, g, key, node_hex, hex_has_node)
         # checks (each a SystemExit): hex sums == exposure.json; flooded area by hex == wet cells
         tot = {s: sum(x[f"people_{s}"] for x in rows) for s in ("low", "medium", "high")}
         hb, hm2 = sum(x["buildings_flooded"] for x in rows), sum(x["flooded_m2"] for x in rows)

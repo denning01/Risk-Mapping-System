@@ -1019,11 +1019,13 @@ def _nearest_safe_shelter(W: RoutingGraph, o, shelters: list[dict], cut, flood=N
 NEAR_FLOOD_M = 30.0      # E-16 RULE: an edge is NEAR the flood in a scenario when its full geometry comes within 30 m of a
                          # wet cell (depth > 0, AOI-masked) and it is NOT flooded under its own net's rule (walk: any
                          # wet sample; drive: >= 0.3 m; bridges exempt). Exact geometry: wet cells polygonised and buffered.
-NEAR_PENALTY = 3.0       # E-16 RULE (client): a near edge costs 3x its travel time when CHOOSING a route; the minutes
-                         # shown are always the true travel time of the chosen path.
-CLIENT_TARGETS = "all_usable"  # E-16 RULE (client, operator ruling A): candidates = EVERY target usable in the scenario
-                         # (E-19: OSM shelters AND relocation sites);
-                         # one Dijkstra, each shelter a virtual edge node -> shelter costing its snap leg; first settled wins.
+NEAR_PENALTY = 3.0       # E-16 RULE, revised by RULING R20 (b): the PRIMARY route is the fastest safe one (penalty 1,
+                         # as the published cards); a near edge costs 3x only for the "safer" ALTERNATIVE, shown with its
+                         # extra minutes. Minutes are always the true travel time of the path.
+CLIENT_TARGETS = "all_usable"  # E-16 RULE (operator ruling A): candidates = EVERY usable target OF THE ANSWER'S KIND;
+                         # one Dijkstra, each target a virtual edge node -> target costing its snap leg; first settled wins.
+                         # RULING R20 (a): a preset origin's user type picks one kind (settler/farmer in a graph with
+                         # relocation targets -> "relocation", else "shelter"); a free tap gets BOTH kinds (client_answers).
 GRAPH_SIMPLIFY_M = 5.0   # CHOICE: display geometry only (Douglas-Peucker in UTM); routing and flood flags use the full geometry
 
 
@@ -1255,6 +1257,35 @@ def client_route(g: dict, key: str, lon: float, lat: float, penalty: float | Non
     return {"error": "no usable shelter reachable"}
 
 
+def client_answers(g: dict, key: str, lon: float, lat: float, user_type: str | None = None) -> dict:
+    """E-16/E-19 CLIENT SPEC (operator RULING R20). The app calls this; client_route is its building block.
+      * user_type given (a preset origin): ONE answer, of the kind the published card uses -- "relocation" for a
+        settler/farmer when the graph has relocation targets (= a rural area), otherwise "shelter".
+      * user_type None (a free tap, user-agnostic): TWO answers -- "shelter" (nearest safe shelter: refuge now) and,
+        when the graph has relocation targets, "relocation" (nearest high ground).
+      * each answer: "primary" = the FASTEST safe route (flooded edges excluded, penalty 1; this matches the published
+        cards); "safer" = the route with near-flood edges costed x near_penalty, given only when it differs from the
+        primary, with "extra_min" = its true minutes minus the primary's. An unreachable kind -> {"error": ...}.
+    -> {kind: {"primary": route, "safer"?: route + extra_min} | {"error": str}}."""
+    has_rel = any(s.get("kind") == "relocation" for s in g["shelters"])
+    if user_type is not None:
+        wants = ["relocation" if (user_type in RELOCATION_USER_TYPES and has_rel) else "shelter"]
+    else:
+        wants = ["shelter"] + (["relocation"] if has_rel else [])
+    out = {}
+    for kind in wants:
+        p = client_route(g, key, lon, lat, penalty=1.0, kinds={kind})
+        if "error" in p:
+            out[kind] = {"error": p["error"]}
+            continue
+        ans = {"primary": p}
+        s = client_route(g, key, lon, lat, kinds={kind})
+        if "error" not in s and (s["shelter"], s["edges"]) != (p["shelter"], p["edges"]):
+            ans["safer"] = {**s, "extra_min": s["minutes"] - p["minutes"]}
+        out[kind] = ans
+    return out
+
+
 def client_field(g: dict, key: str, penalty: float | None = None, kinds=None) -> dict:
     """E-18: client_route for EVERY walk node at once. The walk graph is one row per two-way pair (symmetric), so a
     multi-source Dijkstra from all usable shelters -- each seeded at its node with its snap leg, labels compared as
@@ -1304,10 +1335,10 @@ def client_from_field(g: dict, field: dict, lon: float, lat: float, _cache: dict
     d, j = c["tree"].query([px, py])
     src = c["nodes"][int(j)]
     if src not in field:
-        return {"error": "no shelter reachable from the nearest walk node"}
+        return {"error": "no shelter reachable from the nearest walk node", "node": src}
     cost, sid, tr, sm = field[src]
     sec = tr / 10 + (float(d) + sm) / (g["walk_kph"] / 3.6)
-    return {"shelter": sid, "minutes": int(math.ceil(round(sec / 60.0, 6))), "snap_m": [float(d), sm]}
+    return {"shelter": sid, "minutes": int(math.ceil(round(sec / 60.0, 6))), "snap_m": [float(d), sm], "node": src}
 
 
 def build_routes(area: str, area_meta: dict, origins: list[dict], shelters: list[dict], W: RoutingGraph,

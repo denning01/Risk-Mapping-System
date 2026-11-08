@@ -1165,3 +1165,23 @@ def test_relocation_sites_collected_from_published_choices_ranked_by_best_score_
     floods = [(dry, tf, W.live(W.cut(dry, tf))), (wet1, tf, W.live(W.cut(wet1, tf)))]
     out = rt.relocation_targets(W, sites, floods)
     assert [(s["id"], s["rank"], s["kind"], s["usable"]) for s in out] == [("A", 1, "relocation", 0b11), ("B", 2, "relocation", 0b01)]
+
+
+def test_client_answers_follow_ruling_r20_user_type_two_answers_and_safer_alternative():
+    """RULING R20. Shelter s at node 2, high ground hg at node 30. (a) settler -> relocation only; trader -> shelter only;
+    a settler in a graph WITHOUT relocation targets -> shelter; a free tap -> both. (b) 0 -> 2 straight is near-flood
+    (612 s = 11 min primary); the x3 safer alternative detours dry (1,212 s = 21 min, extra 10)."""
+    W, D = _lattice(4), _lattice(4, drive=True)
+    g = _client_graph(W, D, near_pairs=[(0, 1), (1, 2)], shelters=[("s", 2), ("hg", 30)])
+    g["shelters"][1]["kind"] = "relocation"
+    a = rt.client_answers(g, "a", *_off(0), user_type="settler")
+    assert list(a) == ["relocation"] and a["relocation"]["primary"]["shelter"] == "hg"
+    assert list(rt.client_answers(g, "a", *_off(0), user_type="trader")) == ["shelter"]
+    free = rt.client_answers(g, "a", *_off(0))
+    assert list(free) == ["shelter", "relocation"]
+    sh = free["shelter"]
+    assert sh["primary"]["shelter"] == "s" and sh["primary"]["minutes"] == 11
+    assert sh["safer"]["minutes"] == 21 and sh["safer"]["extra_min"] == 10
+    assert "safer" not in free["relocation"]                    # 0-10-20-30 has no near edge: no alternative
+    g2 = _client_graph(W, D, shelters=[("s", 2)])
+    assert list(rt.client_answers(g2, "a", *_off(0), user_type="settler")) == ["shelter"]

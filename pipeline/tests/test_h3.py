@@ -170,3 +170,42 @@ def test_rural_area_without_relocation_targets_gets_null_shelter_fields_with_a_r
     assert hm.shelter_null_reason({"type": "rural"}, g) == "relocation sites not yet in graph"
     assert hm.shelter_null_reason({"type": "urban"}, g) is None
     assert hm.shelter_null_reason({"type": "rural"}, {"shelters": [{"id": "r1", "kind": "relocation"}]}) is None
+
+
+def test_no_route_class_inside_flood_vs_cut_off_outside_flood():
+    assert hm.no_route_class([5, 6], live={1, 2}) == "inside_flood"
+    assert hm.no_route_class([5, 2], live={1, 2}) == "cut_off_outside_flood"
+
+
+def test_fill_shelter_fields_two_kinds_min_over_nodes_and_no_route_split():
+    """On the 4-lattice (one scenario "a"): shelter s at node 0, high ground hg at node 3. Node 33 has both edges cut
+    (in the flood); nodes 30-31 form a dry island (20-30, 21-31, 31-32 cut). Fake hex ids map nodes to hexes."""
+    import importlib.util as iu
+    sp = iu.spec_from_file_location("rtt", HERE / "06_routing.py"); rt = iu.module_from_spec(sp); sp.loader.exec_module(rt)
+    tsp = iu.spec_from_file_location("trt", HERE / "tests" / "test_routing.py"); tr = iu.module_from_spec(tsp); tsp.loader.exec_module(tr)
+    W, D = tr._lattice(4), tr._lattice(4, drive=True)
+    g = tr._client_graph(W, D, cut_pairs=[(32, 33), (23, 33), (20, 30), (21, 31), (31, 32)], shelters=[("s", 0), ("hg", 3)])
+    g["shelters"][1]["kind"] = "relocation"
+    ids = sorted(W.nodes)
+    nh = {ids.index(1): "H1", ids.index(2): "H1", ids.index(33): "Hdead", ids.index(30): "Hisl", ids.index(31): "Hisl"}
+    rows = [{"h3": h} for h in ("H1", "Hdead", "Hisl")]
+    hm.fill_shelter_fields(rows, g, "a", nh, set(nh.values()))
+    r = {x["h3"]: x for x in rows}
+    assert (r["H1"]["walk_min"], r["H1"]["shelter_id"]) == (5, "s")           # node 1 -> 0: 300 s
+    assert (r["H1"]["relocation_walk_min"], r["H1"]["relocation_id"]) == (5, "hg")   # node 2 -> 3: 300 s
+    assert r["H1"]["shelter_reachable"] and r["H1"]["no_route"] is None
+    assert not r["Hdead"]["shelter_reachable"] and r["Hdead"]["no_route"] == "inside_flood"
+    assert not r["Hisl"]["shelter_reachable"] and r["Hisl"]["no_route"] == "cut_off_outside_flood"
+
+
+def test_hex_walk_min_is_the_primary_route_at_penalty_1():
+    """RULING R20 (b): node 2 -> shelter at node 0 is 600 s straight on near-flood edges (0-1, 1-2): the primary is 10
+    min. At x3 the dry detour 2-12-11-10-0 (1,200 s = 20 min) would win, so a penalty-3 hex field would say 20."""
+    import importlib.util as iu
+    sp = iu.spec_from_file_location("trt2", HERE / "tests" / "test_routing.py"); tr = iu.module_from_spec(sp); sp.loader.exec_module(tr)
+    W, D = tr._lattice(4), tr._lattice(4, drive=True)
+    g = tr._client_graph(W, D, near_pairs=[(0, 1), (1, 2)], shelters=[("s", 0)])
+    nh = {sorted(W.nodes).index(2): "H2"}
+    rows = [{"h3": "H2"}]
+    hm.fill_shelter_fields(rows, g, "a", nh, {"H2"})
+    assert (rows[0]["walk_min"], rows[0]["shelter_id"]) == (10, "s") and "relocation_walk_min" not in rows[0]
