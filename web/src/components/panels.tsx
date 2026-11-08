@@ -1,5 +1,6 @@
 "use client";
 
+import { arrivalTick } from "@/lib/arrival";
 import { useState } from "react";
 import type { Area, CropRule, Enso, Exposure, Forecast, Meta, Origin, Population, Rain, Risk, Route, Scenario, Shelter } from "@/lib/types";
 import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
@@ -70,18 +71,18 @@ export function ScenarioControls(props: {
 // Legend (floats on the map)
 // ---------------------------------------------------------------------------
 export function Legend({ arrival, maxArrival }: { arrival: boolean; maxArrival: number }) {
-  const fmtH = (h: number) => (h < 10 ? `${Math.round(h * 10) / 10} h` : `${Math.round(h)} h`);
   return (
     <div className="pointer-events-auto rounded-lg bg-white/95 p-1.5 text-[10px] shadow-md sm:p-2 sm:text-[11px]">
       {arrival ? (
         <>
-          <div className="mb-1 font-semibold text-zinc-700">Water arrives in</div>
+          <div className="mb-1 font-semibold text-zinc-700">Water could arrive in as little as</div>
           <div className="h-2 w-32 rounded" style={{ background: "linear-gradient(90deg,#7c3aed,#2563eb,#06b6d4,#a5f3fc)" }} />
-          <div className="flex w-32 justify-between text-zinc-500">
-            <span>0 h</span>
-            <span>{fmtH(maxArrival / 2)}</span>
-            <span>{fmtH(maxArrival)}</span>
+          <div className="flex w-32 justify-between text-zinc-500" data-arrival-legend>
+            <span>{arrivalTick(0)}</span>
+            <span>{arrivalTick(maxArrival / 2)}</span>
+            <span>{arrivalTick(maxArrival)}</span>
           </div>
+          <div className="text-zinc-400">screening estimate</div>
         </>
       ) : (
         <>

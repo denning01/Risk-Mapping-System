@@ -5,6 +5,7 @@ import maplibregl, { type GeoJSONSource, type Map as MLMap, type StyleSpecificat
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection } from "geojson";
 import type { Area, Origin, Route, Scenario, Shelter } from "@/lib/types";
+import { arrivalSentence } from "@/lib/arrival";
 import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
 
 const VECTOR_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -273,11 +274,12 @@ export default function FloodMap(props: Props) {
       const f = e.features?.[0];
       if (!f) return;
       const p = f.properties as { risk: string; depth_m: number; arrival_h: number | null | string };
-      const arrival = p.arrival_h === null || p.arrival_h === "null" ? "n/a" : `~${p.arrival_h} h`;
+      // M-21: MapLibre hands properties back as numbers or strings; arrival_h is the FAST bound (M-20 ruling)
+      const h = p.arrival_h === null || p.arrival_h === "null" ? null : Number(p.arrival_h);
       new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
         .setLngLat(e.lngLat)
         .setHTML(
-          `<div style="font:13px system-ui"><b style="text-transform:capitalize">${p.risk} risk</b><br/>Depth: ~${p.depth_m} m<br/>Water arrives: ${arrival}<br/><i style="color:#666">Scenario estimate, not a forecast</i></div>`,
+          `<div style="font:13px system-ui"><b style="text-transform:capitalize">${p.risk} risk</b><br/>Depth: ~${p.depth_m} m<br/><span data-arrival>${arrivalSentence(h)}</span><br/><i style="color:#666">Scenario estimate, not a forecast</i></div>`,
         )
         .addTo(map);
     };
