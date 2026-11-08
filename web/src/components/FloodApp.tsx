@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { RAIN_VALUES } from "@/lib/schema";
 import { loadAreas, loadCrops, loadForecast, loadMeta, loadOrigins, loadPopulation, loadScenario, preloadArea } from "@/lib/data";
 import { riskAt, riskNear } from "@/lib/geo";
-import { clientRoute, loadGraph, snapStart, type RouteResult } from "@/lib/routing";
+import { clientRoute, loadGraph, relocationTargets, snapStart, type RouteResult } from "@/lib/routing";
 import type { Area, AreaId, CropRule, Enso, Forecast, Meta, Origin, Population, Rain, Route, Scenario } from "@/lib/types";
 import {
   AdvisoryPanel,
@@ -41,7 +41,7 @@ type PanelKey = "safe" | "roads" | "advisory";
 type TapPoint = { lon: number; lat: number; source: "tap" | "gps" };
 /** M-14: the outcome for one (area, scenario, point); "wet" = the point is inside the scenario's flood extent;
  * "far" = no mapped road or path within MAX_TAP_SNAP_M; "graph" = graph.json could not be loaded. */
-type TapOutcome = { at: string; result: RouteResult | { ok: false; reason: "wet" | "far" | "graph" } };
+type TapOutcome = { at: string; result: RouteResult | { ok: false; reason: "wet" | "far" | "graph" | "no_relocation" } };
 /** CHOICE (M-14): a tap more than this far from the nearest walk node gets no route (the straight snap leg would be
  * unchecked for water over a long distance). Same bound as the shelters' max_dest_snap_m in graph.json. */
 const MAX_TAP_SNAP_M = 500;
@@ -203,6 +203,8 @@ export default function FloodApp() {
       .then((P) => {
         let result: TapOutcome["result"];
         if (riskAt(scenario.flood, tap.lon, tap.lat)) result = { ok: false, reason: "wet" };
+        // a rural area's safe places are its relocation sites: never route there to OSM shelters alone (operator ruling)
+        else if (area?.type === "rural" && relocationTargets(P.g) === 0) result = { ok: false, reason: "no_relocation" };
         else if (snapStart(P, tap.lon, tap.lat).m > MAX_TAP_SNAP_M) result = { ok: false, reason: "far" };
         else result = clientRoute(P, key, tap.lon, tap.lat);
         if (alive) setTapOutcome({ at: tapAt, result });
@@ -214,7 +216,7 @@ export default function FloodApp() {
     return () => {
       alive = false;
     };
-  }, [tap, tapAt, scenario, areaId]);
+  }, [tap, tapAt, scenario, areaId, area?.type]);
   const tapResult = tapOutcome && tapOutcome.at === tapAt ? tapOutcome.result : null;
   const tapOrigin = useMemo<Origin | null>(
     () => (tap ? { id: "tap", name: tap.source === "gps" ? "My location" : "Tapped point", lon: tap.lon, lat: tap.lat, user_type: userType } : null),
@@ -225,7 +227,7 @@ export default function FloodApp() {
     if (!tapResult?.ok) return null;
     return {
       origin_id: "tap",
-      kind: "to_shelter",
+      kind: tapResult.shelter.kind === "relocation" ? "relocation" : "to_shelter",
       shelter_id: tapResult.shelter.id,
       destination_name: tapResult.shelter.name,
       baseline: null,
@@ -240,7 +242,9 @@ export default function FloodApp() {
         note:
           tapResult && !tapResult.ok && tapResult.reason === "far"
             ? `This point is more than ${MAX_TAP_SNAP_M} m from any mapped road or path. Tap closer to one.`
-            : tapResult && !tapResult.ok && tapResult.reason === "graph"
+            : tapResult && !tapResult.ok && tapResult.reason === "no_relocation"
+              ? `Routing from any point in ${area?.name ?? "this area"} is not ready yet: it needs the ranked relocation sites (high ground), which are coming. Choose a starting point from the list to see its relocation route.`
+              : tapResult && !tapResult.ok && tapResult.reason === "graph"
               ? "The road network could not be loaded, so routes from a tapped point are unavailable. The preset starting points still work."
               : null,
       }

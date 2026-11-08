@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { riskAt } from "../web/src/lib/geo";
 import type { FloodCollection } from "../web/src/lib/types";
-import { checkGraph, clientRoute, prepareGraph, snapStart, type GraphJson, type PreparedGraph, type RouteResult } from "../web/src/lib/routing";
+import { checkGraph, clientRoute, prepareGraph, relocationTargets, snapStart, type GraphJson, type PreparedGraph, type RouteResult } from "../web/src/lib/routing";
 import { areas, card, openScenario, readJson, safeCardTitle, watch, type Area } from "./helpers";
 import { fixture } from "./weather-fixture";
 
@@ -30,11 +30,15 @@ const graph = (a: string) => {
   if (!graphs.has(a)) graphs.set(a, prepareGraph(checkGraph(readJson<GraphJson>(`${a}/graph.json`))));
   return graphs.get(a)!;
 };
-type Expect = RouteResult | { ok: false; reason: "wet" | "far" };
+type Expect = RouteResult | { ok: false; reason: "wet" | "far" | "no_relocation" };
+const RURAL = new Set(areas().filter((a) => a.type === "rural").map((a) => a.id));
+/** The outcome the app must show, in the app's order: wet -> (rural without relocation targets) -> far -> the client. */
 function expected(area: string, rain: number, enso: string, lon: number, lat: number): Expect {
   const flood = readJson<FloodCollection>(`${area}/scenarios/${rain}_${enso}.geojson`);
   if (riskAt(flood, lon, lat)) return { ok: false, reason: "wet" };
   const P = graph(area);
+  // operator ruling: a rural user is never routed to OSM shelters alone; graph.json v2 has no relocation targets
+  if (RURAL.has(area) && relocationTargets(P.g) === 0) return { ok: false, reason: "no_relocation" };
   if (snapStart(P, lon, lat).m > 500) return { ok: false, reason: "far" };
   return clientRoute(P, `${rain}_${enso}`, lon, lat);
 }
@@ -108,11 +112,20 @@ async function tapAt(page: Page, lon: number, lat: number): Promise<[number, num
 
 async function expectRouteCard(page: Page, area: Area, r: Expect, start: string) {
   const c = card(page, safeCardTitle(area));
-  if (r.ok) {
+  if (r.ok && r.shelter.kind === "relocation") {
+    await expect(c).toContainText(`Relocate to high ground: ${r.shelter.name}`, IT);
+    await expect(c).toContainText(`About ${r.minutes} min on foot`, IT);
+    await expect(c).toContainText("Computed in your browser on the mapped roads and paths for this scenario", IT);
+  } else if (r.ok) {
     await expect(c).toContainText(`Go to: ${r.shelter.name}`, IT);
     await expect(c).toContainText(`About ${r.minutes} min on foot · ${LABEL[r.shelter.type] ?? r.shelter.type}`, IT);
     await expect(c).toContainText("Computed in your browser on the mapped roads and paths for this scenario", IT);
     await expect(c).not.toContainText("No safe route on foot");
+  } else if (r.reason === "no_relocation") {
+    await expect(c).toContainText(`Routing from any point in ${area.name} is not ready yet: it needs the ranked relocation sites`, IT);
+    await expect(c).not.toContainText("No safe route on foot");
+    await expect(c).not.toContainText("Computed in your browser");
+    await expect(page.locator(".maplibregl-map")).not.toHaveAttribute("data-route-points", /^[1-9]/);
   } else if (r.reason === "far") {
     await expect(c).toContainText("more than 500 m from any mapped road or path", IT);
   } else {
@@ -126,31 +139,35 @@ async function expectRouteCard(page: Page, area: Area, r: Expect, start: string)
 }
 
 for (const area of areas()) {
-  test(`${area.id}: tap a dry point -> the client's route, shelter type, destination weather; a new scenario re-routes`, async ({ page, baseURL }) => {
+  test(`${area.id}: tap a dry point -> the client's route (Nyando: the not-ready note until relocation targets), weather; a new scenario re-routes`, async ({ page, baseURL }) => {
     const errors = await watch(page, baseURL!);
     const asked = await mockOpenMeteo(page);
     await openScenario(page, area, 50, "normal");
     // dry, routable oracle taps in this scenario; the first one the map takes (a shelter or marker may sit on a pixel)
-    const cands = ORACLE.filter((o) => o.area === area.id && o.key === "50_normal" && o.tap.startsWith("r") && !o.error).filter(
-      (o) => expected(area.id, 50, "normal", o.lon, o.lat).ok,
-    );
+    const dryOk = (lon: number, lat: number) => {
+      const e = expected(area.id, 50, "normal", lon, lat);
+      return e.ok || e.reason === "no_relocation";
+    };
+    const cands = ORACLE.filter((o) => o.area === area.id && o.key === "50_normal" && o.tap.startsWith("r") && !o.error).filter((o) => dryOk(o.lon, o.lat));
     expect(cands.length).toBeGreaterThan(2);
     let got: [number, number] | null = null;
     for (const o of cands) if ((got = await tapAt(page, o.lon, o.lat))) break;
     expect(got, "no candidate tap reached the map").not.toBeNull();
     const [lon, lat] = got!;
     const r = expected(area.id, 50, "normal", lon, lat);
-    expect(r.ok, "the tap actually received must also route").toBe(true);
-    if (!r.ok) return;
+    expect(dryOk(lon, lat), "the tap actually received is dry and near a path too").toBe(true);
+    if (!RURAL.has(area.id)) expect(r.ok, "an urban dry tap routes").toBe(true);
     await expectRouteCard(page, area, r, "Tapped point");
     await expect(page.locator(".tap-marker")).toHaveCount(1);
     await expect(page.locator(".origin-marker.active:not(.tap-marker)")).toHaveCount(0);
-    // weather: here = the tapped point; going = the shelter (M-13)
+    // weather: here = the tapped point; going = the destination (M-13), only when there is one
     const w = card(page, "My weather");
     await expect(w.locator('[data-weather-point="Where you are"]')).toContainText("Where you are: Tapped point", IT);
-    await expect(w.locator('[data-weather-point="Where you are going"]')).toContainText(`Where you are going: ${r.shelter.name}`, IT);
-    await expect.poll(() => asked).toContainEqual(`${r.shelter.lon.toFixed(4)},${r.shelter.lat.toFixed(4)}`);
-    expect(asked).toContainEqual(`${lon.toFixed(4)},${lat.toFixed(4)}`);
+    if (r.ok) {
+      await expect(w.locator('[data-weather-point="Where you are going"]')).toContainText(`Where you are going: ${r.shelter.name}`, IT);
+      await expect.poll(() => asked).toContainEqual(`${r.shelter.lon.toFixed(4)},${r.shelter.lat.toFixed(4)}`);
+    } else await expect(w.locator('[data-weather-point="Where you are going"]')).toHaveCount(0);
+    await expect.poll(() => asked).toContainEqual(`${lon.toFixed(4)},${lat.toFixed(4)}`);
 
     // the same point under the heaviest scenario: recomputed for it (a route, or the stated refusal)
     await page.getByLabel("Rainfall in mm per 24 hours").fill("4");
@@ -200,7 +217,7 @@ for (const area of areas()) {
     expect(errors, errors.join("\n")).toEqual([]);
   });
 
-  test(`${area.id}: "Use my location" at a preset origin gives that origin's published route`, async ({ page, baseURL, context }) => {
+  test(`${area.id}: "Use my location" at a preset origin -> the client's outcome there (urban: the published route)`, async ({ page, baseURL, context }) => {
     const errors = await watch(page, baseURL!);
     await mockOpenMeteo(page);
     const routes = readJson<{ origin_id: string; kind: string; shelter_id: string; destination_name: string; safe: { minutes: number } }[]>(
@@ -212,10 +229,14 @@ for (const area of areas()) {
     await context.setGeolocation({ longitude: o.lon, latitude: o.lat });
     await openScenario(page, area, 100, "normal");
     await page.getByRole("button", { name: "Use my location" }).click();
-    const c = card(page, safeCardTitle(area));
-    await expect(c).toContainText(`Go to: ${row.destination_name}`, IT);
-    await expect(c).toContainText(`About ${row.safe.minutes} min on foot`, IT);
-    await expect(page.locator("select#origin option:checked")).toHaveText("My location");
+    const r = expected(area.id, 100, "normal", o.lon, o.lat);
+    await expectRouteCard(page, area, r, "My location");
+    if (!RURAL.has(area.id)) {
+      // urban: the same route the pipeline published for this preset
+      const c = card(page, safeCardTitle(area));
+      await expect(c).toContainText(`Go to: ${row.destination_name}`, IT);
+      await expect(c).toContainText(`About ${row.safe.minutes} min on foot`, IT);
+    }
     await expect(page.locator(".maplibregl-map")).toHaveAttribute("data-tap", `${o.lon},${o.lat}`);
     expect(errors, errors.join("\n")).toEqual([]);
   });
@@ -273,16 +294,20 @@ for (const area of areas()) {
       await holdsAllShelters();
     }
 
-    // a tap: the nearest safe shelter is the default destination, and its route draws
+    // a tap: the nearest safe place is the default destination, and its route draws. Rural (Nyando) until graph.json
+    // carries relocation targets: the not-ready note and NO route (never to OSM shelters alone), shelters still drawn.
+    const usable = (lon: number, lat: number) => {
+      const e = expected(area.id, rain, "normal", lon, lat);
+      return e.ok || e.reason === "no_relocation";
+    };
     const cands = ORACLE.filter((o) => o.area === area.id && o.key === `${rain}_normal` && o.tap.startsWith("r") && !o.error);
     let got: [number, number] | null = null;
-    for (const o of cands) if (expected(area.id, rain, "normal", o.lon, o.lat).ok && (got = await tapAt(page, o.lon, o.lat))) break;
+    for (const o of cands) if (usable(o.lon, o.lat) && (got = await tapAt(page, o.lon, o.lat))) break;
     expect(got).not.toBeNull();
     const r = expected(area.id, rain, "normal", got![0], got![1]);
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    await expect(card(page, safeCardTitle(area))).toContainText(`Go to: ${r.shelter.name}`, IT);
-    await expect(map).toHaveAttribute("data-route-points", String(r.coords.length));
+    if (!RURAL.has(area.id)) expect(r.ok).toBe(true);
+    await expectRouteCard(page, area, r, "Tapped point");
+    await expect(map).toHaveAttribute("data-route-points", String(r.ok ? r.coords.length : 0));
     await holdsAllShelters();
 
     // shelter popups still answer, and a tap on a shelter is a query, not a new start point

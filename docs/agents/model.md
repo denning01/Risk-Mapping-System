@@ -128,3 +128,8 @@ Append in the same commit as the change that taught it. Newest at the bottom.
   (calibrated_k) did not reach the crash in main (cfg used before load); put the decision in a function that main
   calls and test that function. Urban Sentinel-1 change detection (Nairobi) gives building speckle, not floods: an
   argmax on the edge of the k grid means "not identified" — refuse it, do not ship it.
+- 2026-11-08 (M-14): `npx playwright test` in e2e/ runs against the LAST `next build`. Only `node e2e/run.mjs` (or
+  `npm run test:e2e`) rebuilds first. A web/src change tested without a rebuild tests the old app; a fault injection
+  "caught" or "not caught" without a rebuild means nothing.
+- 2026-11-08 (M-14): a test that passes on its first run is not yet evidence. Inject the fault it is meant to catch. Here a
+  backwards-drawn edge (J8) passed every oracle test until a drawn-length check was added.

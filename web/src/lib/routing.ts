@@ -14,6 +14,8 @@
 
 export interface GraphShelter {
   id: string;
+  /** a routing TARGET: an OSM shelter, or (graph.json v3, E-19) a ranked relocation site on high ground. Absent = shelter. */
+  kind?: "shelter" | "relocation";
   name: string;
   type: string;
   lon: number;
@@ -71,11 +73,16 @@ export function checkGraph(j: unknown): GraphJson {
   const m = w?.flooded?.length;
   if (!Array.isArray(w?.edges) || w.edges.length !== 3 * m || w.near?.length !== m || w.geom?.length !== m) bad("walk arrays differ in length");
   if (!Array.isArray(g.shelters)) bad("shelters");
+  for (const s of g.shelters) if (s.kind !== undefined && s.kind !== "shelter" && s.kind !== "relocation") bad(`target ${s.id} kind ${s.kind}`);
   if (!(g.walk_kph > 0) || !(g.near_penalty >= 1)) bad("walk_kph / near_penalty");
   const z = g.utm_epsg - (g.utm_epsg >= 32701 ? 32700 : 32600);
   if (!((g.utm_epsg >= 32601 && g.utm_epsg <= 32660) || (g.utm_epsg >= 32701 && g.utm_epsg <= 32760)) || z < 1) bad(`utm_epsg ${g.utm_epsg}`);
   return g;
 }
+
+/** Targets that are relocation sites (high ground). A rural area must have them before a tap may be routed there:
+ * routing a Nyando user only to OSM shelters is ruled out (operator, 2026-11-08). */
+export const relocationTargets = (g: GraphJson) => g.shelters.filter((s) => s.kind === "relocation").length;
 
 // ---------------------------------------------------------------------------------------------
 // WGS84 -> UTM (transverse Mercator, Krueger series to n^6: sub-millimetre inside a zone; pyproj's default "etmerc"
