@@ -141,3 +141,6 @@ Append in the same commit as the change that taught it. Newest at the bottom.
 - 2026-11-08 (F15.7): an injection script that rebuilds per fault leaves `.next` built with its LAST fault after it
   restores the source. The next `E2E_SKIP_BUILD=1` run then tests the faulty app: here a route through flooded paths
   (171 min against 576) looked like a test bug. Rebuild after every injection script (`node e2e/run.mjs` without the skip).
+- 2026-11-08 (M-17): headless Chromium draws WebGL on the CPU (SwiftShader): with terrain + fill-extrusions the map takes 15-80 s
+  to reach "idle" there, vs ~6 s on the laptop GPU. Give 3D e2e waits ~120 s, and measure fps in HEADED Google Chrome
+  (`chromium.launch({ headless: false, channel: "chrome" })`; only the headless shell is installed for Playwright).

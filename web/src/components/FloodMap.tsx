@@ -6,6 +6,7 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import type { FeatureCollection } from "geojson";
 import type { Area, Origin, Route, Scenario, Shelter } from "@/lib/types";
 import { arrivalSentence } from "@/lib/arrival";
+import { THREE_D_NOTE, TERRAIN_X, WATER_X } from "@/lib/threeD";
 import { RISK_COLORS, SHELTER_TYPE_LABELS } from "@/lib/types";
 
 const VECTOR_STYLE = "https://tiles.openfreemap.org/styles/liberty";
@@ -69,6 +70,21 @@ const RASTER_SOURCES: Partial<Record<Basemap, string>> = { terrain: "opentopomap
 /** Tile errors from the chosen raster basemap before it falls back to Normal (one bad tile is not a failure). */
 const TILE_ERRORS_BEFORE_FALLBACK = 3;
 
+/**
+ * M-17 · 3D view. Terrain from AWS Open Data "Terrain Tiles" (terrarium PNG, z0-15, keyless, CORS *). Licence:
+ * registry.opendata.aws/terrain-tiles -> github.com/tilezen/joerd/blob/master/docs/attribution.md (SRTM and GMTED2010
+ * public domain, ETOPO1 not under copyright; the tile headers name srtm/S02E036 for Nairobi, srtm/S01E034 + S02E034
+ * for Nyando). Heights are exaggerated and the factors are printed on screen (THREE_D_NOTE).
+ */
+const DEM_SOURCE = "terrain-dem";
+const DEM_TILES = ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"];
+const DEM_ATTRIBUTION =
+  '<a href="https://registry.opendata.aws/terrain-tiles/">Terrain Tiles</a> (AWS Open Data): SRTM and GMTED2010 courtesy of the U.S. Geological Survey; ETOPO1 U.S. NOAA';
+const THREE_D_PITCH = 60;
+/** our building extrusions, added only when the style has none (Terrain / Satellite; Liberty has "building-3d") */
+const BUILDINGS_SOURCE = "ofm-buildings";
+const BUILDINGS_LAYER = "buildings-3d";
+
 export const ARRIVAL_COLORS = ["#7c3aed", "#2563eb", "#06b6d4", "#a5f3fc"];
 
 /** Fill layers drawn from the flood source; exactly one is visible at a time. */
@@ -123,6 +139,13 @@ interface Drawn {
   routePoints: number;
   /** M-16: alternative route lines drawn besides the chosen one */
   altRoutes: number;
+  /** M-17: "terrain-dem x1.5" when terrain is on, else "off" */
+  terrain: string;
+  /** M-17: true ground height (m, exaggeration divided out) at the map centre, or null without terrain */
+  elevation: number | null;
+  pitch: number;
+  /** M-17: the 3D layers present: "flood-3d" and the building extrusion layer's id */
+  layers3d: string;
 }
 
 export default function FloodMap(props: Props) {
@@ -146,6 +169,9 @@ export default function FloodMap(props: Props) {
   const [view, setView] = useState<string | null>(null);
   const tapMarkerRef = useRef<maplibregl.Marker | null>(null);
   const destMarkerRef = useRef<maplibregl.Marker | null>(null);
+  /** M-17: 2D is the default */
+  const [threeD, setThreeD] = useState(false);
+  const threeDRef = useRef(false);
 
   useEffect(() => {
     propsRef.current = props;
@@ -243,6 +269,8 @@ export default function FloodMap(props: Props) {
       vectorPending = false;
       window.clearTimeout(vectorTimer);
       addLayers(map);
+      // M-17: a basemap switch drops the terrain and the 3D layers; put them back if 3D is on
+      apply3D(map, threeDRef.current, propsRef.current.showArrival);
       // M-15: redraw the current scenario, route and reports into the new style now, not on a later React pass, so a
       // basemap switch can never leave the overlays empty
       drawScenario(map, propsRef.current.scenario);
@@ -262,6 +290,9 @@ export default function FloodMap(props: Props) {
       void Promise.all([src.getData(), read("shelters"), read("route-safe"), read("route-alt")]).then(([d, sh, rt, alt]) => {
         const shelters = (sh.features ?? []) as { properties: { type?: string } | null }[];
         const line = rt.features?.[0]?.geometry;
+        const terrain = map.getTerrain();
+        const ex = terrain?.exaggeration ?? 1;
+        const el = terrain ? map.queryTerrainElevation(map.getCenter()) : null;
         const next: Drawn = {
           ...id,
           overlays,
@@ -270,6 +301,10 @@ export default function FloodMap(props: Props) {
           highGround: shelters.filter((f) => f.properties?.type === "high_ground").length,
           routePoints: line?.type === "LineString" ? line.coordinates.length : 0,
           altRoutes: alt.features?.length ?? 0,
+          terrain: terrain ? `${terrain.source} x${ex}` : "off",
+          elevation: el === null ? null : Math.round(el / ex),
+          pitch: Math.round(map.getPitch()),
+          layers3d: ["flood-3d", BUILDINGS_LAYER, "building-3d"].filter((l) => map.getLayer(l)).join(","),
         };
         setDrawn((cur) => (cur && JSON.stringify(cur) === JSON.stringify(next) ? cur : next));
       });
@@ -351,6 +386,17 @@ export default function FloodMap(props: Props) {
     else map.setStyle(b === "satellite" ? SATELLITE_STYLE : TERRAIN_STYLE, { diff: false });
   };
 
+  // --- M-17: 3D on / off. Terrain + extrusions, and the camera tilts; off restores the flat, north-up 2D map. ---
+  const toggle3D = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    const on = !threeDRef.current;
+    threeDRef.current = on;
+    setThreeD(on);
+    apply3D(map, on, propsRef.current.showArrival);
+    map.easeTo(on ? { pitch: THREE_D_PITCH, duration: 800 } : { pitch: 0, bearing: 0, duration: 800 });
+  };
+
   // --- fly to the area ---
   const areaId = props.area?.id;
   useEffect(() => {
@@ -393,6 +439,8 @@ export default function FloodMap(props: Props) {
     if (!map || !styleReady || !map.getLayer("flood-arrival")) return;
     map.setLayoutProperty("flood-arrival", "visibility", props.showArrival ? "visible" : "none");
     map.setLayoutProperty("flood-fill", "visibility", props.showArrival ? "none" : "visible");
+    // M-17: the 3D water is coloured by risk; it steps aside while the arrival colours are shown
+    if (map.getLayer("flood-3d")) map.setLayoutProperty("flood-3d", "visibility", props.showArrival ? "none" : "visible");
     const m = Math.max(props.maxArrival, 1);
     map.setPaintProperty("flood-arrival", "fill-color", [
       "interpolate",
@@ -477,6 +525,11 @@ export default function FloodMap(props: Props) {
         data-tap={tap ? `${tap.lon},${tap.lat}` : undefined}
         data-dest={dest ? `${dest.lon},${dest.lat}` : undefined}
         data-alt-routes={drawn?.altRoutes}
+        data-3d={threeD ? "on" : "off"}
+        data-terrain={drawn?.terrain}
+        data-elevation={drawn?.elevation ?? undefined}
+        data-pitch={drawn?.pitch}
+        data-layers-3d={drawn?.layers3d}
       />
       {!mapError && (
         <div className="absolute left-12 top-2 flex rounded-lg bg-white/95 p-0.5 shadow" role="radiogroup" aria-label="Basemap">
@@ -491,6 +544,19 @@ export default function FloodMap(props: Props) {
               {BASEMAP_LABELS[b]}
             </button>
           ))}
+          <button
+            onClick={toggle3D}
+            aria-pressed={threeD}
+            title="Tilt the map and show terrain, buildings and water depth in 3D (drag with the right mouse button or two fingers to rotate)"
+            className={`ml-0.5 rounded-md border-l border-zinc-200 px-2 py-0.5 text-[11px] font-semibold ${threeD ? "bg-zinc-900 text-white" : "text-zinc-700"}`}
+          >
+            3D
+          </button>
+        </div>
+      )}
+      {threeD && !mapError && (
+        <div data-3d-note className="absolute left-12 top-9 rounded bg-white/95 px-2 py-0.5 text-[11px] font-medium text-zinc-700 shadow">
+          {THREE_D_NOTE}
         </div>
       )}
       {mapError && (
@@ -549,6 +615,59 @@ function drawReports(map: MLMap, reports: Report[]) {
     type: "FeatureCollection",
     features: reports.map((r) => ({ type: "Feature", geometry: { type: "Point", coordinates: [r.lon, r.lat] }, properties: { id: r.id } })),
   });
+}
+
+/** M-17: add or remove the terrain and the 3D layers. Idempotent; called on toggle and after every style load. */
+function apply3D(map: MLMap, on: boolean, showArrival: boolean) {
+  if (!on) {
+    if (map.getTerrain()) map.setTerrain(null);
+    for (const l of ["flood-3d", BUILDINGS_LAYER]) if (map.getLayer(l)) map.removeLayer(l);
+    return;
+  }
+  if (!map.getSource(DEM_SOURCE)) {
+    map.addSource(DEM_SOURCE, { type: "raster-dem", tiles: DEM_TILES, encoding: "terrarium", tileSize: 256, maxzoom: 15, attribution: DEM_ATTRIBUTION });
+  }
+  map.setTerrain({ source: DEM_SOURCE, exaggeration: TERRAIN_X });
+  // buildings: Liberty (Normal) already extrudes them from z14; the raster basemaps get the same OpenFreeMap buildings
+  const hasExtrusion = map.getStyle().layers.some((l) => l.type === "fill-extrusion" && "source-layer" in l && l["source-layer"] === "building");
+  if (!hasExtrusion && !map.getLayer(BUILDINGS_LAYER)) {
+    if (!map.getSource(BUILDINGS_SOURCE)) map.addSource(BUILDINGS_SOURCE, { type: "vector", url: "https://tiles.openfreemap.org/planet" });
+    map.addLayer(
+      {
+        id: BUILDINGS_LAYER,
+        type: "fill-extrusion",
+        source: BUILDINGS_SOURCE,
+        "source-layer": "building",
+        minzoom: 14,
+        filter: ["!", ["has", "hide_3d"]],
+        paint: {
+          "fill-extrusion-base": ["coalesce", ["get", "render_min_height"], 0],
+          "fill-extrusion-height": ["coalesce", ["get", "render_height"], 0],
+          "fill-extrusion-color": "hsl(35,8%,85%)",
+          "fill-extrusion-opacity": 0.8,
+        },
+      },
+      "flood-fill",
+    );
+  }
+  // the water: each flood polygon raised by its depth_m x WATER_X, under the routes and markers
+  if (!map.getLayer("flood-3d")) {
+    map.addLayer(
+      {
+        id: "flood-3d",
+        type: "fill-extrusion",
+        source: "flood",
+        layout: { visibility: showArrival ? "none" : "visible" },
+        paint: {
+          "fill-extrusion-color": ["match", ["get", "risk"], "high", RISK_COLORS.high, "medium", RISK_COLORS.medium, RISK_COLORS.low],
+          "fill-extrusion-height": ["*", ["coalesce", ["get", "depth_m"], 0], WATER_X],
+          "fill-extrusion-base": 0,
+          "fill-extrusion-opacity": 0.55,
+        },
+      },
+      "route-baseline",
+    );
+  }
 }
 
 function addLayers(map: MLMap) {
