@@ -18,6 +18,7 @@ import {
   ScenarioControls,
 } from "./panels";
 import { Badge, Card, Modal } from "./ui";
+import { WeatherPanel, type WeatherPoint } from "./weather";
 import type { Report } from "./FloodMap";
 
 const FloodMap = dynamic(() => import("./FloodMap"), {
@@ -167,6 +168,16 @@ export default function FloodApp() {
     () => (scenario && origin ? riskNear(scenario.flood, origin.lon, origin.lat, area?.type === "urban" ? 0.004 : 0.015) : null),
     [scenario, origin, area],
   );
+  // M-13: live weather at the start point, and at the route's end once a route exists (the shelter's point, or the
+  // route line's last vertex for a commute).
+  const weatherHere = useMemo<WeatherPoint | null>(() => (origin ? { label: origin.name, lon: origin.lon, lat: origin.lat } : null), [origin]);
+  const weatherDest = useMemo<WeatherPoint | null>(() => {
+    if (!route) return null;
+    const s = route.shelter_id ? scenario?.shelters.find((x) => x.id === route.shelter_id) : undefined;
+    const end = route.safe.geometry.coordinates[route.safe.geometry.coordinates.length - 1];
+    const [lon, lat] = s ? [s.lon, s.lat] : [end[0], end[1]];
+    return { label: route.destination_name, lon, lat };
+  }, [route, scenario]);
   const hasArrival = !!scenario?.flood.features.some((f) => f.properties.arrival_h !== null);
   // looped, not Math.max(...spread): a real raster-derived scenario can hold
   // tens of thousands of features, which would overflow the argument limit
@@ -354,6 +365,7 @@ export default function FloodApp() {
                 />
                 <ExposurePanel exposure={scenario?.exposure ?? null} population={population} />
                 {order.map((k) => panels[k])}
+                <WeatherPanel here={weatherHere} destination={weatherDest} />
                 {area && scenario && (
                   <AlertPreview
                     area={area}
