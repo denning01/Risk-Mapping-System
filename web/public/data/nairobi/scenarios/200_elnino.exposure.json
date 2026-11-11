@@ -1,1 +1,1 @@
-{"year":2026,"population":{"low":167086,"medium":189871,"high":212656},"buildings":45207,"flooded_area_km2":18.5,"roads_cut":["Juja Road","Outer Ring Road","Lusaka Road","Kipande Road","Thika Road"],"source":"mock"}
+{"year":2026,"population":{"low":79804,"medium":85589,"high":89643},"buildings":10224,"flooded_area_km2":6.52,"roads_cut":["Thika Road","Kiambu Road","Murang'a Road","Uhuru Highway","Mombasa Road","Chiromo Road","Globe Roundabout","Peponi Road"],"source":"model"}

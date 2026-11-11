@@ -1,1 +1,1 @@
-{"year":2026,"population":{"low":40291,"medium":45785,"high":51279},"buildings":9539,"flooded_area_km2":94.2,"roads_cut":["Kisumu–Nairobi highway (B1) near Ahero","Ahero–Katito road"],"source":"mock"}
+{"year":2026,"population":{"low":5401,"medium":5603,"high":5741},"buildings":1960,"flooded_area_km2":93.02,"roads_cut":["Kisii-Kisumu Road","Awasi-Kapsabet","Nairobi Road","Chemase-Kopere-Muhoroni","Chiga-Ombeyi-Kibigori","Ahero-Miwani Road","Store Pamba - Sosiot Road","Kibos Road"],"source":"model"}

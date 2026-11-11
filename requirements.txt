@@ -1,0 +1,24 @@
+# Person A pipeline. Installed once into /Users/mac/IGAD/.venv (shared by every worktree).
+earthengine-api
+rasterio
+geopandas
+shapely
+pyproj
+pysheds
+numpy
+pandas
+scipy
+osmnx
+osmium
+networkx
+xgboost
+scikit-learn
+fastapi
+uvicorn
+pyyaml
+matplotlib
+pytest
+pyproj
+requests
+scikit-image
+h3==4.5.0               # E-18 H3 hexagon layer (v4 API: latlng_to_cell, cell_to_boundary)

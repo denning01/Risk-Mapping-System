@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Refuses a lead-branch commit while that branch owes auditor findings — unless the commit is the
+# remediation itself, which it proves by naming the finding ids it closes.
+#
+# Why commit-msg and not pre-commit: pre-commit never sees the message, so it could only refuse
+# EVERY commit while a finding is open — including the remediation commit that closes it. This hook
+# receives the message as $1, so "you owe F2.3" and "this commit closes F2.3" are distinguishable.
+#
+# The escape is deliberate and cheap: name the id. That also leaves the closure in git history, not
+# only in the handoff log.
+set -uo pipefail
+msg_file="$1"; [ -f "$msg_file" ] || exit 0
+
+branch="$(git branch --show-current 2>/dev/null)"
+case "$branch" in
+  a/model)    role=model ;;
+  a/exposure) role=exposure ;;
+  *) exit 0 ;;   # data, main, a detached audit worktree, anything else: not a lead branch
+esac
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+f="$top/../rms-audit/$role.md"; [ -f "$f" ] || exit 0
+
+# A finding is a LINE that STARTS with its id — `  F3.4  MUST  <what>` — not the string "F3.4 MUST"
+# appearing anywhere. On 2026-09-19 this hook refused a commit because the auditor's round PROSE
+# described its own test fixture ("a log containing `F9.1 MUST ... / F9.2 MUST ...`"). The document
+# describing findings is not a finding, exactly as the charter describing a secret is not a secret.
+declared="$(grep -oE '^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+(MUST|SHOULD)\b' "$f" 2>/dev/null | awk '{print $1}' | sort -u)"
+closed="$(grep -oE '^[[:space:]]*F[0-9]+\.[0-9]+[[:space:]]+(CLOSED|DECLINED)\b' "$f" 2>/dev/null | awk '{print $1}' | sort -u)"
+open="$(comm -23 <(echo "$declared") <(echo "$closed") 2>/dev/null | grep -E '^F' || true)"
+[ -z "$open" ] && exit 0
+
+# Does this commit claim to close one of them?
+for id in $open; do grep -qE "\b$id\b" "$msg_file" && exit 0; done
+
+echo "REFUSED: '$branch' owes $(echo "$open" | wc -l | tr -d ' ') auditor finding(s)." >&2
+for id in $open; do
+  tag="$(grep -m1 -oE "\b$id[[:space:]]+(MUST|SHOULD)\b" "$f" | awk '{print $2}')"
+  txt="$(grep -m1 -E "\b$id[[:space:]]+(MUST|SHOULD)\b" "$f" | sed -E "s/^.*$id[[:space:]]+(MUST|SHOULD)[[:space:]]*[—-]*[[:space:]]*//" | cut -c1-84)"
+  printf '    %-8s %-7s %s\n' "$id" "$tag" "$txt" >&2
+done
+cat >&2 <<'MSG'
+
+  A finding is a task, not a note. Close it before moving on — that needs no operator go-ahead,
+  it finishes the round already authorised. Append a REMEDIATION block to the audit log naming
+  each id as CLOSED (with evidence) or DECLINED (with a reason).
+
+  If THIS commit is that remediation, name the id in its message, e.g. "Closes F2.3".
+  See: npm run audit:findings
+MSG
+exit 1

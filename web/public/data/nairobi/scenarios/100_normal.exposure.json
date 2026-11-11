@@ -1,1 +1,1 @@
-{"year":2026,"population":{"low":76248,"medium":86645,"high":97042},"buildings":20630,"flooded_area_km2":8.4,"roads_cut":[],"source":"mock"}
+{"year":2026,"population":{"low":62701,"medium":67246,"high":70431},"buildings":8169,"flooded_area_km2":5.53,"roads_cut":["Thika Road","Kiambu Road","Uhuru Highway","Globe Roundabout","Outer Ring Road","Ring Road Westlands","Ring Road","Limuru Road"],"source":"model"}

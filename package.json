@@ -1,0 +1,24 @@
+{
+  "name": "rms-grid",
+  "private": true,
+  "description": "Person A's agent grid tooling (lead + auditor per role). The app lives in web/; the pipeline in pipeline/.",
+  "scripts": {
+    "agents": "bash scripts/tmux-agents.sh",
+    "agents:bootstrap": "bash scripts/bootstrap-agents.sh",
+    "agents:restore": "bash scripts/tmux-agents.sh --restore",
+    "agents:boot": "bash scripts/boot-restore.sh",
+    "say": "bash scripts/operator-send.sh",
+    "msg": "bash scripts/agent-msg.sh",
+    "state": "bash scripts/state-tree.sh",
+    "tasks": "bash scripts/agent-tasks.sh",
+    "audit:findings": "bash scripts/audit-findings.sh",
+    "branch:state": "bash scripts/branch-state.sh",
+    "merge:accepted": "bash scripts/merge-accepted.sh",
+    "verify:all": "bash scripts/verify-all.sh",
+    "test:audit-watch": "bash scripts/test-audit-watch.sh",
+    "test:session-resume": "bash scripts/test-session-resume.sh",
+    "test:grid-layout": "bash scripts/test-grid-layout.sh",
+    "test:audit-findings": "bash scripts/test-audit-findings.sh",
+    "test:e2e": "node e2e/run.mjs"
+  }
+}

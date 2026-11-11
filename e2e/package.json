@@ -1,0 +1,8 @@
+{
+  "name": "rms-e2e",
+  "private": true,
+  "description": "E-14 Playwright click-through. Lives in e2e/, a SIBLING of web/: a lockfile at the repo root (an ancestor of web/) made Next.js infer the repo root as its workspace root (F10.1).",
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  }
+}
